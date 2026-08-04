@@ -35,6 +35,30 @@ final class WebSessionPool {
         return v
     }
 
+    /// The organisations this account can see. Empty (or a throw) means the
+    /// cookie jar has no valid session — which is also how sign-in completion
+    /// is detected.
+    func organizations(for account: Account) async throws -> [(id: String, name: String)] {
+        let v = view(for: account)
+        if v.url == nil {
+            v.load(URLRequest(url: URL(string: "https://claude.ai/")!))
+            try? await Task.sleep(for: .seconds(2))
+        }
+        let js = """
+        const r = await fetch('/api/organizations', {credentials:'include'});
+        if (!r.ok) return '[]';
+        return JSON.stringify(await r.json());
+        """
+        guard let s = try await v.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) as? String,
+              let d = s.data(using: .utf8),
+              let arr = try? JSONSerialization.jsonObject(with: d) as? [[String: Any]]
+        else { return [] }
+        return arr.compactMap { o in
+            guard let id = o["uuid"] as? String else { return nil }
+            return (id, (o["name"] as? String) ?? "Organization")
+        }
+    }
+
     func fetchUsage(for account: Account) async throws -> FetchedUsage {
         let v = view(for: account)
         if v.url == nil {

@@ -84,5 +84,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func openSettings() { /* account manager — next */ }
+    private var accountsWindow: NSWindow?
+
+    @objc func openSettings() {
+        if let w = accountsWindow { w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 560),
+                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        w.title = "Multimodel Tracker — Accounts"
+        w.contentViewController = NSHostingController(rootView: AccountsView(store: store))
+        w.isReleasedWhenClosed = false
+        w.center(); w.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        accountsWindow = w
+    }
 }

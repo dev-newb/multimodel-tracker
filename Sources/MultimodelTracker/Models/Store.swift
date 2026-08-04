@@ -26,7 +26,31 @@ final class Store: ObservableObject {
         accounts.append(a); save(); return a
     }
 
-    func remove(_ id: UUID) { accounts.removeAll { $0.id == id }; save() }
+    func remove(_ id: UUID) {
+        Keychain.deleteAll(for: id)
+        accounts.removeAll { $0.id == id }
+        save()
+    }
+
+    func setNickname(_ nickname: String?, for id: UUID) {
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = nickname?.trimmingCharacters(in: .whitespacesAndNewlines)
+        accounts[i].nickname = (trimmed?.isEmpty == false) ? trimmed : nil
+        save()
+    }
+
+    /// One-click bootstrap: if the Codex CLI is signed in, adopt its token as
+    /// the first OpenAI account rather than making the user do OAuth again.
+    @discardableResult
+    func importCodexCLI() -> Account? {
+        guard canAdd(.openai), let creds = CodexCLIImport.read() else { return nil }
+        var a = Account(provider: .openai, label: creds.email ?? "Codex CLI")
+        Keychain.storeOpenAI(accessToken: creds.accessToken, accountId: creds.accountId, for: a.id)
+        a.nickname = "Codex CLI"
+        accounts.append(a); save()
+        Task { await refresh(a) }
+        return a
+    }
 
     func update(_ account: Account) {
         guard let i = accounts.firstIndex(where: { $0.id == account.id }) else { return }

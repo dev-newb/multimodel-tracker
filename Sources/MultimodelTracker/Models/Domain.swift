@@ -52,19 +52,32 @@ struct UsageLimit: Identifiable, Codable, Hashable {
 struct Account: Identifiable, Codable {
     let id: UUID
     var provider: Provider
-    /// User-facing name — defaults to the email once we can read one.
+    /// What the provider tells us — usually the account email.
     var label: String
+    /// User-chosen name. Four subscriptions on one vendor all look alike by
+    /// email, so this is how you tell "main" from "the one for work".
+    var nickname: String?
     var plan: String?
     var limits: [UsageLimit]
     var lastRefreshed: Date?
     var error: String?
 
     init(id: UUID = UUID(), provider: Provider, label: String,
-         plan: String? = nil, limits: [UsageLimit] = [],
+         nickname: String? = nil, plan: String? = nil, limits: [UsageLimit] = [],
          lastRefreshed: Date? = nil, error: String? = nil) {
         self.id = id; self.provider = provider; self.label = label
-        self.plan = plan; self.limits = limits
+        self.nickname = nickname; self.plan = plan; self.limits = limits
         self.lastRefreshed = lastRefreshed; self.error = error
+    }
+
+    /// Nickname wins when set; the email is the fallback.
+    var displayName: String {
+        if let n = nickname, !n.trimmingCharacters(in: .whitespaces).isEmpty { return n }
+        return label
+    }
+    /// Shown small beside the nickname so the underlying account is still visible.
+    var subtitle: String? {
+        (nickname?.isEmpty == false) ? label : nil
     }
 
     /// The number the menu bar badge shows: the worst pool in this account.
