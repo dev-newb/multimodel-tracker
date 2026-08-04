@@ -23,7 +23,7 @@ enum ProviderRegistry {
         switch p {
         case .openai:    return OpenAIAdapter()
         case .anthropic: return AnthropicAdapter()
-        case .google:    return GoogleAdapter()
+        case .google:    return GoogleAdapterImpl()
         }
     }
 }
@@ -58,14 +58,5 @@ struct OpenAIAdapter: UsageAdapter {
 struct AnthropicAdapter: UsageAdapter {
     func fetch(account: Account) async throws -> FetchedUsage {
         try await WebSessionPool.shared.fetchUsage(for: account)
-    }
-}
-
-/// Google/Gemini: OAuth bearer, plain HTTPS. The open question is the OAuth
-/// client itself — there is no public one, and gemini-cli (whose client the
-/// Electron app borrows) is on a deprecation path.
-struct GoogleAdapter: UsageAdapter {
-    func fetch(account: Account) async throws -> FetchedUsage {
-        throw AdapterError.notImplemented("Google adapter")
     }
 }
