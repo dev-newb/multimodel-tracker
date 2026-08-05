@@ -17,6 +17,11 @@ struct MultimodelTrackerApp {
     }
 }
 
+extension Notification.Name {
+    /// Posted by any window that wants to hand focus back to the tray popover.
+    static let mmtShowTray = Notification.Name("mmt.showTray")
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -50,6 +55,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         host.sizingOptions = [.preferredContentSize]
         popover.contentViewController = host
 
+        NotificationCenter.default.addObserver(forName: .mmtShowTray, object: nil,
+                                               queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                self?.accountsWindow?.close()
+                if self?.popover.isShown != true { self?.togglePopover() }
+            }
+        }
+
         renderBadges()
         timer = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -82,17 +95,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Compact per-provider badges: "A 66  O 17". Colour tracks severity, so a
     /// glance is enough — this is the job the reference's coloured squares do.
     private func renderBadges() {
+        // Badge metrics. Measured against neighbouring status items, whose ink
+        // centres sit at 37.0-38.0 (2x): no baseline shift is needed — the
+        // default already lands at 37.0. An earlier baselineOffset:1 pushed it
+        // to 35.5, i.e. a point HIGH.
+        // The actual defect was a trailing space appended to EVERY part,
+        // including the last, which padded the status item's width on the
+        // right and left the text hugging the left of its highlight. Parts are
+        // joined with a separator instead.
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        let attrs: (NSColor) -> [NSAttributedString.Key: Any] = { colour in
+            [.foregroundColor: colour, .font: font]
+        }
         let parts = Provider.allCases.compactMap { p -> NSAttributedString? in
             let worst = store.accounts(for: p).compactMap(\.worstPercent).max()
             guard let w = worst else { return nil }
             let colour: NSColor = w >= 90 ? .systemRed : (w >= 75 ? .systemOrange : .labelColor)
-            return NSAttributedString(
-                string: "\(p.displayName.prefix(1))\(Int(w)) ",
-                attributes: [.foregroundColor: colour,
-                             .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)])
+            return NSAttributedString(string: "\(p.displayName.prefix(1))\(Int(w))",
+                                      attributes: attrs(colour))
         }
         let joined = NSMutableAttributedString()
-        parts.forEach { joined.append($0) }
+        for (i, part) in parts.enumerated() {
+            if i > 0 { joined.append(NSAttributedString(string: " ", attributes: attrs(.labelColor))) }
+            joined.append(part)
+        }
         if joined.length == 0 {
             joined.append(NSAttributedString(string: "—"))
         }

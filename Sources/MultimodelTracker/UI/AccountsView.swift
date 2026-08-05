@@ -25,6 +25,13 @@ struct AccountsView: View {
             }
         }
         .frame(width: 480, height: 560)
+        // Double-click on empty space = "take me back to the tray". Controls
+        // (buttons, nickname fields) consume their own clicks, so only the
+        // background reaches this gesture.
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            NotificationCenter.default.post(name: .mmtShowTray, object: nil)
+        }
     }
 
     private func providerBlock(_ p: Provider) -> some View {
