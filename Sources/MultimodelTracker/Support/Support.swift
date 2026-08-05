@@ -11,12 +11,22 @@ enum Support {
 enum Keychain {
     struct OpenAICreds { let accessToken: String; let accountId: String? }
 
+    /// Per-launch cache. The keychain is read once per account per run; every
+    /// later poll is served from memory, so a poll can never trigger a
+    /// password prompt.
+    private static var openAICache: [UUID: OpenAICreds] = [:]
+
     static func openAICredentials(for account: UUID) throws -> OpenAICreds {
+        if let hit = openAICache[account] { return hit }
         guard let raw = read(service: "MultimodelTracker.openai", account: account.uuidString),
               let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: String],
               let token = obj["access_token"] else { throw AdapterError.notSignedIn }
-        return OpenAICreds(accessToken: token, accountId: obj["account_id"])
+        let creds = OpenAICreds(accessToken: token, accountId: obj["account_id"])
+        openAICache[account] = creds
+        return creds
     }
+
+    static func invalidateCache(for account: UUID) { openAICache[account] = nil }
 
     static func store(service: String, account: String, data: Data) {
         delete(service: service, account: account)
@@ -48,6 +58,7 @@ extension Keychain {
     static let anthropicService = "MultimodelTracker.anthropic"
 
     static func storeOpenAI(accessToken: String, accountId: String?, for account: UUID) {
+        invalidateCache(for: account)
         var obj = ["access_token": accessToken]
         if let a = accountId { obj["account_id"] = a }
         guard let d = try? JSONSerialization.data(withJSONObject: obj) else { return }

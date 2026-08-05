@@ -27,8 +27,15 @@ enum OpenAIParser {
             limits.append(.init(key: name.lowercased(), label: "\(name) · weekly",
                                 percent: pct, resetsAt: reset))
         }
+        if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+            let c = root["rate_limit_reset_credits"]
+            FileHandle.standardError.write("openai reset_credits raw: \(String(describing: c))\n".data(using: .utf8)!)
+        }
+        // Show the banked-reset count whenever the field exists — including 0.
+        // Hiding the row at zero made "resets aren't showing" indistinguishable
+        // from "you have none".
         if let credits = root["rate_limit_reset_credits"] as? [String: Any],
-           let n = credits["available_count"] as? Int, n > 0 {
+           let n = credits["available_count"] as? Int {
             limits.append(.init(key: "resets", label: "Banked resets · \(n)",
                                 percent: nil, resetsAt: nil))
         }

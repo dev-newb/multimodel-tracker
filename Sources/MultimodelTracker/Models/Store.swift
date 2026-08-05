@@ -76,8 +76,24 @@ final class Store: ObservableObject {
 
     func refresh(_ account: Account) async {
         var a = account
+        // The imported Codex account can lose its keychain item when the
+        // item's ACL is deliberately reset (signature migration). The source
+        // of truth — ~/.codex/auth.json — is still there, and re-storing from
+        // it makes THIS build the item's creator, which is exactly the clean
+        // ACL binding wanted. Heal silently instead of erroring.
+        if a.provider == .openai, a.nickname == "Codex CLI",
+           (try? Keychain.openAICredentials(for: a.id)) == nil,
+           let creds = CodexCLIImport.read() {
+            Keychain.storeOpenAI(accessToken: creds.accessToken,
+                                 accountId: creds.accountId, for: a.id)
+        }
         do {
             let fetched = try await ProviderRegistry.adapter(for: a.provider).fetch(account: a)
+            if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+                FileHandle.standardError.write(
+                    "refresh \(a.provider.rawValue)/\(a.displayName): \(fetched.limits.map(\.key).joined(separator: ","))\n"
+                        .data(using: .utf8)!)
+            }
             a.limits = fetched.limits; a.plan = fetched.plan
             a.error = nil; a.lastRefreshed = Date()
         } catch {

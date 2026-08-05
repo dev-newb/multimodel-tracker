@@ -10,6 +10,11 @@ import WebKit
 /// by watching for a redirect URL.
 @MainActor
 final class SignInWindowController: NSObject, NSWindowDelegate {
+    /// Live controllers, keyed by account. The poll only runs while the
+    /// controller is alive, so ownership can't be left to SwiftUI view
+    /// state — closing the Accounts window would silently kill detection
+    /// and strand the sign-in window open as a Claude chat.
+    private static var active: [UUID: SignInWindowController] = [:]
     private var window: NSWindow?
     private var poll: Timer?
     private let account: Account
@@ -22,7 +27,9 @@ final class SignInWindowController: NSObject, NSWindowDelegate {
     }
 
     func present() {
+        Self.active[account.id] = self
         let web = WebSessionPool.shared.signInView(for: account)
+        web.removeFromSuperview()          // leave the hidden host
         web.frame = NSRect(x: 0, y: 0, width: 520, height: 720)
 
         let w = NSWindow(contentRect: web.frame,
@@ -52,6 +59,7 @@ final class SignInWindowController: NSObject, NSWindowDelegate {
     }
 
     private func finish(success: Bool) {
+        Self.active[account.id] = nil
         poll?.invalidate(); poll = nil
         window?.delegate = nil
         window?.close(); window = nil
@@ -59,6 +67,7 @@ final class SignInWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        Self.active[account.id] = nil
         poll?.invalidate(); poll = nil
         onFinished(false)
     }

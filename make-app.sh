@@ -28,6 +28,20 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
-# Ad-hoc sign so the bundle has a stable identity for Keychain ACLs.
-codesign --force --sign - "$APP" 2>/dev/null || true
+# Sign with a STABLE identity, selected by SHA-1 hash — never by name (this
+# Mac holds two identically-named Apple Development certs, and by-name
+# selection aborts as ambiguous). Ad-hoc is the last resort only: every
+# ad-hoc rebuild mints a new code identity, which invalidates the keychain
+# item ACLs and made macOS demand the login-keychain password on every poll.
+SIGN_IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk '/Developer ID Application/ {print $2; exit}')}"
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk '/Apple Development/ {print $2; exit}')"
+fi
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  codesign --force --sign "$SIGN_IDENTITY" "$APP"
+  echo "signed with: $SIGN_IDENTITY"
+else
+  codesign --force --sign - "$APP" 2>/dev/null || true
+  echo "WARNING: ad-hoc signed — keychain prompts will return after every rebuild"
+fi
 echo "built: $APP"

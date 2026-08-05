@@ -51,10 +51,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = host
 
         renderBadges()
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.renderBadges() }
+        timer = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                await self?.store.refreshAll()
+                self?.renderBadges()
+            }
         }
         Task { @MainActor in await store.refreshAll(); renderBadges() }
+
+        if CommandLine.arguments.contains("--bridge-test") {
+            Task { @MainActor in
+                guard let acct = store.accounts(for: .anthropic).first else {
+                    FileHandle.standardError.write("BRIDGE: no anthropic account\n".data(using:.utf8)!); return
+                }
+                let out = await WebSessionPool.shared.bridgeDiagnostics(for: acct)
+                FileHandle.standardError.write("BRIDGE: \(out)\n".data(using:.utf8)!)
+            }
+        }
 
         // `--open` pops the panel on launch. A status item can't be clicked by
         // the accessibility API from an unbundled binary, so this is how the
