@@ -23,7 +23,11 @@ final class WebSessionPool {
             cfg.websiteDataStore = .nonPersistent()
         }
         let v = WKWebView(frame: .zero, configuration: cfg)
-        v.customUserAgent = Support.chromeUserAgent
+        // Deliberately NOT spoofing a Chrome UA here. Claiming to be Chrome
+        // from a WebKit engine is an inconsistency bot-detection flags, and it
+        // put sign-in into an unsolvable challenge loop. Present honestly as
+        // the Safari-family browser we actually are and the challenge resolves
+        // like it would in Safari.
         views[account.id] = v
         return v
     }

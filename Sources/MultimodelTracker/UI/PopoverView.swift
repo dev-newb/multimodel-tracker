@@ -21,11 +21,14 @@ struct PopoverView: View {
                 }
                 .padding(.vertical, 12)
             }
-            .frame(minHeight: 220, maxHeight: 460)
+            .frame(maxHeight: 460)
             Divider().opacity(0.35)
             footer
         }
         .frame(width: 340)
+        // Without this the popover is see-through: NSPopover supplies no
+        // material when its content is a plain SwiftUI hierarchy.
+        .background(.regularMaterial)
     }
 
     private var header: some View {

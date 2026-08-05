@@ -44,15 +44,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         popover = NSPopover()
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 340, height: 520)
-        popover.contentViewController = NSHostingController(
-            rootView: PopoverView(store: store))
+        // Size to the content rather than a fixed height — two accounts must
+        // not leave the same empty gulf a fixed 520 produced.
+        let host = NSHostingController(rootView: PopoverView(store: store))
+        host.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = host
 
         renderBadges()
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.renderBadges() }
         }
         Task { @MainActor in await store.refreshAll(); renderBadges() }
+
+        // `--open` pops the panel on launch. A status item can't be clicked by
+        // the accessibility API from an unbundled binary, so this is how the
+        // popover gets reviewed during development.
+        if CommandLine.arguments.contains("--open") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.togglePopover()
+            }
+        }
     }
 
     /// Compact per-provider badges: "A 66  O 17". Colour tracks severity, so a
