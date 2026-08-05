@@ -35,7 +35,7 @@ struct OpenAIAdapter: UsageAdapter {
     static let endpoint = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
 
     func fetch(account: Account) async throws -> FetchedUsage {
-        guard let creds = try? Keychain.openAICredentials(for: account.id) else {
+        guard let creds = try? await Keychain.openAICredentialsAsync(for: account.id) else {
             throw AdapterError.notSignedIn
         }
         var req = URLRequest(url: Self.endpoint)

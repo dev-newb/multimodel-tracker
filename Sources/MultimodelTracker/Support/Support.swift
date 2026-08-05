@@ -26,6 +26,30 @@ enum Keychain {
         return creds
     }
 
+    /// `SecItemCopyMatching` blocks for as long as the password panel is up.
+    /// Called straight from the @MainActor store that froze the entire UI —
+    /// no popover, no Accounts window — until the prompt was answered. Only
+    /// the blocking call goes to the background queue; the cache stays on the
+    /// main actor, so it needs no locking of its own.
+    @MainActor
+    static func openAICredentialsAsync(for account: UUID) async throws -> OpenAICreds {
+        if let hit = openAICache[account] { return hit }
+        let raw: Data? = await withCheckedContinuation { cont in
+            keychainQueue.async {
+                cont.resume(returning: read(service: "MultimodelTracker.openai",
+                                            account: account.uuidString))
+            }
+        }
+        guard let raw,
+              let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: String],
+              let token = obj["access_token"] else { throw AdapterError.notSignedIn }
+        let creds = OpenAICreds(accessToken: token, accountId: obj["account_id"])
+        openAICache[account] = creds
+        return creds
+    }
+
+    private static let keychainQueue = DispatchQueue(label: "com.devnewb.multimodeltracker.keychain")
+
     static func invalidateCache(for account: UUID) { openAICache[account] = nil }
 
     static func store(service: String, account: String, data: Data) {

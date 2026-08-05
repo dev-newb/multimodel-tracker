@@ -90,6 +90,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.togglePopover()
             }
         }
+
+        // `--accounts` does the same for the Accounts window, which otherwise
+        // is only reachable through a click inside the popover.
+        if CommandLine.arguments.contains("--accounts") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.openSettings()
+            }
+        }
     }
 
     /// Compact per-provider badges: "A 66  O 17". Colour tracks severity, so a
@@ -138,13 +146,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openSettings() {
         if let w = accountsWindow { w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 560),
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
         w.title = "Multimodel Tracker — Accounts"
-        w.contentViewController = NSHostingController(rootView: AccountsView(store: store))
+        let host = NSHostingController(rootView: AccountsView(store: store))
+        // Let the hosting controller drive the window height as accounts are
+        // added and removed, instead of pinning it.
+        host.sizingOptions = [.preferredContentSize]
+        w.contentViewController = host
+        w.setContentSize(host.view.fittingSize)
         w.isReleasedWhenClosed = false
         w.center(); w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         accountsWindow = w
+        if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+            FileHandle.standardError.write("accounts window: \(Int(w.frame.width))x\(Int(w.frame.height))\n".data(using: .utf8)!)
+        }
     }
 }

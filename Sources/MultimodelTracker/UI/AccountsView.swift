@@ -23,8 +23,14 @@ struct AccountsView: View {
                 }
                 .padding(16)
             }
+            // fixedSize makes the ScrollView adopt its content's ideal height
+            // instead of stretching, so the window shrinks to what is actually
+            // there; maxHeight keeps a full twelve accounts from running off
+            // the screen, at which point it scrolls as before.
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxHeight: 680)
         }
-        .frame(width: 480, height: 560)
+        .frame(width: 480)
         // Double-click on empty space = "take me back to the tray". Controls
         // (buttons, nickname fields) consume their own clicks, so only the
         // background reaches this gesture.

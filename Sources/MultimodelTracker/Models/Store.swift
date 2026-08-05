@@ -82,7 +82,7 @@ final class Store: ObservableObject {
         // it makes THIS build the item's creator, which is exactly the clean
         // ACL binding wanted. Heal silently instead of erroring.
         if a.provider == .openai, a.nickname == "Codex CLI",
-           (try? Keychain.openAICredentials(for: a.id)) == nil,
+           (try? await Keychain.openAICredentialsAsync(for: a.id)) == nil,
            let creds = CodexCLIImport.read() {
             Keychain.storeOpenAI(accessToken: creds.accessToken,
                                  accountId: creds.accountId, for: a.id)
