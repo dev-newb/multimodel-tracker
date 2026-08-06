@@ -168,8 +168,10 @@ struct LimitRow: View {
                 }
                 Text(limit.resetText).font(.system(size: 10)).foregroundStyle(.tertiary)
             }
-            if let p = limit.percent, p >= 100 {
-                MaxedBar(style: maxedStyle)
+            if isMaxed {
+                // Placeholder keeping the capsule's slot; the artwork is on
+                // the row background so text renders over it.
+                Color.clear.frame(height: MaxedBar.barH)
             } else if limit.percent != nil {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
@@ -181,5 +183,15 @@ struct LimitRow: View {
                 .frame(height: 5)
             }
         }
+        .background(alignment: .bottom) {
+            if isMaxed {
+                // Bottom edge rides `below` pt past the strip so drops can
+                // fall out of the track; the trace band lands over the label,
+                // underneath its text.
+                MaxedBar(style: maxedStyle).offset(y: MaxedBar.below)
+            }
+        }
     }
+
+    private var isMaxed: Bool { (limit.percent ?? 0) >= 100 }
 }

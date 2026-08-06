@@ -12,40 +12,37 @@ enum MaxedStyle: Int, CaseIterable {
 /// animations do not reliably resume when it comes back — a clock can't
 /// get stuck.
 ///
-/// Layout is a 5pt strip like the normal bar; the artwork lives in a taller
-/// overlay canvas because Canvas clips to its own bounds — an EKG drawn at
-/// negative y inside a 5pt canvas simply vanishes (verified via
-/// --render-maxed: the trimmed path existed at y -10 and rendered nothing).
+/// Not a bar in the row's layout — LimitRow keeps a plain 5pt strip there and
+/// hangs this on the ROW's background, bottom-aligned, so every label and
+/// number paints on top ("effects need to render behind all text"). The
+/// canvas is taller than the strip because Canvas clips to its own bounds —
+/// an EKG drawn at negative y inside a 5pt canvas simply vanishes (verified
+/// via --render-maxed: the trimmed path existed at y -10 and drew nothing).
 struct MaxedBar: View {
     let style: MaxedStyle
     /// Reset on every appearance so the one-shot intros replay per viewing.
     @State private var opened = Date()
 
-    private static let barH = 5.0        // layout height, matches LimitRow's capsule
-    private static let above = 20.0      // headroom for the EKG trace
-    private static let below = 21.0      // room for bleed drops to fall
+    static let barH = 5.0                // matches LimitRow's capsule height
+    static let above = 20.0              // headroom for the EKG trace
+    static let below = 21.0              // room for bleed drops to fall
     private static let canvasH = above + barH + below
 
     var body: some View {
-        Color.clear
-            .frame(height: Self.barH)
-            .overlay(alignment: .top) {
-                TimelineView(.animation) { context in
-                    Canvas { ctx, size in
-                        let t = context.date.timeIntervalSinceReferenceDate
-                        let since = context.date.timeIntervalSince(opened)
-                        switch style {
-                        case .flatline: Self.drawFlatline(ctx, size, t: t, since: since)
-                        case .fracture: Self.drawFracture(ctx, size, t: t)
-                        case .bleed:    Self.drawBleed(ctx, size, t: t)
-                        }
-                    }
+        TimelineView(.animation) { context in
+            Canvas { ctx, size in
+                let t = context.date.timeIntervalSinceReferenceDate
+                let since = context.date.timeIntervalSince(opened)
+                switch style {
+                case .flatline: Self.drawFlatline(ctx, size, t: t, since: since)
+                case .fracture: Self.drawFracture(ctx, size, t: t)
+                case .bleed:    Self.drawBleed(ctx, size, t: t)
                 }
-                .frame(height: Self.canvasH)
-                .offset(y: -Self.above)
-                .allowsHitTesting(false)
             }
-            .onAppear { opened = Date() }
+        }
+        .frame(height: Self.canvasH)
+        .allowsHitTesting(false)
+        .onAppear { opened = Date() }
     }
 
     private static let red    = Color(red: 0.91, green: 0.27, blue: 0.23)
