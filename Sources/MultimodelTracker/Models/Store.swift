@@ -20,10 +20,37 @@ final class Store: ObservableObject {
         maxedStyle = Self.style(forViewing: UserDefaults.standard.integer(forKey: maxedViewsKey))
     }
 
+    /// -1 = cycle every 3rd viewing (the default); otherwise a pinned
+    /// MaxedStyle rawValue chosen in the Accounts window.
+    @Published private(set) var maxedFixed: Int =
+        UserDefaults.standard.object(forKey: "mmt.maxedFixed") as? Int ?? -1
+    /// When several pools are dead at once: false = all show the same
+    /// animation, true = each gets a different one.
+    @Published private(set) var maxedVaried: Bool =
+        UserDefaults.standard.bool(forKey: "mmt.maxedVaried")
+
+    func setMaxedFixed(_ v: Int) {
+        maxedFixed = v
+        UserDefaults.standard.set(v, forKey: "mmt.maxedFixed")
+    }
+
+    func setMaxedVaried(_ v: Bool) {
+        maxedVaried = v
+        UserDefaults.standard.set(v, forKey: "mmt.maxedVaried")
+    }
+
+    /// What a dead bar shows right now: the pinned style, or wherever the
+    /// cycle currently is.
+    var effectiveMaxedStyle: MaxedStyle {
+        MaxedStyle(rawValue: maxedFixed) ?? maxedStyle
+    }
+
     /// Rich: cycle to "a new one every 3rd time user sees the dead bar".
     /// Called on each popover open; only viewings where a dead bar is actually
-    /// on screen count, and the style advances every third one.
+    /// on screen count, and the style advances every third one. A pinned
+    /// style doesn't advance the counter — cycling resumes where it left off.
     func noteMaxedViewing() {
+        guard maxedFixed < 0 else { return }
         guard accounts.contains(where: { a in a.limits.contains { ($0.percent ?? 0) >= 100 } })
         else { return }
         let n = UserDefaults.standard.integer(forKey: maxedViewsKey) + 1
@@ -52,6 +79,11 @@ final class Store: ObservableObject {
         Keychain.deleteAll(for: id)
         accounts.removeAll { $0.id == id }
         save()
+    }
+
+    func setLabel(_ label: String, for id: UUID) {
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        accounts[i].label = label; save()
     }
 
     func setNickname(_ nickname: String?, for id: UUID) {

@@ -31,6 +31,21 @@ struct PopoverView: View {
         .background(.regularMaterial)
     }
 
+    /// For "ensure they are all different": each account's first dead bar
+    /// starts this many styles past the base, counting dead bars across the
+    /// whole popover so no two show the same animation (mod the style count).
+    private var maxedOffsets: [UUID: Int] {
+        var n = 0
+        var out: [UUID: Int] = [:]
+        for p in Provider.allCases {
+            for a in store.accounts(for: p) {
+                out[a.id] = n
+                n += a.limits.filter { ($0.percent ?? 0) >= 100 }.count
+            }
+        }
+        return out
+    }
+
     private var header: some View {
         HStack(spacing: 8) {
             Text("Multimodel Tracker").font(.system(size: 14, weight: .semibold))
@@ -59,7 +74,9 @@ struct PopoverView: View {
             .padding(.horizontal, 16)
 
             ForEach(accounts) { account in
-                AccountCard(account: account, accent: p.accent, maxedStyle: store.maxedStyle)
+                AccountCard(account: account, accent: p.accent,
+                            maxedStyle: store.effectiveMaxedStyle,
+                            maxedOffset: store.maxedVaried ? maxedOffsets[account.id] ?? 0 : -1)
                     .padding(.horizontal, 12)
             }
         }
@@ -89,6 +106,24 @@ struct AccountCard: View {
     let account: Account
     let accent: Color
     let maxedStyle: MaxedStyle
+    /// -1 = synced (every dead bar shows maxedStyle); otherwise the ordinal
+    /// of this account's first dead bar in the whole popover.
+    var maxedOffset: Int = -1
+
+    /// Style for the Nth dead bar in this card under the variety setting.
+    private func styleForMaxed(_ ordinal: Int) -> MaxedStyle {
+        guard maxedOffset >= 0 else { return maxedStyle }
+        let count = MaxedStyle.allCases.count
+        return MaxedStyle(rawValue: (maxedStyle.rawValue + maxedOffset + ordinal) % count) ?? maxedStyle
+    }
+
+    /// Limit id → its ordinal among this card's dead bars.
+    private var maxedOrdinals: [UsageLimit.ID: Int] {
+        var n = 0
+        var out: [UsageLimit.ID: Int] = [:]
+        for l in account.limits where (l.percent ?? 0) >= 100 { out[l.id] = n; n += 1 }
+        return out
+    }
 
     /// Nil while the data is fresh enough to trust. The poll is 3 min, so
     /// anything past 10 gets called out rather than shown as current.
@@ -131,8 +166,9 @@ struct AccountCard: View {
                 } else if account.limits.isEmpty {
                     Text("No data yet").font(.system(size: 10)).foregroundStyle(.tertiary)
                 } else {
-                    ForEach(account.limits) {
-                        LimitRow(limit: $0, accent: accent, maxedStyle: maxedStyle)
+                    ForEach(account.limits) { l in
+                        LimitRow(limit: l, accent: accent,
+                                 maxedStyle: styleForMaxed(maxedOrdinals[l.id] ?? 0))
                     }
                 }
             }
@@ -147,6 +183,14 @@ struct LimitRow: View {
     let limit: UsageLimit
     let accent: Color
     var maxedStyle: MaxedStyle = .flatline
+    @Environment(\.colorScheme) private var scheme
+
+    /// .secondary/.tertiary are TRANSLUCENT — a bright trace behind them
+    /// shines through the glyphs, which reads as "rendering over text" even
+    /// with correct z-order. Limit rows use opaque equivalents so nothing
+    /// bleeds through, here or on the row a bleed drop falls into.
+    private var opaqueSecondary: Color { scheme == .dark ? Color(white: 0.66) : Color(white: 0.37) }
+    private var opaqueTertiary: Color { scheme == .dark ? Color(white: 0.48) : Color(white: 0.55) }
 
     /// Amber past 75, red past 90 — the bar earns attention rather than
     /// wearing the provider colour the whole way up.
@@ -160,13 +204,13 @@ struct LimitRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(limit.label).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                Text(limit.label).font(.system(size: 11)).foregroundStyle(opaqueSecondary).lineLimit(1)
                 Spacer()
                 if let p = limit.percent {
                     Text("\(Int(p))%").font(.system(size: 11, weight: .semibold))
                         .monospacedDigit()
                 }
-                Text(limit.resetText).font(.system(size: 10)).foregroundStyle(.tertiary)
+                Text(limit.resetText).font(.system(size: 10)).foregroundStyle(opaqueTertiary)
             }
             if isMaxed {
                 // Placeholder keeping the capsule's slot; the artwork is on

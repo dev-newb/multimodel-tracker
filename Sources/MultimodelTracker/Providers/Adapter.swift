@@ -38,6 +38,23 @@ struct OpenAIAdapter: UsageAdapter {
         guard let creds = try? await Keychain.openAICredentialsAsync(for: account.id) else {
             throw AdapterError.notSignedIn
         }
+        do {
+            return try await fetchOnce(creds)
+        } catch AdapterError.notSignedIn {
+            // Web-session tokens expire; the chatgpt.com cookies in this
+            // account's data store usually outlive them. Re-mint silently and
+            // retry once before surfacing "not signed in". Codex-CLI-imported
+            // accounts have no cookie jar — the re-mint just returns nil.
+            guard let session = try? await WebSessionPool.shared.openAIWebSession(for: account) ?? nil
+            else { throw AdapterError.notSignedIn }
+            Keychain.storeOpenAI(accessToken: session.accessToken,
+                                 accountId: session.accountId, for: account.id)
+            let renewed = try await Keychain.openAICredentialsAsync(for: account.id)
+            return try await fetchOnce(renewed)
+        }
+    }
+
+    private func fetchOnce(_ creds: Keychain.OpenAICreds) async throws -> FetchedUsage {
         var req = URLRequest(url: Self.endpoint)
         req.setValue("Bearer \(creds.accessToken)", forHTTPHeaderField: "Authorization")
         if let acct = creds.accountId {
@@ -46,6 +63,7 @@ struct OpenAIAdapter: UsageAdapter {
         req.setValue(Support.chromeUserAgent, forHTTPHeaderField: "User-Agent")
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw AdapterError.transport("no response") }
+        if http.statusCode == 401 || http.statusCode == 403 { throw AdapterError.notSignedIn }
         guard http.statusCode == 200 else { throw AdapterError.transport("HTTP \(http.statusCode)") }
         return try OpenAIParser.parse(data)
     }

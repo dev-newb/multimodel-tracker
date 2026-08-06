@@ -170,6 +170,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var accountsWindow: NSWindow?
 
     @objc func openSettings() {
+        // The panel doesn't take key focus, so a transient popover no longer
+        // dismisses itself — and popovers outrank a .floating panel, leaving
+        // Accounts opening BEHIND the tray window. Close it explicitly.
+        if popover.isShown { popover.performClose(nil) }
         if let w = accountsWindow {
             w.placeNearMenuBar(anchor: statusItem.button?.window?.frame)
             w.orderFrontRegardless(); return

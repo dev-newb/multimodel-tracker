@@ -29,6 +29,8 @@ struct AccountsView: View {
             // the screen, at which point it scrolls as before.
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxHeight: 680)
+            Divider()
+            deadBarSection
         }
         .frame(width: 480)
         // Double-click on empty space = "take me back to the tray". Controls
@@ -38,6 +40,37 @@ struct AccountsView: View {
         .onTapGesture(count: 2) {
             NotificationCenter.default.post(name: .mmtShowTray, object: nil)
         }
+    }
+
+    /// What a fully burned bar does, and whether several of them match.
+    private var deadBarSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("DEAD BAR").font(.system(size: 10, weight: .bold)).tracking(0.8)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text("Animation").font(.system(size: 12))
+                Spacer()
+                Picker("", selection: Binding(get: { store.maxedFixed },
+                                              set: { store.setMaxedFixed($0) })) {
+                    Text("Cycle every 3rd view").tag(-1)
+                    ForEach(MaxedStyle.allCases, id: \.rawValue) { s in
+                        Text(s.displayName).tag(s.rawValue)
+                    }
+                }
+                .labelsHidden().fixedSize()
+            }
+            HStack(spacing: 8) {
+                Text("When several are dead").font(.system(size: 12))
+                Spacer()
+                Picker("", selection: Binding(get: { store.maxedVaried },
+                                              set: { store.setMaxedVaried($0) })) {
+                    Text("Same animation").tag(false)
+                    Text("All different").tag(true)
+                }
+                .labelsHidden().fixedSize()
+            }
+        }
+        .padding(16)
     }
 
     private func providerBlock(_ p: Provider) -> some View {
@@ -72,7 +105,7 @@ struct AccountsView: View {
     private func emptyHint(_ p: Provider) -> String {
         switch p {
         case .anthropic: return "Add an account, then sign in to claude.ai in its own window."
-        case .openai:    return "Import the Codex CLI login, or add an account and paste a token."
+        case .openai:    return "Import the Codex CLI login, or add an account and sign in to chatgpt.com."
         case .google:    return "Not yet available — see README."
         }
     }
@@ -80,14 +113,20 @@ struct AccountsView: View {
     private func addAccount(_ p: Provider) {
         let n = store.accounts(for: p).count + 1
         guard let account = store.add(p, label: "\(p.displayName) account \(n)") else { return }
-        if p == .anthropic { beginSignIn(account) }
+        if p != .google { beginSignIn(account) }
     }
 
     private func beginSignIn(_ account: Account) {
-        guard account.provider == .anthropic else { return }
+        guard account.provider != .google else { return }
+        var controller: SignInWindowController?
         let c = SignInWindowController(account: account) { ok in
-            if ok { Task { await store.refresh(account) } }
+            guard ok else { return }
+            // OpenAI sign-in learns the email; put it on the row so the
+            // account is recognisable, like the Codex import does.
+            if let email = controller?.email { store.setLabel(email, for: account.id) }
+            Task { await store.refresh(account) }
         }
+        controller = c
         signIn = c
         c.present()
     }
@@ -117,7 +156,7 @@ struct AccountRow: View {
                     .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
             }
             Spacer()
-            if account.provider == .anthropic {
+            if account.provider != .google {
                 Button("Sign in", action: onSignIn).font(.system(size: 11))
             }
             Button(role: .destructive, action: onRemove) {

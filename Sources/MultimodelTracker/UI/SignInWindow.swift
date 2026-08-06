@@ -1,7 +1,7 @@
 import AppKit
 import WebKit
 
-/// Anthropic sign-in. Each account logs in inside its OWN WKWebView data
+/// Provider sign-in. Each account logs in inside its OWN WKWebView data
 /// store, so four claude.ai subscriptions stay signed in simultaneously —
 /// the thing a single shared cookie jar makes impossible.
 ///
@@ -19,6 +19,8 @@ final class SignInWindowController: NSObject, NSWindowDelegate {
     private var poll: Timer?
     private let account: Account
     private let onFinished: (Bool) -> Void
+
+    var email: String? { signedInEmail }
 
     init(account: Account, onFinished: @escaping (Bool) -> Void) {
         self.account = account
@@ -54,10 +56,28 @@ final class SignInWindowController: NSObject, NSWindowDelegate {
     }
 
     private func checkSignedIn() async {
-        guard let orgs = try? await WebSessionPool.shared.organizations(for: account),
-              !orgs.isEmpty else { return }
-        finish(success: true)
+        switch account.provider {
+        case .anthropic:
+            guard let orgs = try? await WebSessionPool.shared.organizations(for: account),
+                  !orgs.isEmpty else { return }
+            finish(success: true)
+        case .openai:
+            guard let session = try? await WebSessionPool.shared.openAIWebSession(for: account) ?? nil
+            else { return }
+            // Store BEFORE announcing success — the refresh the completion
+            // fires reads these credentials.
+            Keychain.storeOpenAI(accessToken: session.accessToken,
+                                 accountId: session.accountId, for: account.id)
+            signedInEmail = session.email
+            finish(success: true)
+        case .google:
+            finish(success: false)
+        }
     }
+
+    /// Email seen during OpenAI sign-in, surfaced so the account row can
+    /// show whose login this is.
+    private(set) var signedInEmail: String?
 
     private func finish(success: Bool) {
         Self.active[account.id] = nil

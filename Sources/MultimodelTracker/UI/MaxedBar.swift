@@ -3,7 +3,16 @@ import SwiftUI
 /// Which 100% treatment is showing. Advances every third viewing — see
 /// `Store.noteMaxedViewing()`.
 enum MaxedStyle: Int, CaseIterable {
-    case flatline, fracture, bleed
+    case flatline, fracture, bleed, deadChannel
+
+    var displayName: String {
+        switch self {
+        case .flatline: return "Flatline"
+        case .fracture: return "Fracture"
+        case .bleed: return "Bleed"
+        case .deadChannel: return "Dead channel"
+        }
+    }
 }
 
 /// Replaces the plain capsule when a pool is fully burned. All three styles
@@ -34,9 +43,10 @@ struct MaxedBar: View {
                 let t = context.date.timeIntervalSinceReferenceDate
                 let since = context.date.timeIntervalSince(opened)
                 switch style {
-                case .flatline: Self.drawFlatline(ctx, size, t: t, since: since)
-                case .fracture: Self.drawFracture(ctx, size, t: t)
-                case .bleed:    Self.drawBleed(ctx, size, t: t)
+                case .flatline:    Self.drawFlatline(ctx, size, t: t, since: since)
+                case .fracture:    Self.drawFracture(ctx, size, t: t)
+                case .bleed:       Self.drawBleed(ctx, size, t: t)
+                case .deadChannel: Self.drawDeadChannel(ctx, size, t: t)
                 }
             }
         }
@@ -98,6 +108,46 @@ struct MaxedBar: View {
                                             width: rect.width, height: rect.height),
                         cornerRadius: barH / 2),
                    with: .color(shardC))
+        }
+    }
+
+    // MARK: dead channel — the signal is gone, just snow
+
+    /// Deterministic per-(cell, frame) hash — SplitMix64 finisher. Canvas has
+    /// no per-frame state to keep an RNG in, and Date-free determinism means
+    /// the same frame always draws the same snow.
+    private static func hash(_ a: Int, _ b: Int, _ c: Int) -> UInt64 {
+        var z = UInt64(bitPattern: Int64(a)) &* 0x9E3779B97F4A7C15
+        z ^= UInt64(bitPattern: Int64(b)) &* 0xBF58476D1CE4E5B9
+        z ^= UInt64(bitPattern: Int64(c)) &* 0x94D049BB133111EB
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        return z ^ (z >> 31)
+    }
+
+    private static func drawDeadChannel(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
+        var c = ctx
+        c.clip(to: Path(roundedRect: CGRect(x: 0, y: above, width: size.width, height: barH),
+                        cornerRadius: barH / 2))
+        c.fill(Path(CGRect(x: 0, y: above, width: size.width, height: barH)),
+               with: .color(Color(red: 0.14, green: 0.14, blue: 0.15)))
+        // New snow field ~12 times a second; global flicker like a set
+        // hunting for signal.
+        let frame = Int(t / 0.085)
+        let flickerSteps: [Double] = [0.8, 0.55, 0.85, 0.7, 0.95, 0.6]
+        let flicker = flickerSteps[Int(t / 0.28) % flickerSteps.count]
+        let cell = 2.0
+        let cols = Int(size.width / cell) + 1
+        let rows = Int(barH / cell) + 1
+        let levels: [Double] = [0, 0, 0.12, 0.25, 0.42, 0.58, 0.72, 0.86]
+        for col in 0..<cols {
+            for row in 0..<rows {
+                let level = levels[Int(hash(frame, col, row) % UInt64(levels.count))]
+                guard level > 0 else { continue }
+                c.fill(Path(CGRect(x: Double(col) * cell, y: above + Double(row) * cell,
+                                   width: cell, height: cell)),
+                       with: .color(Color(white: level).opacity(0.85 * flicker)))
+            }
         }
     }
 

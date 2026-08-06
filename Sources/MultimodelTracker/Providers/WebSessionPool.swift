@@ -86,11 +86,65 @@ final class WebSessionPool {
         throw AdapterError.transport("page never produced a bridge result")
     }
 
-    /// Presents the claude.ai login inside this account's isolated store.
+    /// Presents the provider's login inside this account's isolated store.
     func signInView(for account: Account) -> WKWebView {
         let v = view(for: account)
-        v.load(URLRequest(url: URL(string: "https://claude.ai/login")!))
+        let url = account.provider == .openai
+            ? "https://chatgpt.com/"
+            : "https://claude.ai/login"
+        v.load(URLRequest(url: URL(string: url)!))
         return v
+    }
+
+    struct OpenAIWebSession {
+        let accessToken: String
+        let accountId: String?
+        let email: String?
+    }
+
+    /// Mints an access token from the chatgpt.com cookie session — the same
+    /// bridge trick as Anthropic, but the token comes back out and lives in
+    /// the keychain because OpenAI's usage endpoint is a plain bearer GET.
+    /// Nil when the jar has no valid session (that's also how sign-in
+    /// completion is detected). Because the cookies persist in the account's
+    /// data store, this can silently re-mint after the token expires.
+    func openAIWebSession(for account: Account) async throws -> OpenAIWebSession? {
+        let v = view(for: account)
+        if v.url == nil {
+            v.load(URLRequest(url: URL(string: "https://chatgpt.com/")!))
+            try? await Task.sleep(for: .seconds(2))
+        }
+        let js = """
+        const r = await fetch('https://chatgpt.com/api/auth/session', {credentials:'include'});
+        return JSON.stringify({status: r.status, body: await r.text()});
+        """
+        let s = try await callBridge(js, in: v, for: account.id)
+        guard let d = s.data(using: .utf8),
+              let outer = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              (outer["status"] as? Int) == 200,
+              let bodyData = (outer["body"] as? String)?.data(using: .utf8),
+              let session = try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any],
+              let token = session["accessToken"] as? String, !token.isEmpty
+        else { return nil }
+        let email = (session["user"] as? [String: Any])?["email"] as? String
+        return OpenAIWebSession(accessToken: token,
+                                accountId: Self.chatGPTAccountId(fromJWT: token),
+                                email: email)
+    }
+
+    /// The workspace id rides inside the token's auth claim; personal
+    /// accounts may not carry one, and the usage endpoint accepts that.
+    private static func chatGPTAccountId(fromJWT token: String) -> String? {
+        let parts = token.split(separator: ".")
+        guard parts.count >= 2 else { return nil }
+        var b64 = String(parts[1]).replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        b64 += String(repeating: "=", count: (4 - b64.count % 4) % 4)
+        guard let data = Data(base64Encoded: b64),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let auth = obj["https://api.openai.com/auth"] as? [String: Any]
+        else { return nil }
+        return auth["chatgpt_account_id"] as? String
     }
 
     /// The organisations this account can see. Empty (or a throw) means the
