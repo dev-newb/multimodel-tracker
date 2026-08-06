@@ -39,7 +39,7 @@ final class SignInWindowController: NSObject, NSWindowDelegate {
         w.contentView = web
         w.delegate = self
         w.collectionBehavior = [.moveToActiveSpace]
-        w.centerOnActiveScreen()
+        w.placeNearMenuBar()
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window = w

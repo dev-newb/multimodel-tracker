@@ -146,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openSettings() {
         if let w = accountsWindow {
-            w.centerOnActiveScreen()
+            w.placeNearMenuBar(anchor: statusItem.button?.window?.frame)
             w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return
         }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
@@ -162,7 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         w.contentViewController = host
         w.setContentSize(host.view.fittingSize)
         w.isReleasedWhenClosed = false
-        w.centerOnActiveScreen()
+        w.placeNearMenuBar(anchor: statusItem.button?.window?.frame)
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         accountsWindow = w
@@ -173,15 +173,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension NSWindow {
-    /// `center()` uses `NSScreen.main` — the screen with the key window, which
-    /// for a menu-bar app is stale or nil, so windows kept appearing on the
-    /// other display's Space. The mouse is where the user is: the status item
-    /// they just clicked lives on every display's menu bar.
-    func centerOnActiveScreen() {
+    /// Drop the window just under the menu bar, horizontally on the anchor
+    /// (the status item that was clicked) or, without one, on the mouse —
+    /// which for a menu-bar app is where the user actually is. `center()` was
+    /// wrong twice over: `NSScreen.main` is stale or nil with no key window,
+    /// and mid-screen is a long way from the tray this app lives in.
+    func placeNearMenuBar(anchor: NSRect? = nil) {
         let mouse = NSEvent.mouseLocation
-        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+        let focus = anchor.map { NSPoint(x: $0.midX, y: $0.midY) } ?? mouse
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(focus, $0.frame, false) })
+                ?? NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
                 ?? NSScreen.main else { center(); return }
         let v = screen.visibleFrame
-        setFrameOrigin(NSPoint(x: v.midX - frame.width / 2, y: v.midY - frame.height / 2))
+        let x = min(max(focus.x - frame.width / 2, v.minX + 8), v.maxX - frame.width - 8)
+        setFrameOrigin(NSPoint(x: x, y: v.maxY - frame.height - 4))
     }
 }
