@@ -3,14 +3,21 @@ import SwiftUI
 /// Which 100% treatment is showing. Advances every third viewing — see
 /// `Store.noteMaxedViewing()`.
 enum MaxedStyle: Int, CaseIterable {
-    case flatline, fracture, bleed, deadChannel
+    // Raw values are persisted in mmt.maxedFixed, so existing cases keep
+    // theirs. Fracture (1) was dropped for glitch at Rich's request.
+    case flatline = 0, glitch = 1, bleed = 2, deadChannel = 3
+    case blackHole = 4, drown = 5, petrify = 6, neonBurnout = 7
 
     var displayName: String {
         switch self {
-        case .flatline: return "Flatline"
-        case .fracture: return "Fracture"
-        case .bleed: return "Bleed"
+        case .flatline:    return "Flatline"
+        case .glitch:      return "Glitch"
+        case .bleed:       return "Bleed"
         case .deadChannel: return "Dead channel"
+        case .blackHole:   return "Black hole"
+        case .drown:       return "Drown"
+        case .petrify:     return "Petrify"
+        case .neonBurnout: return "Neon burnout"
         }
     }
 }
@@ -48,9 +55,13 @@ struct MaxedBar: View {
                 let since = context.date.timeIntervalSince(opened)
                 switch style {
                 case .flatline:    Self.drawFlatline(ctx, size, t: t, since: since)
-                case .fracture:    Self.drawFracture(ctx, size, t: t)
+                case .glitch:      Self.drawGlitch(ctx, size, t: t)
                 case .bleed:       Self.drawBleed(ctx, size, t: t)
                 case .deadChannel: Self.drawDeadChannel(ctx, size, t: t)
+                case .blackHole:   Self.drawBlackHole(ctx, size, t: t)
+                case .drown:       Self.drawDrown(ctx, size, t: t)
+                case .petrify:     Self.drawPetrify(ctx, size, t: t)
+                case .neonBurnout: Self.drawNeonBurnout(ctx, size, t: t)
                 }
             }
         }
@@ -92,27 +103,129 @@ struct MaxedBar: View {
                    style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
     }
 
-    // MARK: fracture — shards sag out of true and smoothly recover, looping
+    // MARK: glitch — slices shear out of register with RGB ghosts
 
-    private static func drawFracture(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
-        let shards: [(x: Double, w: Double, dy: Double, deg: Double, phase: Double)] = [
-            (0.000, 0.335, 2.0, -1.4, 0.00),
-            (0.345, 0.270, 3.5,  1.1, 0.45),
-            (0.625, 0.375, 2.8, -0.7, 0.90),
+    private static let cyan = Color(red: 0, green: 1, blue: 0.92)
+    private static let magenta = Color(red: 1, green: 0, blue: 0.5)
+
+    private static func drawGlitch(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
+        // Slices jump on their own stepped clocks, so the bar never looks
+        // like it is simply sliding — it tears.
+        let slices: [(x: Double, w: Double, period: Double, top: Double, height: Double)] = [
+            (0.00, 0.30, 0.9,  0.0, 0.6),
+            (0.30, 0.45, 1.1,  0.4, 0.6),
+            (0.75, 0.25, 0.7,  0.0, 1.0),
         ]
-        for s in shards {
-            // Cosine oscillation: sag, hang, and recover with no snap-back.
-            let osc = (1 - cos(2 * .pi * (t / 3.4 + s.phase))) / 2
-            let rect = CGRect(x: s.x * size.width, y: above,
-                              width: s.w * size.width, height: barH)
-            var c = ctx
-            c.translateBy(x: rect.midX, y: rect.midY + osc * s.dy)
-            c.rotate(by: .degrees(osc * s.deg))
-            c.fill(Path(roundedRect: CGRect(x: -rect.width / 2, y: -rect.height / 2,
-                                            width: rect.width, height: rect.height),
-                        cornerRadius: barH / 2),
-                   with: .color(shardC))
+        for (i, s) in slices.enumerated() {
+            let step = Int(t / s.period * 4) &+ i * 7
+            let offsets: [Double] = [0, 3, -2, 0, -4, 2, 0, 1]
+            let dx = offsets[abs(step) % offsets.count]
+            let rect = CGRect(x: s.x * size.width + dx, y: above + s.top * barH,
+                              width: s.w * size.width, height: s.height * barH)
+            // Chromatic fringes first, body over them.
+            ctx.fill(Path(rect.offsetBy(dx: 2, dy: 0)), with: .color(cyan.opacity(0.35)))
+            ctx.fill(Path(rect.offsetBy(dx: -2, dy: 0)), with: .color(magenta.opacity(0.35)))
+            ctx.fill(Path(rect), with: .color(red))
         }
+    }
+
+    // MARK: black hole — swallowed into a point, then torn back out
+
+    private static func drawBlackHole(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
+        let p = (t / 3.2).truncatingRemainder(dividingBy: 1)
+        // Collapse to a sliver, hold, then snap back.
+        let scale: Double
+        switch p {
+        case ..<0.12:  scale = 1
+        case ..<0.48:  scale = 1 - 0.98 * easeOut((p - 0.12) / 0.36)
+        case ..<0.62:  scale = 0.02
+        default:       scale = 0.02 + 0.98 * easeOut((p - 0.62) / 0.38)
+        }
+        let w = size.width * scale
+        let rect = CGRect(x: (size.width - w) / 2, y: above, width: max(1, w), height: barH)
+        ctx.fill(Path(roundedRect: rect, cornerRadius: barH / 2), with: .color(red))
+        // Ring pulse at the moment it vanishes.
+        if p > 0.46, p < 0.75 {
+            let e = (p - 0.46) / 0.29
+            let r = 3 + 26 * e
+            let ring = CGRect(x: size.width / 2 - r, y: above + barH / 2 - r * 0.36,
+                              width: r * 2, height: r * 0.72)
+            ctx.stroke(Path(ellipseIn: ring), with: .color(red.opacity(0.85 * (1 - e))),
+                       lineWidth: 1)
+        }
+    }
+
+    // MARK: drown — a dark waterline rises over the bar, bubbles escape
+
+    private static func drawDrown(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
+        let p = (t / 5.0).truncatingRemainder(dividingBy: 1)
+        let submerge = p < 0.15 ? 0 : (p < 0.55 ? easeOut((p - 0.15) / 0.4)
+                                                : (p < 0.9 ? 1 : 1 - easeOut((p - 0.9) / 0.1)))
+        ctx.fill(Path(roundedRect: CGRect(x: 0, y: above + submerge * 2, width: size.width, height: barH),
+                      cornerRadius: barH / 2),
+                 with: .color(Color(red: 0.76, green: 0.27, blue: 0.23)))
+        // Water creeps up from the bottom of the bar.
+        if submerge > 0 {
+            let h = barH * submerge
+            var c = ctx
+            c.clip(to: Path(roundedRect: CGRect(x: 0, y: above, width: size.width, height: barH),
+                            cornerRadius: barH / 2))
+            c.fill(Path(CGRect(x: 0, y: above + barH - h, width: size.width, height: h)),
+                   with: .color(Color(red: 0.08, green: 0.16, blue: 0.28).opacity(0.85)))
+        }
+        for (i, x) in [0.30, 0.62, 0.84].enumerated() {
+            let bp = (t / 5.0 + Double(i) * 0.27).truncatingRemainder(dividingBy: 1)
+            guard bp > 0.5 else { continue }
+            let e = (bp - 0.5) / 0.5
+            let y = above + barH - 1 - 7 * e
+            ctx.stroke(Path(ellipseIn: CGRect(x: x * size.width - 1.5, y: y, width: 3, height: 3)),
+                       with: .color(Color(red: 0.63, green: 0.78, blue: 1).opacity(0.55 * (1 - e))),
+                       lineWidth: 0.8)
+        }
+    }
+
+    // MARK: petrify — colour drains to stone and cracks spider through
+
+    private static func drawPetrify(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
+        let p = (t / 5.2).truncatingRemainder(dividingBy: 1)
+        let stone = p < 0.12 ? 0 : (p < 0.45 ? easeOut((p - 0.12) / 0.33)
+                                             : (p < 0.88 ? 1 : 1 - easeOut((p - 0.88) / 0.12)))
+        let colour = Color(red: 0.91 + (0.54 - 0.91) * stone,
+                           green: 0.27 + (0.54 - 0.27) * stone,
+                           blue: 0.23 + (0.55 - 0.23) * stone)
+        let bar = CGRect(x: 0, y: above, width: size.width, height: barH)
+        ctx.fill(Path(roundedRect: bar, cornerRadius: barH / 2), with: .color(colour))
+        guard stone > 0.35 else { return }
+        var c = ctx
+        c.clip(to: Path(roundedRect: bar, cornerRadius: barH / 2))
+        let alpha = (stone - 0.35) / 0.65
+        for x in [0.24, 0.52, 0.76] {
+            var path = Path()
+            path.move(to: CGPoint(x: x * size.width, y: above))
+            path.addLine(to: CGPoint(x: x * size.width + 2.5, y: above + barH * 0.55))
+            path.addLine(to: CGPoint(x: x * size.width - 1.5, y: above + barH))
+            c.stroke(path, with: .color(.black.opacity(0.55 * alpha)), lineWidth: 0.9)
+        }
+    }
+
+    // MARK: neon burnout — a tube that can't hold its light
+
+    private static func drawNeonBurnout(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
+        let bar = CGRect(x: 0, y: above, width: size.width, height: barH)
+        ctx.fill(Path(roundedRect: bar, cornerRadius: barH / 2),
+                 with: .color(Color(red: 0.24, green: 0.11, blue: 0.10)))
+        // Stepped, irregular flicker — a steady sine would read as a pulse,
+        // not a failing tube.
+        let steps: [Double] = [1, 0.2, 1, 0.35, 0.95, 0.95, 0.15, 0.85,
+                               0.85, 0.1, 0.7, 0.7, 0.05, 0.6, 1, 1]
+        let lit = steps[Int(t / 0.175) % steps.count]
+        guard lit > 0.08 else { return }
+        // Halo first so the tube core stays crisp on top.
+        ctx.fill(Path(roundedRect: bar.insetBy(dx: -2.5, dy: -2.5), cornerRadius: barH),
+                 with: .color(red.opacity(0.20 * lit)))
+        ctx.fill(Path(roundedRect: bar.insetBy(dx: -1, dy: -1), cornerRadius: barH),
+                 with: .color(red.opacity(0.30 * lit)))
+        ctx.fill(Path(roundedRect: bar, cornerRadius: barH / 2), with: .color(red.opacity(lit)))
     }
 
     // MARK: dead channel — the signal is gone, just snow
