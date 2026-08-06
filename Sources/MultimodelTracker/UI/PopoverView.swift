@@ -59,7 +59,7 @@ struct PopoverView: View {
             .padding(.horizontal, 16)
 
             ForEach(accounts) { account in
-                AccountCard(account: account, accent: p.accent)
+                AccountCard(account: account, accent: p.accent, maxedStyle: store.maxedStyle)
                     .padding(.horizontal, 12)
             }
         }
@@ -88,6 +88,7 @@ struct PopoverView: View {
 struct AccountCard: View {
     let account: Account
     let accent: Color
+    let maxedStyle: MaxedStyle
 
     /// Nil while the data is fresh enough to trust. The poll is 3 min, so
     /// anything past 10 gets called out rather than shown as current.
@@ -130,7 +131,9 @@ struct AccountCard: View {
                 } else if account.limits.isEmpty {
                     Text("No data yet").font(.system(size: 10)).foregroundStyle(.tertiary)
                 } else {
-                    ForEach(account.limits) { LimitRow(limit: $0, accent: accent) }
+                    ForEach(account.limits) {
+                        LimitRow(limit: $0, accent: accent, maxedStyle: maxedStyle)
+                    }
                 }
             }
             Spacer(minLength: 0)
@@ -143,6 +146,7 @@ struct AccountCard: View {
 struct LimitRow: View {
     let limit: UsageLimit
     let accent: Color
+    var maxedStyle: MaxedStyle = .flatline
 
     /// Amber past 75, red past 90 — the bar earns attention rather than
     /// wearing the provider colour the whole way up.
@@ -164,7 +168,9 @@ struct LimitRow: View {
                 }
                 Text(limit.resetText).font(.system(size: 10)).foregroundStyle(.tertiary)
             }
-            if limit.percent != nil {
+            if let p = limit.percent, p >= 100 {
+                MaxedBar(style: maxedStyle)
+            } else if limit.percent != nil {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule().fill(Color.primary.opacity(0.10))

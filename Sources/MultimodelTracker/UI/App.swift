@@ -91,6 +91,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // `--render-maxed <dir>` writes one PNG per MaxedStyle to <dir> and
+        // exits. Screenshot-based review captures whatever Space the user is
+        // on — this renders offscreen and touches nothing visible.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-maxed"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            for style in MaxedStyle.allCases {
+                let view = LimitRow(limit: UsageLimit(key: "codex", label: "Codex · weekly",
+                                                      percent: 100, resetsAt: Date().addingTimeInterval(432_000)),
+                                    accent: Provider.openai.accent, maxedStyle: style)
+                    .frame(width: 300)
+                    .padding(24)
+                    .background(Color(red: 0.09, green: 0.09, blue: 0.11))
+                let renderer = ImageRenderer(content: view)
+                renderer.scale = 2
+                if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+                   let rep = NSBitmapImageRep(data: tiff),
+                   let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: dir.appendingPathComponent("maxed-\(style.rawValue).png"))
+                }
+            }
+            NSApp.terminate(nil)
+        }
+
         // `--accounts` does the same for the Accounts window, which otherwise
         // is only reachable through a click inside the popover.
         if CommandLine.arguments.contains("--accounts") {
@@ -137,6 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
         if popover.isShown { popover.performClose(nil) }
         else {
+            store.noteMaxedViewing()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
@@ -147,14 +172,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func openSettings() {
         if let w = accountsWindow {
             w.placeNearMenuBar(anchor: statusItem.button?.window?.frame)
-            w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return
+            w.orderFrontRegardless(); return
         }
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
-                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        // Spotlight pattern, not a plain window. moveToActiveSpace proved
+        // unreliable here — the window kept surfacing on the Space it was born
+        // on — and NSApp.activate can itself switch Spaces toward the app's
+        // other windows (this app keeps hidden webview hosts). A floating
+        // non-activating panel on every Space cannot be on the wrong one, and
+        // it takes keystrokes for the nickname fields without activating us.
+        let w = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
+                        styleMask: [.titled, .closable, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
         w.title = "Multimodel Tracker — Accounts"
-        // Without this the window stays glued to the Space it was born on and
-        // reopening it later switches nothing visible on the current one.
-        w.collectionBehavior = [.moveToActiveSpace]
+        w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        w.level = .floating
+        w.hidesOnDeactivate = false
         let host = NSHostingController(rootView: AccountsView(store: store))
         // Let the hosting controller drive the window height as accounts are
         // added and removed, instead of pinning it.
@@ -163,8 +195,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         w.setContentSize(host.view.fittingSize)
         w.isReleasedWhenClosed = false
         w.placeNearMenuBar(anchor: statusItem.button?.window?.frame)
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        // Order front WITHOUT key status: grabbing key here steals whatever
+        // the user is mid-typing elsewhere (it captured a stray keystroke into
+        // the nickname field during testing). Clicking a field still focuses
+        // it — that's what nonactivatingPanel is for.
+        w.orderFrontRegardless()
         accountsWindow = w
         if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
             FileHandle.standardError.write("accounts window: \(Int(w.frame.width))x\(Int(w.frame.height))\n".data(using: .utf8)!)

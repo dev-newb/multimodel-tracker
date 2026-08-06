@@ -10,8 +10,30 @@ final class Store: ObservableObject {
     @Published private(set) var lastRefresh: Date?
 
     private let defaultsKey = "mmt.accounts.v1"
+    private let maxedViewsKey = "mmt.maxedViews"
 
-    init() { load(); if accounts.isEmpty { seedDemo() } }
+    /// The 100% treatment currently in rotation (flatline → fracture → bleed).
+    @Published private(set) var maxedStyle: MaxedStyle = .flatline
+
+    init() {
+        load(); if accounts.isEmpty { seedDemo() }
+        maxedStyle = Self.style(forViewing: UserDefaults.standard.integer(forKey: maxedViewsKey))
+    }
+
+    /// Rich: cycle to "a new one every 3rd time user sees the dead bar".
+    /// Called on each popover open; only viewings where a dead bar is actually
+    /// on screen count, and the style advances every third one.
+    func noteMaxedViewing() {
+        guard accounts.contains(where: { a in a.limits.contains { ($0.percent ?? 0) >= 100 } })
+        else { return }
+        let n = UserDefaults.standard.integer(forKey: maxedViewsKey) + 1
+        UserDefaults.standard.set(n, forKey: maxedViewsKey)
+        maxedStyle = Self.style(forViewing: n)
+    }
+
+    private static func style(forViewing n: Int) -> MaxedStyle {
+        MaxedStyle(rawValue: ((max(n, 1) - 1) / 3) % MaxedStyle.allCases.count) ?? .flatline
+    }
 
     func accounts(for p: Provider) -> [Account] { accounts.filter { $0.provider == p } }
 
