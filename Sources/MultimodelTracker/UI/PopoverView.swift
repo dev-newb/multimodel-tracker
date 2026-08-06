@@ -142,16 +142,20 @@ struct AccountCard: View {
     var burnOffset: Int = -1
 
     /// Style for the Nth dead bar in this card under the variety setting.
+    /// Index arithmetic, not rawValue — the raw values have a hole where
+    /// flatline used to be.
     private func styleForMaxed(_ ordinal: Int) -> MaxedStyle {
         guard maxedOffset >= 0 else { return maxedStyle }
-        let count = MaxedStyle.allCases.count
-        return MaxedStyle(rawValue: (maxedStyle.rawValue + maxedOffset + ordinal) % count) ?? maxedStyle
+        let all = MaxedStyle.allCases
+        let base = all.firstIndex(of: maxedStyle) ?? 0
+        return all[(base + maxedOffset + ordinal) % all.count]
     }
 
     private func styleForBurn(_ ordinal: Int) -> BurnStyle {
         guard burnOffset >= 0 else { return burnBase }
-        let count = BurnStyle.allCases.count
-        return BurnStyle(rawValue: (burnBase.rawValue + burnOffset + ordinal) % count) ?? burnBase
+        let all = BurnStyle.allCases
+        let base = all.firstIndex(of: burnBase) ?? 0
+        return all[(base + burnOffset + ordinal) % all.count]
     }
 
     /// Limit id → ordinal among this card's burning bars.
@@ -233,7 +237,7 @@ struct AccountCard: View {
 struct LimitRow: View {
     let limit: UsageLimit
     let accent: Color
-    var maxedStyle: MaxedStyle = .flatline
+    var maxedStyle: MaxedStyle = .glitch
     var burnStyle: BurnStyle = .firestorm
     @Environment(\.colorScheme) private var scheme
 
@@ -264,6 +268,7 @@ struct LimitRow: View {
                         .foregroundStyle(limit.burning ? Color(red: 1, green: 0.68, blue: 0.25) : .primary)
                 }
                 Text(limit.resetText).font(.system(size: 10)).foregroundStyle(opaqueTertiary)
+                    .help(limit.resetDetail)
             }
             if isMaxed {
                 // Placeholder keeping the capsule's slot; the artwork is on

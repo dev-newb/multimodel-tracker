@@ -3,14 +3,15 @@ import SwiftUI
 /// Which 100% treatment is showing. Advances every third viewing — see
 /// `Store.noteMaxedViewing()`.
 enum MaxedStyle: Int, CaseIterable {
-    // Raw values are persisted in mmt.maxedFixed, so existing cases keep
-    // theirs. Fracture (1) was dropped for glitch at Rich's request.
-    case flatline = 0, glitch = 1, bleed = 2, deadChannel = 3
+    // Raw values are persisted in mmt.maxedFixed, so surviving cases keep
+    // theirs. Fracture (1) became glitch; flatline (0) was removed outright —
+    // a stored 0 no longer resolves, which effectiveMaxedStyle treats as
+    // "cycle". Style arithmetic must use allCases indices, never rawValue.
+    case glitch = 1, bleed = 2, deadChannel = 3
     case blackHole = 4, drown = 5, petrify = 6, neonBurnout = 7
 
     var displayName: String {
         switch self {
-        case .flatline:    return "Flatline"
         case .glitch:      return "Glitch"
         case .bleed:       return "Bleed"
         case .deadChannel: return "Dead channel"
@@ -36,25 +37,24 @@ enum MaxedStyle: Int, CaseIterable {
 /// via --render-maxed: the trimmed path existed at y -10 and drew nothing).
 struct MaxedBar: View {
     let style: MaxedStyle
-    /// Reset on every appearance so the one-shot intros replay per viewing.
-    @State private var opened = Date()
 
     static let barH = 5.0                // matches LimitRow's capsule height
-    /// NOTHING is drawn above the bar any more. A tall headroom band put the
-    /// EKG up at label height, which read as the effect being detached from
-    /// the bar it belongs to. Everything now sits in the bar or in the gap
-    /// below it, so the artwork always lines up with the capsule it replaces.
-    static let above = 0.0
-    static let below = 10.0              // gap below the bar, inside the row
+    /// A few points of headroom so halos, rings and bubbles aren't hard-
+    /// clipped at the bar's top edge — small enough that nothing reaches the
+    /// label. The bar strip itself still lands exactly on the capsule slot:
+    /// the row bottom-aligns this canvas and offsets by `below`, so `above`
+    /// only grows the canvas upward.
+    static let above = 4.0
+    /// Room below for bleed drops to complete their fall instead of being
+    /// cut off mid-drip (16pt fall + stretched drop needs ~22).
+    static let below = 22.0
     private static let canvasH = above + barH + below
 
     var body: some View {
         TimelineView(.animation) { context in
             Canvas { ctx, size in
                 let t = context.date.timeIntervalSinceReferenceDate
-                let since = context.date.timeIntervalSince(opened)
                 switch style {
-                case .flatline:    Self.drawFlatline(ctx, size, t: t, since: since)
                 case .glitch:      Self.drawGlitch(ctx, size, t: t)
                 case .bleed:       Self.drawBleed(ctx, size, t: t)
                 case .deadChannel: Self.drawDeadChannel(ctx, size, t: t)
@@ -67,7 +67,6 @@ struct MaxedBar: View {
         }
         .frame(height: Self.canvasH)
         .allowsHitTesting(false)
-        .onAppear { opened = Date() }
     }
 
     private static let red    = Color(red: 0.91, green: 0.27, blue: 0.23)
@@ -76,55 +75,29 @@ struct MaxedBar: View {
 
     private static func easeOut(_ p: Double) -> Double { 1 - pow(1 - min(max(p, 0), 1), 3) }
 
-    // MARK: flatline — collapses to a dead line, a heart trace running out above
-
-    private static func drawFlatline(_ ctx: GraphicsContext, _ size: CGSize, t: Double, since: Double) {
-        let e = easeOut(since / 0.55)
-        let h = barH * (1 - 0.7 * e)
-        let barRect = CGRect(x: 0, y: above + (barH - h) / 2, width: size.width, height: h)
-        ctx.fill(Path(roundedRect: barRect, cornerRadius: h / 2), with: .color(dried))
-        if e < 1 {
-            ctx.fill(Path(roundedRect: barRect, cornerRadius: h / 2),
-                     with: .color(red.opacity(1 - e)))
-        }
-
-        // EKG polyline in the gap BELOW the bar.
-        let bandH = 9.0, bandTop = above + barH + 0.5
-        let pts: [(Double, Double)] = [(0, 0.5), (0.293, 0.5), (0.31, 0.2), (0.327, 0.8),
-                                       (0.347, 0.067), (0.363, 0.5), (1, 0.5)]
-        var path = Path()
-        path.move(to: CGPoint(x: 0, y: bandTop + 0.5 * bandH))
-        for (fx, fy) in pts.dropFirst() {
-            path.addLine(to: CGPoint(x: fx * size.width, y: bandTop + fy * bandH))
-        }
-        let ph = (t / 2.6).truncatingRemainder(dividingBy: 1.3)
-        let trace = path.trimmedPath(from: max(0, ph - 0.22), to: min(ph, 1))
-        ctx.stroke(trace, with: .color(red.opacity(0.9)),
-                   style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
-    }
-
     // MARK: glitch — slices shear out of register with RGB ghosts
 
     private static let cyan = Color(red: 0, green: 1, blue: 0.92)
     private static let magenta = Color(red: 1, green: 0, blue: 0.5)
 
     private static func drawGlitch(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
-        // Slices jump on their own stepped clocks, so the bar never looks
-        // like it is simply sliding — it tears.
-        let slices: [(x: Double, w: Double, period: Double, top: Double, height: Double)] = [
-            (0.00, 0.30, 0.9,  0.0, 0.6),
-            (0.30, 0.45, 1.1,  0.4, 0.6),
-            (0.75, 0.25, 0.7,  0.0, 1.0),
+        // Slices tear HORIZONTALLY only, at full bar height. The first cut
+        // also offset slices vertically and shrank them below the bar — at
+        // 5pt that read as the whole animation being misaligned with its row.
+        let slices: [(x: Double, w: Double, period: Double)] = [
+            (0.00, 0.30, 0.9),
+            (0.30, 0.45, 1.1),
+            (0.75, 0.25, 0.7),
         ]
         for (i, s) in slices.enumerated() {
             let step = Int(t / s.period * 4) &+ i * 7
             let offsets: [Double] = [0, 3, -2, 0, -4, 2, 0, 1]
             let dx = offsets[abs(step) % offsets.count]
-            let rect = CGRect(x: s.x * size.width + dx, y: above + s.top * barH,
-                              width: s.w * size.width, height: s.height * barH)
+            let rect = CGRect(x: s.x * size.width + dx, y: above,
+                              width: s.w * size.width, height: barH)
             // Chromatic fringes first, body over them.
-            ctx.fill(Path(rect.offsetBy(dx: 2, dy: 0)), with: .color(cyan.opacity(0.35)))
-            ctx.fill(Path(rect.offsetBy(dx: -2, dy: 0)), with: .color(magenta.opacity(0.35)))
+            ctx.fill(Path(rect.offsetBy(dx: 1.5, dy: 0)), with: .color(cyan.opacity(0.35)))
+            ctx.fill(Path(rect.offsetBy(dx: -1.5, dy: 0)), with: .color(magenta.opacity(0.35)))
             ctx.fill(Path(rect), with: .color(red))
         }
     }
@@ -148,8 +121,10 @@ struct MaxedBar: View {
         if p > 0.46, p < 0.75 {
             let e = (p - 0.46) / 0.29
             let r = 3 + 26 * e
-            let ring = CGRect(x: size.width / 2 - r, y: above + barH / 2 - r * 0.36,
-                              width: r * 2, height: r * 0.72)
+            // Flat ellipse no taller than the strip: a rounder ring poked
+            // above the canvas and drew as a clipped arc.
+            let ring = CGRect(x: size.width / 2 - r, y: above - 1,
+                              width: r * 2, height: barH + 2)
             ctx.stroke(Path(ellipseIn: ring), with: .color(red.opacity(0.85 * (1 - e))),
                        lineWidth: 1)
         }

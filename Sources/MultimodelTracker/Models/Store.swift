@@ -13,8 +13,8 @@ final class Store: ObservableObject {
     private let defaultsKey = "mmt.accounts.v1"
     private let maxedViewsKey = "mmt.maxedViews"
 
-    /// The 100% treatment currently in rotation (flatline → fracture → bleed).
-    @Published private(set) var maxedStyle: MaxedStyle = .flatline
+    /// The 100% treatment currently in rotation.
+    @Published private(set) var maxedStyle: MaxedStyle = .glitch
 
     init() {
         load()
@@ -130,7 +130,7 @@ final class Store: ObservableObject {
     }
 
     private static func style(forViewing n: Int) -> MaxedStyle {
-        MaxedStyle(rawValue: ((max(n, 1) - 1) / 3) % MaxedStyle.allCases.count) ?? .flatline
+        MaxedStyle.allCases[((max(n, 1) - 1) / 3) % MaxedStyle.allCases.count]
     }
 
     func accounts(for p: Provider) -> [Account] { accounts.filter { $0.provider == p } }

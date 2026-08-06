@@ -48,6 +48,24 @@ struct UsageLimit: Identifiable, Codable, Hashable {
 
     var fraction: Double { min(max((percent ?? 0) / 100, 0), 1) }
 
+    /// Hover detail behind the terse label: the actual clock time plus the
+    /// full distance. Includes the weekday once it's not today.
+    var resetDetail: String {
+        guard let r = resetsAt else { return "no reset reported" }
+        let secs = r.timeIntervalSinceNow
+        if secs <= 0 { return "reset due now" }
+        let fmt = DateFormatter()
+        let sameDay = Calendar.current.isDate(r, inSameDayAs: Date())
+        fmt.dateFormat = sameDay ? "h:mm a" : "EEE h:mm a"
+        let mTotal = Int(secs / 60)
+        let d = mTotal / 1440, h = (mTotal % 1440) / 60, m = mTotal % 60
+        var dist: [String] = []
+        if d > 0 { dist.append("\(d)d") }
+        if h > 0 { dist.append("\(h)h") }
+        if m > 0 || dist.isEmpty { dist.append("\(m)m") }
+        return "resets \(fmt.string(from: r)) · \(dist.joined(separator: " ")) from now"
+    }
+
     /// "resets 12m" / "resets 1d" — deliberately terse; the popover is narrow.
     var resetText: String {
         guard let r = resetsAt else { return "—" }
