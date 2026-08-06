@@ -145,10 +145,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var accountsWindow: NSWindow?
 
     @objc func openSettings() {
-        if let w = accountsWindow { w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
+        if let w = accountsWindow {
+            w.centerOnActiveScreen()
+            w.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return
+        }
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
         w.title = "Multimodel Tracker — Accounts"
+        // Without this the window stays glued to the Space it was born on and
+        // reopening it later switches nothing visible on the current one.
+        w.collectionBehavior = [.moveToActiveSpace]
         let host = NSHostingController(rootView: AccountsView(store: store))
         // Let the hosting controller drive the window height as accounts are
         // added and removed, instead of pinning it.
@@ -156,11 +162,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         w.contentViewController = host
         w.setContentSize(host.view.fittingSize)
         w.isReleasedWhenClosed = false
-        w.center(); w.makeKeyAndOrderFront(nil)
+        w.centerOnActiveScreen()
+        w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         accountsWindow = w
         if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
             FileHandle.standardError.write("accounts window: \(Int(w.frame.width))x\(Int(w.frame.height))\n".data(using: .utf8)!)
         }
+    }
+}
+
+extension NSWindow {
+    /// `center()` uses `NSScreen.main` — the screen with the key window, which
+    /// for a menu-bar app is stale or nil, so windows kept appearing on the
+    /// other display's Space. The mouse is where the user is: the status item
+    /// they just clicked lives on every display's menu bar.
+    func centerOnActiveScreen() {
+        let mouse = NSEvent.mouseLocation
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+                ?? NSScreen.main else { center(); return }
+        let v = screen.visibleFrame
+        setFrameOrigin(NSPoint(x: v.midX - frame.width / 2, y: v.midY - frame.height / 2))
     }
 }

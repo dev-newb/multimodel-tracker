@@ -38,7 +38,8 @@ final class SignInWindowController: NSObject, NSWindowDelegate {
         w.title = "Sign in — \(account.displayName)"
         w.contentView = web
         w.delegate = self
-        w.center()
+        w.collectionBehavior = [.moveToActiveSpace]
+        w.centerOnActiveScreen()
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         window = w
