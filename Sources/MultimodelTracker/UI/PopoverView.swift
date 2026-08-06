@@ -89,6 +89,16 @@ struct AccountCard: View {
     let account: Account
     let accent: Color
 
+    /// Nil while the data is fresh enough to trust. The poll is 3 min, so
+    /// anything past 10 gets called out rather than shown as current.
+    private var staleLabel: String? {
+        guard account.error == nil, !account.limits.isEmpty else { return nil }
+        guard let seen = account.lastRefreshed else { return "never refreshed" }
+        let mins = Int(Date().timeIntervalSince(seen) / 60)
+        guard mins >= 10 else { return nil }
+        return mins >= 120 ? "stale \(mins / 60)h" : "stale \(mins)m"
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             RoundedRectangle(cornerRadius: 1.5)
@@ -104,6 +114,16 @@ struct AccountCard: View {
                             .foregroundStyle(accent)
                     }
                     Spacer()
+                    // A usage tracker that quietly shows old numbers is worse
+                    // than one that shows nothing: a stalled refresh once left
+                    // 33% on screen while the account was actually maxed out.
+                    if let stale = staleLabel {
+                        Text(stale)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(Color.orange.opacity(0.14), in: Capsule())
+                    }
                 }
                 if let err = account.error {
                     Text(err).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
