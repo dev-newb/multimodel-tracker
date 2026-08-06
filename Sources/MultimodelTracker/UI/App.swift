@@ -210,6 +210,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             exit(allOK ? 0 : 1)
         }
 
+        // `--recover` rebuilds accounts from surviving credentials.
+        if CommandLine.arguments.contains("--recover") {
+            Task { @MainActor in
+                let notes = store.recoverAccounts()
+                await store.refreshAll()
+                let text = notes.isEmpty ? "nothing to recover" : notes.joined(separator: "\n  ")
+                FileHandle.standardError.write("recover:\n  \(text)\n".data(using: .utf8)!)
+                exit(0)
+            }
+        }
+
         // `--import-google` exercises the Antigravity/gemini-cli import from
         // the command line, so the Google path can be verified without
         // driving the panel's button.

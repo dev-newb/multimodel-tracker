@@ -32,10 +32,19 @@ struct UsageLimit: Identifiable, Codable, Hashable {
     /// 0...100. nil means the provider reported no data for this pool.
     let percent: Double?
     let resetsAt: Date?
-    /// Set by the Store when this pool climbed sharply since the previous
-    /// poll. Not from the provider — nobody reports burn rate — so it is
-    /// derived and deliberately not persisted as truth about the account.
+    /// Set by the Store when this pool is burning. Derived state, NOT from
+    /// the provider — and deliberately excluded from CodingKeys below.
     var burning: Bool = false
+
+    /// `burning` is omitted on purpose. Swift's synthesised decoder does NOT
+    /// fall back to a property's default value when the key is missing — it
+    /// throws keyNotFound. Adding `burning` to the persisted shape therefore
+    /// made every previously-saved account undecodable, which wiped Rich's
+    /// real accounts and replaced them with the demo seed. Derived state must
+    /// stay out of the persisted shape.
+    private enum CodingKeys: String, CodingKey {
+        case key, label, percent, resetsAt
+    }
 
     var fraction: Double { min(max((percent ?? 0) / 100, 0), 1) }
 

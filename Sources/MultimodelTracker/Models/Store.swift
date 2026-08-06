@@ -16,7 +16,10 @@ final class Store: ObservableObject {
     @Published private(set) var maxedStyle: MaxedStyle = .flatline
 
     init() {
-        load(); if accounts.isEmpty { seedDemo() }
+        load()
+        // Seed ONLY when nothing has ever been stored. Seeding because a
+        // decode failed is how real accounts got overwritten by demo ones.
+        if accounts.isEmpty, UserDefaults.standard.data(forKey: defaultsKey) == nil { seedDemo() }
         maxedStyle = Self.style(forViewing: UserDefaults.standard.integer(forKey: maxedViewsKey))
         burnCycleStyle = BurnStyle(rawValue:
             ((max(UserDefaults.standard.integer(forKey: "mmt.burnViews"), 1) - 1) / 3)
@@ -189,6 +192,67 @@ final class Store: ObservableObject {
         return a
     }
 
+    /// Rebuilds accounts from the credentials that outlive the accounts list.
+    /// Keychain items (OpenAI) and per-account WebKit data stores (Anthropic)
+    /// are both keyed by the account UUID, so reusing those ids restores
+    /// WORKING logins rather than empty rows.
+    ///
+    /// The data stores are enumerated from disk, not via
+    /// `WKWebsiteDataStore.allDataStoreIdentifiers` — that API segfaults
+    /// inside WebKit's run loop when called during launch (verified: SIGSEGV
+    /// in fetchAllDataStoreIdentifiers).
+    func recoverAccounts() -> [String] {
+        var notes: [String] = []
+        var known = Set(accounts.map(\.id))
+
+        let openAIIDs = Set(Keychain.openAIAccountIDs())
+        for id in openAIIDs where !known.contains(id) {
+            guard canAdd(.openai) else { notes.append("openai: no free slots"); break }
+            accounts.append(Account(id: id, provider: .openai, label: "Recovered OpenAI"))
+            known.insert(id)
+            notes.append("openai \(id.uuidString.prefix(8)) — token recovered from keychain")
+        }
+
+        for id in Self.anthropicDataStoreIDs() where !known.contains(id) && !openAIIDs.contains(id) {
+            guard canAdd(.anthropic) else { notes.append("anthropic: no free slots"); break }
+            accounts.append(Account(id: id, provider: .anthropic, label: "Recovered Claude"))
+            known.insert(id)
+            notes.append("anthropic \(id.uuidString.prefix(8)) — claude.ai session recovered")
+        }
+
+        if accounts(for: .google).isEmpty, importGoogleCLI() != nil {
+            notes.append("google — re-imported from Antigravity")
+        }
+        save()
+        return notes
+    }
+
+    /// UUID-named WebKit data stores that have actually talked to claude.ai.
+    /// Every account gets a store, so the host check is what separates a real
+    /// Claude login from an OpenAI or never-used one.
+    private static func anthropicDataStoreIDs() -> [UUID] {
+        let fm = FileManager.default
+        let root = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/WebKit/com.devnewb.multimodeltracker/WebsiteDataStore")
+        guard let entries = try? fm.contentsOfDirectory(atPath: root.path) else { return [] }
+        return entries.compactMap { entry -> UUID? in
+            guard let id = UUID(uuidString: entry) else { return nil }
+            let dir = root.appendingPathComponent(entry)
+            guard let walker = fm.enumerator(at: dir, includingPropertiesForKeys: nil) else { return nil }
+            var checked = 0
+            for case let file as URL in walker {
+                checked += 1
+                if checked > 4000 { break }
+                guard file.pathExtension == "sqlite" || file.lastPathComponent.contains("Cookie") else { continue }
+                if let data = try? Data(contentsOf: file, options: .mappedIfSafe),
+                   data.range(of: Data("claude.ai".utf8)) != nil {
+                    return id
+                }
+            }
+            return nil
+        }
+    }
+
     func update(_ account: Account) {
         guard let i = accounts.firstIndex(where: { $0.id == account.id }) else { return }
         accounts[i] = account; save()
@@ -350,9 +414,18 @@ final class Store: ObservableObject {
         }
     }
     private func load() {
-        guard let d = UserDefaults.standard.data(forKey: defaultsKey),
-              let a = try? JSONDecoder().decode([Account].self, from: d) else { return }
-        accounts = a
+        guard let d = UserDefaults.standard.data(forKey: defaultsKey) else { return }
+        do {
+            accounts = try JSONDecoder().decode([Account].self, from: d)
+        } catch {
+            // Never let a decode failure become data loss: keep a copy of the
+            // bytes so a schema mistake can be recovered from, and refuse to
+            // save over the original until something decodes.
+            UserDefaults.standard.set(d, forKey: defaultsKey + ".unreadable")
+            FileHandle.standardError.write(
+                "accounts failed to decode (\(error)) — original preserved under \(defaultsKey).unreadable\n"
+                    .data(using: .utf8)!)
+        }
     }
 
     /// Until the adapters are wired, show the shape of the thing.

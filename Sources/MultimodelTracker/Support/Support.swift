@@ -52,6 +52,19 @@ enum Keychain {
 
     static func invalidateCache(for account: UUID) { openAICache[account] = nil }
 
+    /// Every account UUID that still has a stored OpenAI token. The keychain
+    /// outlives the accounts list, so this is what makes recovery possible.
+    static func openAIAccountIDs() -> [UUID] {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrService as String: "MultimodelTracker.openai",
+                                kSecReturnAttributes as String: true,
+                                kSecMatchLimit as String: kSecMatchLimitAll]
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
+              let items = out as? [[String: Any]] else { return [] }
+        return items.compactMap { ($0[kSecAttrAccount as String] as? String).flatMap(UUID.init) }
+    }
+
     static func store(service: String, account: String, data: Data) {
         delete(service: service, account: account)
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
