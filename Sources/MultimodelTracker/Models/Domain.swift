@@ -32,6 +32,10 @@ struct UsageLimit: Identifiable, Codable, Hashable {
     /// 0...100. nil means the provider reported no data for this pool.
     let percent: Double?
     let resetsAt: Date?
+    /// Set by the Store when this pool climbed sharply since the previous
+    /// poll. Not from the provider — nobody reports burn rate — so it is
+    /// derived and deliberately not persisted as truth about the account.
+    var burning: Bool = false
 
     var fraction: Double { min(max((percent ?? 0) / 100, 0), 1) }
 

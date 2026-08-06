@@ -60,7 +60,7 @@ struct AccountsView: View {
     /// What a fully burned bar does, and whether several of them match.
     private var deadBarSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("DEAD BAR").font(.system(size: 10, weight: .bold)).tracking(0.8)
+            Text("BAR EFFECTS").font(.system(size: 10, weight: .bold)).tracking(0.8)
                 .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 Text("Animation").font(.system(size: 12))
@@ -69,6 +69,18 @@ struct AccountsView: View {
                                               set: { store.setMaxedFixed($0) })) {
                     Text("Cycle every 3rd view").tag(-1)
                     ForEach(MaxedStyle.allCases, id: \.rawValue) { s in
+                        Text(s.displayName).tag(s.rawValue)
+                    }
+                }
+                .labelsHidden().fixedSize()
+            }
+            HStack(spacing: 8) {
+                Text("Burning fast").font(.system(size: 12))
+                Spacer()
+                Picker("", selection: Binding(get: { store.burnFixed },
+                                              set: { store.setBurnFixed($0) })) {
+                    Text("Vary per pool").tag(-1)
+                    ForEach(BurnStyle.allCases, id: \.rawValue) { s in
                         Text(s.displayName).tag(s.rawValue)
                     }
                 }

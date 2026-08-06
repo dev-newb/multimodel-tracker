@@ -20,6 +20,31 @@ final class Store: ObservableObject {
         maxedStyle = Self.style(forViewing: UserDefaults.standard.integer(forKey: maxedViewsKey))
     }
 
+    /// A pool counts as burning when it gains this many points between polls.
+    /// The poll is 3 minutes, so this is roughly "on pace to exhaust the pool
+    /// within the hour" — fast enough to be worth shouting about, high enough
+    /// that ordinary drift stays quiet.
+    static let burnThreshold: Double = 2.0
+    /// Burning decays rather than latching: without another jump it clears
+    /// after this long, so the bar doesn't stay on fire all day.
+    static let burnHoldSeconds: TimeInterval = 12 * 60
+    private var burnSeen: [String: Date] = [:]
+
+    @Published private(set) var burnFixed: Int =
+        UserDefaults.standard.object(forKey: "mmt.burnFixed") as? Int ?? -1
+
+    func setBurnFixed(_ v: Int) {
+        burnFixed = v
+        UserDefaults.standard.set(v, forKey: "mmt.burnFixed")
+    }
+
+    /// Pinned style, or one chosen per pool so several burning bars differ.
+    func burnStyle(forKey key: String) -> BurnStyle {
+        if let pinned = BurnStyle(rawValue: burnFixed) { return pinned }
+        let all = BurnStyle.allCases
+        return all[abs(key.hashValue) % all.count]
+    }
+
     /// -1 = cycle every 3rd viewing (the default); otherwise a pinned
     /// MaxedStyle rawValue chosen in the Accounts window.
     @Published private(set) var maxedFixed: Int =
@@ -164,12 +189,39 @@ final class Store: ObservableObject {
                     "refresh \(a.provider.rawValue)/\(a.displayName): \(fetched.limits.map(\.key).joined(separator: ","))\n"
                         .data(using: .utf8)!)
             }
-            a.limits = fetched.limits; a.plan = fetched.plan
+            a.limits = Self.markBurning(previous: a.limits, fetched: fetched.limits,
+                                        seen: &burnSeen, accountID: a.id)
+            a.plan = fetched.plan
             a.error = nil; a.lastRefreshed = Date()
         } catch {
             a.error = String(describing: error)
         }
         update(a)
+    }
+
+    /// Compares this poll against the last one per pool. A pool that jumped
+    /// is marked burning and remembered, so it keeps burning across the polls
+    /// that follow until it goes quiet for burnHoldSeconds.
+    private static func markBurning(previous: [UsageLimit], fetched: [UsageLimit],
+                                    seen: inout [String: Date], accountID: UUID) -> [UsageLimit] {
+        let now = Date()
+        let before = Dictionary(uniqueKeysWithValues: previous.map { ($0.key, $0.percent ?? 0) })
+        return fetched.map { limit in
+            var l = limit
+            let stamp = "\(accountID)/\(limit.key)"
+            if let old = before[limit.key], let new = limit.percent,
+               new - old >= burnThreshold, new < 100 {
+                seen[stamp] = now
+            }
+            if let last = seen[stamp] {
+                if now.timeIntervalSince(last) <= burnHoldSeconds, (limit.percent ?? 0) < 100 {
+                    l.burning = true
+                } else {
+                    seen[stamp] = nil
+                }
+            }
+            return l
+        }
     }
 
     // MARK: persistence (metadata only — never tokens; those live in Keychain)

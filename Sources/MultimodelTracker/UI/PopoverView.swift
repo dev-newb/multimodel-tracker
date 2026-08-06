@@ -89,7 +89,8 @@ struct PopoverView: View {
             ForEach(accounts) { account in
                 AccountCard(account: account, accent: p.accent,
                             maxedStyle: store.effectiveMaxedStyle,
-                            maxedOffset: store.maxedVaried ? maxedOffsets[account.id] ?? 0 : -1)
+                            maxedOffset: store.maxedVaried ? maxedOffsets[account.id] ?? 0 : -1,
+                            burnStyle: { store.burnStyle(forKey: $0) })
                     .padding(.horizontal, 12)
             }
         }
@@ -122,6 +123,7 @@ struct AccountCard: View {
     /// -1 = synced (every dead bar shows maxedStyle); otherwise the ordinal
     /// of this account's first dead bar in the whole popover.
     var maxedOffset: Int = -1
+    var burnStyle: (String) -> BurnStyle = { _ in .firestorm }
 
     /// Style for the Nth dead bar in this card under the variety setting.
     private func styleForMaxed(_ ordinal: Int) -> MaxedStyle {
@@ -186,7 +188,8 @@ struct AccountCard: View {
                 } else {
                     ForEach(account.limits) { l in
                         LimitRow(limit: l, accent: accent,
-                                 maxedStyle: styleForMaxed(maxedOrdinals[l.id] ?? 0))
+                                 maxedStyle: styleForMaxed(maxedOrdinals[l.id] ?? 0),
+                                 burnStyle: burnStyle(l.key))
                     }
                 }
             }
@@ -201,6 +204,7 @@ struct LimitRow: View {
     let limit: UsageLimit
     let accent: Color
     var maxedStyle: MaxedStyle = .flatline
+    var burnStyle: BurnStyle = .firestorm
     @Environment(\.colorScheme) private var scheme
 
     /// .secondary/.tertiary are TRANSLUCENT — a bright trace behind them
@@ -227,6 +231,7 @@ struct LimitRow: View {
                 if let p = limit.percent {
                     Text("\(Int(p))%").font(.system(size: 11, weight: .semibold))
                         .monospacedDigit()
+                        .foregroundStyle(limit.burning ? Color(red: 1, green: 0.68, blue: 0.25) : .primary)
                 }
                 Text(limit.resetText).font(.system(size: 10)).foregroundStyle(opaqueTertiary)
             }
@@ -234,6 +239,8 @@ struct LimitRow: View {
                 // Placeholder keeping the capsule's slot; the artwork is on
                 // the row background so text renders over it.
                 Color.clear.frame(height: MaxedBar.barH)
+            } else if limit.burning, limit.percent != nil {
+                Color.clear.frame(height: BurningBar.barH)
             } else if limit.percent != nil {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
@@ -246,6 +253,10 @@ struct LimitRow: View {
             }
         }
         .background(alignment: .bottom) {
+            if limit.burning, !isMaxed {
+                BurningBar(style: burnStyle, fraction: limit.fraction)
+                    .offset(y: BurningBar.below)
+            }
             if isMaxed {
                 // Bottom edge rides `below` pt past the strip so drops can
                 // fall out of the track; the trace band lands over the label,

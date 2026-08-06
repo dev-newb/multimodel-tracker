@@ -115,6 +115,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         }
 
+        // `--render-burn <dir>` — same offscreen review path as --render-maxed.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-burn"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            for style in BurnStyle.allCases {
+                var limit = UsageLimit(key: "codex", label: "Codex · weekly", percent: 62,
+                                       resetsAt: Date().addingTimeInterval(432_000))
+                limit.burning = true
+                let view = LimitRow(limit: limit, accent: Provider.openai.accent, burnStyle: style)
+                    .frame(width: 300)
+                    .padding(24)
+                    .background(Color(red: 0.09, green: 0.09, blue: 0.11))
+                let renderer = ImageRenderer(content: view)
+                renderer.scale = 2
+                if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+                   let rep = NSBitmapImageRep(data: tiff),
+                   let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: dir.appendingPathComponent("burn-\(style.rawValue).png"))
+                }
+            }
+            NSApp.terminate(nil)
+        }
+
         // `--import-google` exercises the Antigravity/gemini-cli import from
         // the command line, so the Google path can be verified without
         // driving the panel's button.
