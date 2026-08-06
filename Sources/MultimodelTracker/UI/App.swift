@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import WebKit
 
 /// Menu-bar-only app: no Dock icon, no main window. The status item shows one
 /// badge per provider carrying that vendor's worst account, which is the bit
@@ -219,6 +220,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 FileHandle.standardError.write("recover:\n  \(text)\n".data(using: .utf8)!)
                 exit(0)
             }
+        }
+
+        // `--purge-store <uuid>` deletes an orphaned per-account WebKit data
+        // store through the sanctioned API (shell deletion under ~/Library is
+        // rightly guarded on this Mac).
+        if let i = CommandLine.arguments.firstIndex(of: "--purge-store"),
+           CommandLine.arguments.indices.contains(i + 1),
+           let id = UUID(uuidString: CommandLine.arguments[i + 1]) {
+            if #available(macOS 14.0, *) {
+                WKWebsiteDataStore.remove(forIdentifier: id) { error in
+                    FileHandle.standardError.write(
+                        "purge-store \(id): \(error.map { "\($0)" } ?? "ok")\n".data(using: .utf8)!)
+                    exit(0)
+                }
+            } else { exit(1) }
         }
 
         // `--import-google` exercises the Antigravity/gemini-cli import from

@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import WebKit
 
 /// Everything the UI reads. Accounts are grouped per provider and capped at
 /// Provider.maxAccountsPerProvider.
@@ -147,6 +148,14 @@ final class Store: ObservableObject {
 
     func remove(_ id: UUID) {
         Keychain.deleteAll(for: id)
+        // Leave nothing that --recover would faithfully resurrect: the burn
+        // history and the per-account cookie jar both outlive the row.
+        let prefix = "\(id)/"
+        burnHistory = burnHistory.filter { !$0.key.hasPrefix(prefix) }
+        saveBurnHistory()
+        if #available(macOS 14.0, *) {
+            WKWebsiteDataStore.remove(forIdentifier: id) { _ in }
+        }
         accounts.removeAll { $0.id == id }
         save()
     }

@@ -2,73 +2,126 @@
 
 A native macOS menu-bar app for watching usage limits across **several
 subscriptions per vendor** — up to **4 accounts each** for Anthropic, OpenAI
-and Google.
+and Google, side by side.
 
 Existing trackers assume one login per provider. People who buy multiple
 subscriptions can't see them together; that's the gap this fills.
 
-## Status
+The menu bar shows one compact badge per provider (`A25 O100 G0`) carrying
+that vendor's *worst* pool — amber past 75%, red past 90% — so the numbers
+are readable without opening anything. Click it for the full breakdown:
+provider → account → pools, each pool with its percentage, bar and reset
+time.
 
-Early scaffold. Builds and runs; the UI and data model are real, two of the
-three provider adapters still need their auth flows.
+## Install / build
 
-| Piece | State |
-|---|---|
-| Menu-bar app + popover UI | working |
-| Account model, 4-per-vendor cap, persistence | working |
-| Staggered concurrent refresh | working |
-| OpenAI adapter | fetch + parser written, needs the sign-in flow |
-| Anthropic adapter | isolated web sessions written, needs the sign-in flow |
-| Google adapter | not started — see "Open question" |
+Requires macOS 14+ and Xcode command-line tools.
 
 ```bash
-swift build
-./.build/debug/MultimodelTracker            # menu bar
-./.build/debug/MultimodelTracker --preview  # popover in a normal window
+git clone https://github.com/dev-newb/multimodel-tracker.git
+cd multimodel-tracker
+./make-app.sh
+open "build/Multimodel Tracker.app"
 ```
+
+`make-app.sh` builds with SwiftPM and signs with your Developer ID or Apple
+Development certificate when one exists (selected by SHA-1 hash, never by
+name — duplicate cert names are common and abort by-name selection). With no
+certificate it falls back to ad-hoc signing, which works but re-prompts for
+keychain access after every rebuild.
+
+## Signing in
+
+- **Anthropic** — each account opens claude.ai in its own window with its own
+  isolated cookie jar. Sign in normally; the app detects the session and
+  closes the window. Four accounts means four simultaneous logins.
+- **OpenAI** — either one-click **Import Codex CLI** (adopts `~/.codex/auth.json`)
+  or per-account web sign-in at chatgpt.com, same isolated-jar model. Expired
+  web tokens re-mint silently from the surviving cookies.
+- **Google** — **Import Antigravity / gemini-cli**: the login already on your
+  Mac *is* the credential. Quota comes from the Code Assist
+  `retrieveUserQuota` endpoint, one bucket per Gemini model.
+
+## Bar effects
+
+Pools that are fully burned or burning fast get animated bars.
+
+- **Dead (100%)**: flatline, glitch, bleed, dead channel, black hole, drown,
+  petrify, neon burnout.
+- **Burning** (usage climbing unusually fast): firestorm, coal bed,
+  blowtorch, comet, fuse.
+
+Burn detection is adaptive, ported from
+[I'm Burning!](https://github.com/dev-newb/imburning): the jump is measured
+over a 10-minute window against the pool's own historical rate
+(median + 6·MAD), with an absolute 3-point floor, an 8-point fallback until
+enough baseline exists, and a 45-minute afterglow with hysteresis so a pause
+between prompts doesn't snuff the flames.
+
+The Accounts window (▸ Accounts… in the popover) picks the animations: pin
+one per category, cycle every 3rd view, or let every affected bar differ at
+once.
 
 ## Why the providers need different machinery
 
 **OpenAI — plain HTTPS.** `GET chatgpt.com/backend-api/wham/usage` with a
-bearer token and `chatgpt-account-id`. Verified against the live endpoint.
-Multiple accounts is just multiple token pairs.
+bearer token and `chatgpt-account-id`. Multiple accounts is just multiple
+token pairs, stored per-account in the Keychain.
 
 **Anthropic — needs a browser engine.** claude.ai sits behind Cloudflare,
 which rejects plain HTTP client fingerprints, and auth is cookie/session
-rather than a bearer token. **WebKit passes**: a `WKWebView` with an empty
-cookie jar reaches the real API and gets Anthropic's own
-`account_session_invalid` JSON back, not a challenge page. That single fact
-is what makes a native app viable at all.
-
+rather than a bearer token. WebKit passes the check; presenting an honest
+WebKit user agent is required (claiming to be Chrome from a WebKit engine is
+an inconsistency that puts login into an unsolvable challenge loop).
 Multiple accounts therefore means multiple *isolated cookie jars* — one
-`WKWebsiteDataStore(forIdentifier:)` per account (`WebSessionPool`). A shared
-jar is exactly what limits other tools to one Claude login.
+`WKWebsiteDataStore(forIdentifier:)` per account. A shared jar is exactly
+what limits other tools to one Claude login.
 
-**Google — open question.** OAuth over plain HTTPS, but there is no public
-OAuth client. Tools in this space borrow gemini-cli's, extracted from its
-bundle — and gemini-cli is on a deprecation path while Antigravity, its
-successor, ships no extractable client and keeps credentials in the system
-keyring instead of a file. Needs a decision before implementing.
+**Google — borrowed credentials.** There is no public OAuth client for Code
+Assist quota. The app reads the refresh token Antigravity (or gemini-cli)
+already stores on your Mac and redeems it with the OAuth client embedded in
+Antigravity's own binaries — a refresh token can only be redeemed by the
+client that issued it, which is why borrowing gemini-cli's client against
+Antigravity's token can never work.
 
-## Design notes
+## Security model
 
-- **Tokens live in the Keychain**, one item per account id. `UserDefaults`
-  holds only labels and cached percentages.
-- **Refresh is staggered** (250ms per account). Twelve accounts hitting three
-  vendors simultaneously is what gets a client rate-limited.
-- The menu-bar badge shows the **worst pool per provider**, coloured amber
-  past 75% and red past 90%, so the numbers are readable without opening
-  anything.
+- **Tokens live in the login Keychain**, one item per account. Claude
+  sessions live in per-account WebKit data stores. `UserDefaults` holds only
+  labels, cached percentages and usage history — never credentials.
+- Keychain items are read **once per launch** and cached in memory, so polls
+  never touch the keychain. macOS will ask once for Antigravity's item
+  (it belongs to another app); *Always Allow* makes it permanent.
+- Refresh is staggered (250 ms per account) so twelve accounts don't hit
+  three vendors in the same instant.
+- Nothing leaves your machine except the providers' own API calls.
+
+## Debug flags
+
+| Flag | What it does |
+|---|---|
+| `--preview` | popover content in a normal window |
+| `--open` / `--accounts` | open the popover / Accounts panel on launch |
+| `--render-maxed <dir>` / `--render-burn <dir>` | render every bar effect to PNGs, offscreen |
+| `--burn-sim` | run the burn detector against synthetic histories (6 rules, PASS/FAIL) |
+| `--recover` | rebuild the account list from surviving keychain items and cookie jars |
+| `--bridge-test` | probe the claude.ai page bridge |
+| `MMT_DEBUG=1` | log refreshes and window metrics to stderr |
 
 ## Layout
 
 ```
 Models/     Domain.swift      Provider, Account, UsageLimit
-            Store.swift       account CRUD, staggered refresh, persistence
-Providers/  Adapter.swift     UsageAdapter protocol + registry
-            OpenAIParser      wham/usage -> UsageLimit
-            WebSessionPool    per-account WKWebView + Anthropic parser
-Support/    Support.swift     Keychain wrapper, shared UA
-UI/         App.swift         NSStatusItem, badges, popover, --preview
-            PopoverView       provider -> account -> pools
+            Store.swift       account CRUD, refresh, burn detector, persistence
+Providers/  Adapter.swift     UsageAdapter protocol + OpenAI adapter
+            OpenAIParser      wham/usage → UsageLimit
+            GoogleAdapter     Antigravity/gemini-cli credentials + quota
+            WebSessionPool    per-account WKWebView + Anthropic parser + bridge
+Support/    Support.swift     Keychain wrapper, Codex CLI import
+UI/         App.swift         status item, badges, popover, debug flags
+            PopoverView       provider → account → pools
+            AccountsView      accounts + bar-effect preferences
+            MaxedBar          the eight dead-bar treatments
+            BurningBar        the five burning treatments
+            SignInWindow      per-account sign-in flow
 ```
