@@ -138,6 +138,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         }
 
+        // `--burn-sim` exercises the ported detector against synthetic pool
+        // histories and prints PASS/FAIL per rule. The detector is pure, so
+        // this is the whole contract: quiet drift, fallback floor, adaptive
+        // trigger, sub-floor jumps, hysteresis cooling, resets in baseline.
+        if CommandLine.arguments.contains("--burn-sim") {
+            let now = Date()
+            func series(_ points: [(minsAgo: Double, v: Double)]) -> [Store.BurnSample] {
+                points.map { Store.BurnSample(t: now.addingTimeInterval(-$0.minsAgo * 60), v: $0.v) }
+                      .sorted { $0.t < $1.t }
+            }
+            var results: [(String, Bool)] = []
+
+            // 1. Quiet drift for 3h: never burns.
+            var quiet: [(Double, Double)] = []
+            for i in 0..<60 { quiet.append((Double(180 - i * 3), 10 + Double(i) * 0.1)) }
+            let r1 = Store.evaluateBurn(samples: series(quiet.map { (minsAgo: $0.0, v: $0.1) }),
+                                        now: now, currentUntil: nil)
+            results.append(("quiet drift stays cold", r1 == nil))
+
+            // 2. Thin history (<50 pairs) + 9-point jump: fallback floor fires.
+            var thin: [(Double, Double)] = []
+            for i in 0..<8 { thin.append((Double(30 - i * 3), 20 + Double(i) * 0.2)) }
+            thin += [(9, 22), (6, 25), (3, 28), (0, 31)]
+            let r2 = Store.evaluateBurn(samples: series(thin.map { (minsAgo: $0.0, v: $0.1) }),
+                                        now: now, currentUntil: nil)
+            results.append(("fallback floor (9pt, thin history)", r2 != nil))
+
+            // 3. Adaptive: 3h of jittered ~0.1%/min, then 6 points in 10 min.
+            var adaptive: [(Double, Double)] = []
+            var v = 5.0
+            for i in 0..<56 {
+                v += 0.25 + (i % 3 == 0 ? 0.15 : 0.0)   // jittered baseline
+                adaptive.append((Double(190 - i * 3), v))
+            }
+            adaptive += [(9, v + 1.5), (6, v + 3.0), (3, v + 4.5), (0, v + 6.0)]
+            let r3 = Store.evaluateBurn(samples: series(adaptive.map { (minsAgo: $0.0, v: $0.1) }),
+                                        now: now, currentUntil: nil)
+            results.append(("adaptive trigger (6pt vs quiet baseline)", r3 != nil))
+
+            // 4. Same baseline, 2-point jump: under the 3-point floor.
+            var small = adaptive.dropLast(4).map { $0 }
+            small += [(9, v + 0.5), (6, v + 1.0), (3, v + 1.5), (0, v + 2.0)]
+            let r4 = Store.evaluateBurn(samples: series(small.map { (minsAgo: $0.0, v: $0.1) }),
+                                        now: now, currentUntil: nil)
+            results.append(("2pt jump under absolute floor", r4 == nil))
+
+            // 5. Hysteresis: burning entry + quiet window clamps to cooling,
+            //    but does NOT extinguish immediately.
+            let burningUntil = now.addingTimeInterval(40 * 60)
+            let r5 = Store.evaluateBurn(samples: series(quiet.map { (minsAgo: $0.0, v: $0.1) }),
+                                        now: now, currentUntil: burningUntil)
+            let clamped = r5.map { $0 > now && $0 <= now.addingTimeInterval(Store.burnCooling + 1) } ?? false
+            results.append(("hysteresis cools over 8m, no snap-out", clamped))
+
+            // 6. A weekly reset (big negative delta) in the baseline doesn't
+            //    fire and doesn't poison the pairs after it.
+            var reset: [(Double, Double)] = []
+            for i in 0..<30 { reset.append((Double(200 - i * 3), 60 + Double(i) * 0.3)) }
+            reset.append((110, 2))    // reset to near zero
+            for i in 0..<30 { reset.append((Double(107 - i * 3), 2 + Double(i) * 0.3)) }
+            let r6 = Store.evaluateBurn(samples: series(reset.map { (minsAgo: $0.0, v: $0.1) }),
+                                        now: now, currentUntil: nil)
+            results.append(("weekly reset ignored", r6 == nil))
+
+            for (name, ok) in results {
+                FileHandle.standardError.write("burn-sim \(ok ? "PASS" : "FAIL"): \(name)\n".data(using: .utf8)!)
+            }
+            let allOK = results.allSatisfy(\.1)
+            FileHandle.standardError.write("burn-sim \(allOK ? "ALL PASS" : "FAILURES")\n".data(using: .utf8)!)
+            exit(allOK ? 0 : 1)
+        }
+
         // `--import-google` exercises the Antigravity/gemini-cli import from
         // the command line, so the Google path can be verified without
         // driving the panel's button.
@@ -198,6 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown { popover.performClose(nil) }
         else {
             store.noteMaxedViewing()
+            store.noteBurnViewing()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
             if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil,

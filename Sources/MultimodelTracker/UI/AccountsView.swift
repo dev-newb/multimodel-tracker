@@ -57,44 +57,61 @@ struct AccountsView: View {
         }
     }
 
-    /// What a fully burned bar does, and whether several of them match.
+    /// Bar-effect preferences. Each category picks a distribution first —
+    /// consistent across pools, or all different at once — and only the
+    /// consistent case shows an animation picker: with "all different" the
+    /// assignment is derived, so listing specific animations would be a lie.
     private var deadBarSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("BAR EFFECTS").font(.system(size: 10, weight: .bold)).tracking(0.8)
                 .foregroundStyle(.secondary)
             HStack(spacing: 8) {
-                Text("Animation").font(.system(size: 12))
-                Spacer()
-                Picker("", selection: Binding(get: { store.maxedFixed },
-                                              set: { store.setMaxedFixed($0) })) {
-                    Text("Cycle every 3rd view").tag(-1)
-                    ForEach(MaxedStyle.allCases, id: \.rawValue) { s in
-                        Text(s.displayName).tag(s.rawValue)
-                    }
-                }
-                .labelsHidden().fixedSize()
-            }
-            HStack(spacing: 8) {
-                Text("Burning fast").font(.system(size: 12))
-                Spacer()
-                Picker("", selection: Binding(get: { store.burnFixed },
-                                              set: { store.setBurnFixed($0) })) {
-                    Text("Vary per pool").tag(-1)
-                    ForEach(BurnStyle.allCases, id: \.rawValue) { s in
-                        Text(s.displayName).tag(s.rawValue)
-                    }
-                }
-                .labelsHidden().fixedSize()
-            }
-            HStack(spacing: 8) {
                 Text("When several are dead").font(.system(size: 12))
                 Spacer()
                 Picker("", selection: Binding(get: { store.maxedVaried },
                                               set: { store.setMaxedVaried($0) })) {
-                    Text("Same animation").tag(false)
-                    Text("All different").tag(true)
+                    Text("Consistent across pools").tag(false)
+                    Text("All different at once").tag(true)
                 }
                 .labelsHidden().fixedSize()
+            }
+            if !store.maxedVaried {
+                HStack(spacing: 8) {
+                    Text("Dead animation").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Spacer()
+                    Picker("", selection: Binding(get: { store.maxedFixed },
+                                                  set: { store.setMaxedFixed($0) })) {
+                        Text("Cycle every 3rd view").tag(-1)
+                        ForEach(MaxedStyle.allCases, id: \.rawValue) { s in
+                            Text(s.displayName).tag(s.rawValue)
+                        }
+                    }
+                    .labelsHidden().fixedSize()
+                }
+            }
+            HStack(spacing: 8) {
+                Text("When several are burning").font(.system(size: 12))
+                Spacer()
+                Picker("", selection: Binding(get: { store.burnVaried },
+                                              set: { store.setBurnVaried($0) })) {
+                    Text("Consistent across pools").tag(false)
+                    Text("All different at once").tag(true)
+                }
+                .labelsHidden().fixedSize()
+            }
+            if !store.burnVaried {
+                HStack(spacing: 8) {
+                    Text("Burning animation").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Spacer()
+                    Picker("", selection: Binding(get: { store.burnFixed },
+                                                  set: { store.setBurnFixed($0) })) {
+                        Text("Cycle every 3rd view").tag(-1)
+                        ForEach(BurnStyle.allCases, id: \.rawValue) { s in
+                            Text(s.displayName).tag(s.rawValue)
+                        }
+                    }
+                    .labelsHidden().fixedSize()
+                }
             }
         }
         .padding(16)

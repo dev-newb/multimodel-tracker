@@ -18,31 +18,73 @@ final class Store: ObservableObject {
     init() {
         load(); if accounts.isEmpty { seedDemo() }
         maxedStyle = Self.style(forViewing: UserDefaults.standard.integer(forKey: maxedViewsKey))
+        burnCycleStyle = BurnStyle(rawValue:
+            ((max(UserDefaults.standard.integer(forKey: "mmt.burnViews"), 1) - 1) / 3)
+            % BurnStyle.allCases.count) ?? .firestorm
+        loadBurnHistory()
     }
 
-    /// A pool counts as burning when it gains this many points between polls.
-    /// The poll is 3 minutes, so this is roughly "on pace to exhaust the pool
-    /// within the hour" — fast enough to be worth shouting about, high enough
-    /// that ordinary drift stays quiet.
-    static let burnThreshold: Double = 2.0
-    /// Burning decays rather than latching: without another jump it clears
-    /// after this long, so the bar doesn't stay on fire all day.
-    static let burnHoldSeconds: TimeInterval = 12 * 60
-    private var burnSeen: [String: Date] = [:]
+    // MARK: burn detection — ported from I'm Burning!'s anomaly detector.
+    // The rules, not just the spirit: the jump is measured over a 10-minute
+    // sliding window (needing 4+ minutes of data), the threshold is ADAPTIVE
+    // (median + 6*MAD of this pool's own historical per-minute rates) so
+    // "burning" means unusual FOR THIS POOL, with a 3-point absolute floor
+    // and an 8-point fallback until 50 baseline pairs exist. Burning holds
+    // for 45 minutes with hysteresis: falling below half the threshold eases
+    // off over 8 minutes instead of snuffing out — a pause between prompts
+    // shouldn't kill the flames.
+    static let burnWindow: TimeInterval = 10 * 60
+    static let burnMinWindow: TimeInterval = 4 * 60
+    static let burnMinJump = 3.0
+    static let burnFallbackJump = 8.0
+    static let burnMADK = 6.0
+    static let burnBaselineMin = 50
+    static let burnSettle: TimeInterval = 45 * 60
+    static let burnCooling: TimeInterval = 8 * 60
+    /// Baseline pairs must be one poll apart (3 min); allow slack for a
+    /// missed poll but reject gaps that span sleep or downtime.
+    static let burnPairMaxGap: TimeInterval = 7.5 * 60
+
+    struct BurnSample: Codable { let t: Date; let v: Double }
+    private var burnHistory: [String: [BurnSample]] = [:]
+    /// In-memory like I'm Burning!'s — flames don't survive a relaunch,
+    /// history (below) does.
+    private var burnUntil: [String: Date] = [:]
+    private let burnHistoryKey = "mmt.burnHistory.v1"
 
     @Published private(set) var burnFixed: Int =
         UserDefaults.standard.object(forKey: "mmt.burnFixed") as? Int ?? -1
+    /// When several pools are burning: false = consistent across pools,
+    /// true = all different at once.
+    @Published private(set) var burnVaried: Bool =
+        UserDefaults.standard.bool(forKey: "mmt.burnVaried")
+    @Published private(set) var burnCycleStyle: BurnStyle = .firestorm
+    private let burnViewsKey = "mmt.burnViews"
 
     func setBurnFixed(_ v: Int) {
         burnFixed = v
         UserDefaults.standard.set(v, forKey: "mmt.burnFixed")
     }
 
-    /// Pinned style, or one chosen per pool so several burning bars differ.
-    func burnStyle(forKey key: String) -> BurnStyle {
-        if let pinned = BurnStyle(rawValue: burnFixed) { return pinned }
-        let all = BurnStyle.allCases
-        return all[abs(key.hashValue) % all.count]
+    func setBurnVaried(_ v: Bool) {
+        burnVaried = v
+        UserDefaults.standard.set(v, forKey: "mmt.burnVaried")
+    }
+
+    /// What a burning bar shows: the pinned style, or wherever the cycle is.
+    var effectiveBurnStyle: BurnStyle {
+        BurnStyle(rawValue: burnFixed) ?? burnCycleStyle
+    }
+
+    /// Every 3rd popover-open that shows a burning bar advances the cycle,
+    /// exactly like the dead-bar cycle.
+    func noteBurnViewing() {
+        guard burnFixed < 0 else { return }
+        guard accounts.contains(where: { a in a.limits.contains { $0.burning && ($0.percent ?? 0) < 100 } })
+        else { return }
+        let n = UserDefaults.standard.integer(forKey: burnViewsKey) + 1
+        UserDefaults.standard.set(n, forKey: burnViewsKey)
+        burnCycleStyle = BurnStyle(rawValue: ((max(n, 1) - 1) / 3) % BurnStyle.allCases.count) ?? .firestorm
     }
 
     /// -1 = cycle every 3rd viewing (the default); otherwise a pinned
@@ -189,8 +231,7 @@ final class Store: ObservableObject {
                     "refresh \(a.provider.rawValue)/\(a.displayName): \(fetched.limits.map(\.key).joined(separator: ","))\n"
                         .data(using: .utf8)!)
             }
-            a.limits = Self.markBurning(previous: a.limits, fetched: fetched.limits,
-                                        seen: &burnSeen, accountID: a.id)
+            a.limits = markBurning(fetched: fetched.limits, accountID: a.id)
             a.plan = fetched.plan
             a.error = nil; a.lastRefreshed = Date()
         } catch {
@@ -199,29 +240,107 @@ final class Store: ObservableObject {
         update(a)
     }
 
-    /// Compares this poll against the last one per pool. A pool that jumped
-    /// is marked burning and remembered, so it keeps burning across the polls
-    /// that follow until it goes quiet for burnHoldSeconds.
-    private static func markBurning(previous: [UsageLimit], fetched: [UsageLimit],
-                                    seen: inout [String: Date], accountID: UUID) -> [UsageLimit] {
+    /// Appends this poll to each pool's history, runs the detector, and marks
+    /// the burning pools. At 100% the dead-bar treatment takes over, so
+    /// burning is suppressed there even if the entry is still alight.
+    private func markBurning(fetched: [UsageLimit], accountID: UUID) -> [UsageLimit] {
         let now = Date()
-        let before = Dictionary(uniqueKeysWithValues: previous.map { ($0.key, $0.percent ?? 0) })
-        return fetched.map { limit in
+        var changed = false
+        let out = fetched.map { limit in
             var l = limit
+            guard let v = limit.percent else { return l }
             let stamp = "\(accountID)/\(limit.key)"
-            if let old = before[limit.key], let new = limit.percent,
-               new - old >= burnThreshold, new < 100 {
-                seen[stamp] = now
-            }
-            if let last = seen[stamp] {
-                if now.timeIntervalSince(last) <= burnHoldSeconds, (limit.percent ?? 0) < 100 {
-                    l.burning = true
-                } else {
-                    seen[stamp] = nil
-                }
-            }
+            var samples = burnHistory[stamp] ?? []
+            samples.append(BurnSample(t: now, v: v))
+            // 48h of 3-min polls is 960; the detector needs far less.
+            if samples.count > 700 { samples.removeFirst(samples.count - 700) }
+            samples.removeAll { now.timeIntervalSince($0.t) > 48 * 3600 }
+            burnHistory[stamp] = samples
+            changed = true
+            burnUntil[stamp] = Self.evaluateBurn(samples: samples, now: now,
+                                                 currentUntil: burnUntil[stamp])
+            l.burning = (burnUntil[stamp].map { $0 > now } ?? false) && v < 100
             return l
         }
+        if changed { saveBurnHistory() }
+        return out
+    }
+
+    /// The detector itself, pure so it can be exercised with synthetic
+    /// histories (--burn-sim). Returns the new "burning until" for this pool.
+    static func evaluateBurn(samples: [BurnSample], now: Date, currentUntil: Date?) -> Date? {
+        let live = (currentUntil ?? .distantPast) > now ? currentUntil : nil
+        guard samples.count >= 5 else { return live }
+
+        let windowSamples = samples.filter { now.timeIntervalSince($0.t) <= burnWindow }
+        guard windowSamples.count >= 2,
+              let first = windowSamples.first, let last = windowSamples.last else { return live }
+        let span = last.t.timeIntervalSince(first.t)
+        guard span >= burnMinWindow else { return live }
+
+        let jump = last.v - first.v
+        if jump < burnMinJump {
+            // Well below any trigger — a burning pool has clearly settled.
+            if let until = live, jump < burnMinJump / 2 {
+                return min(until, now.addingTimeInterval(burnCooling))
+            }
+            return live
+        }
+
+        // Baseline: per-minute rates from consecutive pairs OLDER than the
+        // window. Negative deltas are window resets, oversized gaps are
+        // downtime; both poison the baseline.
+        var rates: [Double] = []
+        for i in 1..<samples.count {
+            if now.timeIntervalSince(samples[i].t) <= burnWindow { break }
+            let dt = samples[i].t.timeIntervalSince(samples[i - 1].t)
+            guard dt > 0, dt <= burnPairMaxGap else { continue }
+            let dv = samples[i].v - samples[i - 1].v
+            guard dv >= 0 else { continue }
+            rates.append(dv / (dt / 60))
+        }
+
+        let jumpRate = jump / (span / 60)
+        let isAnomaly: Bool
+        var adaptiveThreshold: Double?
+        if rates.count >= burnBaselineMin {
+            let med = Self.median(rates)
+            let mad = Self.median(rates.map { abs($0 - med) }) * 1.4826
+            let threshold = med + burnMADK * max(mad, 0.01)
+            adaptiveThreshold = threshold
+            isAnomaly = jumpRate > threshold
+        } else {
+            isAnomaly = jump >= burnFallbackJump
+        }
+
+        if isAnomaly { return now.addingTimeInterval(burnSettle) }
+        if let until = live {
+            let settled = adaptiveThreshold.map { jumpRate <= $0 / 2 }
+                ?? (jump < burnFallbackJump / 2)
+            // Ease off rather than snap out: dipping below the hysteresis
+            // line mid-session is normal (a pause to read, a slower prompt).
+            if settled { return min(until, now.addingTimeInterval(burnCooling)) }
+        }
+        return live
+    }
+
+    private static func median(_ xs: [Double]) -> Double {
+        guard !xs.isEmpty else { return 0 }
+        let sorted = xs.sorted()
+        let mid = sorted.count / 2
+        return sorted.count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+    }
+
+    private func saveBurnHistory() {
+        if let d = try? JSONEncoder().encode(burnHistory) {
+            UserDefaults.standard.set(d, forKey: burnHistoryKey)
+        }
+    }
+
+    private func loadBurnHistory() {
+        guard let d = UserDefaults.standard.data(forKey: burnHistoryKey),
+              let h = try? JSONDecoder().decode([String: [BurnSample]].self, from: d) else { return }
+        burnHistory = h
     }
 
     // MARK: persistence (metadata only — never tokens; those live in Keychain)

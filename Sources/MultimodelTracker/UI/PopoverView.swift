@@ -37,9 +37,9 @@ struct PopoverView: View {
         .background(.regularMaterial)
     }
 
-    /// For "ensure they are all different": each account's first dead bar
-    /// starts this many styles past the base, counting dead bars across the
-    /// whole popover so no two show the same animation (mod the style count).
+    /// For "all different at once": each account's first dead bar starts this
+    /// many styles past the base, counting dead bars across the whole popover
+    /// so no two show the same animation (mod the style count).
     private var maxedOffsets: [UUID: Int] {
         var n = 0
         var out: [UUID: Int] = [:]
@@ -47,6 +47,19 @@ struct PopoverView: View {
             for a in store.accounts(for: p) {
                 out[a.id] = n
                 n += a.limits.filter { ($0.percent ?? 0) >= 100 }.count
+            }
+        }
+        return out
+    }
+
+    /// Same distribution for burning bars.
+    private var burningOffsets: [UUID: Int] {
+        var n = 0
+        var out: [UUID: Int] = [:]
+        for p in Provider.allCases {
+            for a in store.accounts(for: p) {
+                out[a.id] = n
+                n += a.limits.filter { $0.burning && ($0.percent ?? 0) < 100 }.count
             }
         }
         return out
@@ -90,7 +103,8 @@ struct PopoverView: View {
                 AccountCard(account: account, accent: p.accent,
                             maxedStyle: store.effectiveMaxedStyle,
                             maxedOffset: store.maxedVaried ? maxedOffsets[account.id] ?? 0 : -1,
-                            burnStyle: { store.burnStyle(forKey: $0) })
+                            burnBase: store.effectiveBurnStyle,
+                            burnOffset: store.burnVaried ? burningOffsets[account.id] ?? 0 : -1)
                     .padding(.horizontal, 12)
             }
         }
@@ -123,13 +137,29 @@ struct AccountCard: View {
     /// -1 = synced (every dead bar shows maxedStyle); otherwise the ordinal
     /// of this account's first dead bar in the whole popover.
     var maxedOffset: Int = -1
-    var burnStyle: (String) -> BurnStyle = { _ in .firestorm }
+    var burnBase: BurnStyle = .firestorm
+    /// -1 = consistent; otherwise this account's first burning bar's ordinal.
+    var burnOffset: Int = -1
 
     /// Style for the Nth dead bar in this card under the variety setting.
     private func styleForMaxed(_ ordinal: Int) -> MaxedStyle {
         guard maxedOffset >= 0 else { return maxedStyle }
         let count = MaxedStyle.allCases.count
         return MaxedStyle(rawValue: (maxedStyle.rawValue + maxedOffset + ordinal) % count) ?? maxedStyle
+    }
+
+    private func styleForBurn(_ ordinal: Int) -> BurnStyle {
+        guard burnOffset >= 0 else { return burnBase }
+        let count = BurnStyle.allCases.count
+        return BurnStyle(rawValue: (burnBase.rawValue + burnOffset + ordinal) % count) ?? burnBase
+    }
+
+    /// Limit id → ordinal among this card's burning bars.
+    private var burnOrdinals: [UsageLimit.ID: Int] {
+        var n = 0
+        var out: [UsageLimit.ID: Int] = [:]
+        for l in account.limits where l.burning && (l.percent ?? 0) < 100 { out[l.id] = n; n += 1 }
+        return out
     }
 
     /// Limit id → its ordinal among this card's dead bars.
@@ -189,7 +219,7 @@ struct AccountCard: View {
                     ForEach(account.limits) { l in
                         LimitRow(limit: l, accent: accent,
                                  maxedStyle: styleForMaxed(maxedOrdinals[l.id] ?? 0),
-                                 burnStyle: burnStyle(l.key))
+                                 burnStyle: styleForBurn(burnOrdinals[l.id] ?? 0))
                     }
                 }
             }
