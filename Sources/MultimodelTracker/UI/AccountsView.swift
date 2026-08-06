@@ -7,11 +7,22 @@ struct AccountsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
+            HStack(spacing: 10) {
                 Text("Accounts").font(.system(size: 15, weight: .semibold))
                 Spacer()
                 Text("up to \(Provider.maxAccountsPerProvider) per provider")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
+                // Replaces the traffic lights: this panel has no title bar, so
+                // it needs its own way back to the tray.
+                Button {
+                    NotificationCenter.default.post(name: .mmtShowTray, object: nil)
+                } label: {
+                    Image(systemName: "arrow.uturn.backward.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Back to the tracker")
             }
             .padding(16)
             Divider()
@@ -33,6 +44,10 @@ struct AccountsView: View {
             deadBarSection
         }
         .frame(width: 480)
+        // The panel is borderless and clear, so the view carries the window's
+        // material and shape itself.
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
         // Double-click on empty space = "take me back to the tray". Controls
         // (buttons, nickname fields) consume their own clicks, so only the
         // background reaches this gesture.

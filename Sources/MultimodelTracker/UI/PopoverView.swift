@@ -12,6 +12,11 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().opacity(0.35)
+            // No fixed cap: a hard 460 started scrolling the moment Gemini
+            // added rows. fixedSize lets the ScrollView take its content's
+            // ideal height so the popover snaps to whatever is there, and the
+            // ceiling only engages when the content genuinely outgrows the
+            // screen.
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     ForEach(Provider.allCases) { provider in
@@ -21,7 +26,8 @@ struct PopoverView: View {
                 }
                 .padding(.vertical, 12)
             }
-            .frame(maxHeight: 460)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxHeight: maxListHeight)
             Divider().opacity(0.35)
             footer
         }
@@ -44,6 +50,13 @@ struct PopoverView: View {
             }
         }
         return out
+    }
+
+    /// Leave room for the header, footer and the menu bar itself; below that
+    /// the popover simply grows.
+    private var maxListHeight: CGFloat {
+        let screen = NSScreen.main?.visibleFrame.height ?? 800
+        return max(240, screen - 160)
     }
 
     private var header: some View {

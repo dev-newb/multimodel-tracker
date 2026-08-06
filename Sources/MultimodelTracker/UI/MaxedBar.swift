@@ -33,8 +33,12 @@ struct MaxedBar: View {
     @State private var opened = Date()
 
     static let barH = 5.0                // matches LimitRow's capsule height
-    static let above = 20.0              // headroom for the EKG trace
-    static let below = 21.0              // room for bleed drops to fall
+    /// NOTHING is drawn above the bar any more. A tall headroom band put the
+    /// EKG up at label height, which read as the effect being detached from
+    /// the bar it belongs to. Everything now sits in the bar or in the gap
+    /// below it, so the artwork always lines up with the capsule it replaces.
+    static let above = 0.0
+    static let below = 10.0              // gap below the bar, inside the row
     private static let canvasH = above + barH + below
 
     var body: some View {
@@ -73,8 +77,8 @@ struct MaxedBar: View {
                      with: .color(red.opacity(1 - e)))
         }
 
-        // EKG polyline in the band above the bar.
-        let bandH = 16.0, bandTop = above - bandH - 2
+        // EKG polyline in the gap BELOW the bar.
+        let bandH = 9.0, bandTop = above + barH + 0.5
         let pts: [(Double, Double)] = [(0, 0.5), (0.293, 0.5), (0.31, 0.2), (0.327, 0.8),
                                        (0.347, 0.067), (0.363, 0.5), (1, 0.5)]
         var path = Path()

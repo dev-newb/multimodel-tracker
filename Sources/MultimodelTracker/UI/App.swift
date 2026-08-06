@@ -177,6 +177,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.noteMaxedViewing()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
+            if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil,
+               let host = popover.contentViewController as? NSHostingController<PopoverView> {
+                FileHandle.standardError.write(
+                    "popover fitting=\(Int(host.view.fittingSize.height)) content=\(Int(popover.contentSize.height))\n"
+                        .data(using: .utf8)!)
+            }
         }
     }
 
@@ -197,10 +203,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // other windows (this app keeps hidden webview hosts). A floating
         // non-activating panel on every Space cannot be on the wrong one, and
         // it takes keystrokes for the nickname fields without activating us.
+        // Borderless: no traffic lights, no title bar, not draggable. This
+        // belongs under the menu bar like the popover, not parked somewhere.
         let w = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
-                        styleMask: [.titled, .closable, .nonactivatingPanel],
+                        styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
-        w.title = "Multimodel Tracker — Accounts"
+        w.isMovable = false
+        w.isOpaque = false
+        w.backgroundColor = .clear
+        w.hasShadow = true
         w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         w.level = .floating
         w.hidesOnDeactivate = false
