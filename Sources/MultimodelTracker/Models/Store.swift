@@ -113,7 +113,7 @@ final class Store: ObservableObject {
     @discardableResult
     func importGoogleCLI() -> Account? {
         guard canAdd(.google), accounts(for: .google).isEmpty else { return nil }
-        let viaAntigravity = GoogleCredentialSource.antigravityTokenBlob() != nil
+        let viaAntigravity = GoogleCredentialSource.antigravityKeychainBlob() != nil
         guard viaAntigravity || GoogleCredentialSource.geminiCLITokenBlob() != nil else { return nil }
         var a = Account(provider: .google, label: viaAntigravity ? "Antigravity" : "gemini-cli")
         a.nickname = viaAntigravity ? "Antigravity" : "gemini-cli"

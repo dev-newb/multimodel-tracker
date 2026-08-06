@@ -88,9 +88,36 @@ enum GoogleCredentialSource {
         return parse(o)
     }
 
+    /// Per-launch cache of the raw keychain payload. THIS ITEM BELONGS TO
+    /// ANOTHER APP (Antigravity), so its ACL does not list us and macOS
+    /// prompts on every read until the user grants Always Allow. Reading it
+    /// once per poll therefore meant a password prompt every three minutes.
+    /// One read per launch, cached — including the failure, so a denied
+    /// prompt doesn't immediately ask again.
+    private static var keychainCache: String??
+    private static let keychainQueue = DispatchQueue(label: "com.devnewb.multimodeltracker.google")
+
+    /// Off the main actor: SecItemCopyMatching blocks for as long as the
+    /// password panel is up, and Store is @MainActor — reading it inline
+    /// froze the whole UI behind the prompt.
+    static func antigravityKeychainBlobAsync() async -> String? {
+        if let cached = keychainCache { return cached }
+        let value: String? = await withCheckedContinuation { cont in
+            keychainQueue.async {
+                if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+                    FileHandle.standardError.write("google keychain READ (cache miss)\n".data(using: .utf8)!)
+                }
+                cont.resume(returning: antigravityKeychainBlob())
+            }
+        }
+        keychainCache = value
+        return value
+    }
+
     /// Antigravity keeps its login in the login keychain rather than a file —
     /// the SAME item serves both the IDE and the `agy` CLI, so one read covers
-    /// both. macOS gates this with a one-time consent prompt.
+    /// both. macOS gates this with a consent prompt; Always Allow makes it
+    /// silent from then on.
     static func antigravityKeychainBlob() -> String? {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrService as String: "gemini",
@@ -107,8 +134,8 @@ enum GoogleCredentialSource {
     /// `go-keyring-base64:<base64>`. Inside is plain JSON:
     ///   { "auth_method": …, "id_token": …, "token": { access_token,
     ///     token_type, refresh_token, expiry } }
-    static func antigravityTokenBlob() -> TokenBlob? {
-        guard let raw = antigravityKeychainBlob() else { return nil }
+    static func antigravityTokenBlob() async -> TokenBlob? {
+        guard let raw = await antigravityKeychainBlobAsync() else { return nil }
         let body = raw.range(of: "go-keyring-base64:").map { String(raw[$0.upperBound...]) } ?? raw
         guard let decoded = Data(base64Encoded: body),
               let root = try? JSONSerialization.jsonObject(with: decoded) as? [String: Any]
@@ -119,7 +146,7 @@ enum GoogleCredentialSource {
 
 struct GoogleAdapterImpl: UsageAdapter {
     func fetch(account: Account) async throws -> FetchedUsage {
-        guard let blob = GoogleCredentialSource.antigravityTokenBlob()
+        guard let blob = await GoogleCredentialSource.antigravityTokenBlob()
                 ?? GoogleCredentialSource.geminiCLITokenBlob() else {
             throw AdapterError.notSignedIn
         }
