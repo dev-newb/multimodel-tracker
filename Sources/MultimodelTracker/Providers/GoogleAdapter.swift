@@ -12,69 +12,80 @@ enum GeminiOAuthClient {
     struct Client { let id: String; let secret: String }
     private static var cached: Client??
 
+    /// Antigravity's OAuth client, read out of its shipped binaries. The
+    /// gemini-cli client that used to be scanned for here does NOT work:
+    /// a refresh token is bound to the client that issued it, and pairing
+    /// gemini-cli's client with Antigravity's token returns 401 every time
+    /// (verified against the live token endpoint). Google has also started
+    /// answering the CLI client with UNSUPPORTED_CLIENT and telling users to
+    /// migrate to Antigravity, so this is the one with a future.
     static func discover() -> Client? {
         if let c = cached { return c }
         let fm = FileManager.default
-        let home = fm.homeDirectoryForCurrentUser
-
-        /// Every layout a global npm install can take. A fixed list misses
-        /// Homebrew on Apple Silicon and standalone node tarballs — the exact
-        /// bug that made the Electron app claim "gemini-cli not found" on a
-        /// machine that had it.
-        func versioned(_ base: URL, _ tail: [String]) -> [URL] {
-            (try? fm.contentsOfDirectory(atPath: base.path))?.compactMap { entry in
-                tail.reduce(base.appendingPathComponent(entry)) { $0.appendingPathComponent($1) }
-            } ?? []
-        }
-        var roots: [URL] = [
-            URL(fileURLWithPath: "/opt/homebrew/lib/node_modules"),
-            URL(fileURLWithPath: "/usr/local/lib/node_modules"),
-            URL(fileURLWithPath: "/usr/lib/node_modules"),
-            home.appendingPathComponent(".npm-global/lib/node_modules"),
-            home.appendingPathComponent(".local/lib/node_modules"),
-            home.appendingPathComponent(".local/opt/node/lib/node_modules"),
-            home.appendingPathComponent(".bun/install/global/node_modules")
+        let candidates = [
+            URL(fileURLWithPath: "/Applications/Antigravity.app/Contents/Resources/bin/language_server"),
+            fm.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/agy"),
         ]
-        roots += versioned(home.appendingPathComponent(".nvm/versions/node"), ["lib", "node_modules"])
-        roots += versioned(home.appendingPathComponent(".local/opt"), ["lib", "node_modules"])
-        roots += versioned(home.appendingPathComponent(".volta/tools/image/node"), ["lib", "node_modules"])
+        // Client id and secret are not adjacent in the binary, so they are
+        // matched separately rather than by one proximity regex.
+        let idPattern = try! NSRegularExpression(
+            pattern: "[0-9]{10,}-[a-z0-9]{20,}\\.apps\\.googleusercontent\\.com")
+        let secretPattern = try! NSRegularExpression(pattern: "GOCSPX-[A-Za-z0-9_-]{20,}")
 
-        let pattern = try! NSRegularExpression(
-            pattern: "([0-9]{10,}-[a-z0-9]+\\.apps\\.googleusercontent\\.com)[\\s\\S]{0,300}?(GOCSPX-[A-Za-z0-9_-]+)")
-
-        for root in roots {
-            let pkg = root.appendingPathComponent("@google/gemini-cli")
-            guard fm.fileExists(atPath: pkg.path) else { continue }
-            guard let walker = fm.enumerator(at: pkg, includingPropertiesForKeys: [.fileSizeKey]) else { continue }
-            for case let file as URL in walker {
-                guard file.pathExtension == "js",
-                      let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize,
-                      size < 30_000_000,
-                      let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
-                let range = NSRange(text.startIndex..., in: text)
-                if let m = pattern.firstMatch(in: text, range: range),
-                   let idR = Range(m.range(at: 1), in: text),
-                   let scR = Range(m.range(at: 2), in: text) {
-                    let c = Client(id: String(text[idR]), secret: String(text[scR]))
-                    cached = c
-                    return c
-                }
-            }
+        for url in candidates {
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { continue }
+            // ASCII scan: these are Mach-O binaries, so decode lossily.
+            let text = String(decoding: data, as: UTF8.self)
+            let range = NSRange(text.startIndex..., in: text)
+            guard let idM = idPattern.firstMatch(in: text, range: range),
+                  let idR = Range(idM.range, in: text),
+                  let scM = secretPattern.firstMatch(in: text, range: range),
+                  let scR = Range(scM.range, in: text) else { continue }
+            // Secrets sit back to back in the binary with no separator; the
+            // regex bounds each one, but trim to the known 35-char length.
+            let secret = String(String(text[scR]).prefix(35))
+            let c = Client(id: String(text[idR]), secret: secret)
+            cached = c
+            return c
         }
         cached = Client?.none
         return nil
     }
 }
 
-/// Two places a Google login can already exist on this Mac.
+/// Two places a Google login can already exist on this Mac. Both carry a
+/// live access token alongside the refresh token, so a read usually needs no
+/// OAuth round trip at all.
 enum GoogleCredentialSource {
+    struct TokenBlob {
+        let accessToken: String?
+        let refreshToken: String?
+        let expiry: Date?
+    }
+
+    private static func parse(_ root: [String: Any]) -> TokenBlob {
+        let tok = (root["token"] as? [String: Any]) ?? root
+        func pick(_ o: [String: Any], _ keys: [String]) -> String? {
+            for k in keys { if let v = o[k] as? String, !v.isEmpty { return v } }
+            return nil
+        }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        let expiryString = pick(tok, ["expiry", "expiry_date", "expires_at"])
+        return TokenBlob(
+            accessToken: pick(tok, ["access_token", "accessToken"]),
+            refreshToken: pick(tok, ["refresh_token", "refreshToken", "RefreshToken"]),
+            expiry: expiryString.flatMap { iso.date(from: $0) ?? plain.date(from: $0) })
+    }
+
     /// gemini-cli writes a plain JSON file.
-    static func geminiCLIRefreshToken() -> String? {
+    static func geminiCLITokenBlob() -> TokenBlob? {
         let p = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".gemini/oauth_creds.json")
         guard let d = try? Data(contentsOf: p),
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
-        return o["refresh_token"] as? String
+        return parse(o)
     }
 
     /// Antigravity keeps its login in the login keychain rather than a file —
@@ -94,43 +105,34 @@ enum GoogleCredentialSource {
 
     /// Antigravity stores through Go's go-keyring, which wraps the payload as
     /// `go-keyring-base64:<base64>`. Inside is plain JSON:
-    ///   { "auth_method": …, "id_token": …, "token": { … } }
-    /// The OAuth material sits under `token`.
-    static func antigravityRefreshToken() -> String? {
+    ///   { "auth_method": …, "id_token": …, "token": { access_token,
+    ///     token_type, refresh_token, expiry } }
+    static func antigravityTokenBlob() -> TokenBlob? {
         guard let raw = antigravityKeychainBlob() else { return nil }
-        let body: String
-        if let r = raw.range(of: "go-keyring-base64:") {
-            body = String(raw[r.upperBound...])
-        } else {
-            body = raw
-        }
+        let body = raw.range(of: "go-keyring-base64:").map { String(raw[$0.upperBound...]) } ?? raw
         guard let decoded = Data(base64Encoded: body),
               let root = try? JSONSerialization.jsonObject(with: decoded) as? [String: Any]
-        else { return raw.hasPrefix("1//") ? raw : nil }
-
-        func pluck(_ o: [String: Any]) -> String? {
-            for k in ["refresh_token", "refreshToken", "RefreshToken"] {
-                if let t = o[k] as? String, !t.isEmpty { return t }
-            }
-            return nil
-        }
-        if let t = pluck(root) { return t }
-        if let tok = root["token"] as? [String: Any], let t = pluck(tok) { return t }
-        for v in root.values {
-            if let nested = v as? [String: Any], let t = pluck(nested) { return t }
-        }
-        return nil
+        else { return raw.hasPrefix("1//") ? TokenBlob(accessToken: nil, refreshToken: raw, expiry: nil) : nil }
+        return parse(root)
     }
 }
 
 struct GoogleAdapterImpl: UsageAdapter {
     func fetch(account: Account) async throws -> FetchedUsage {
-        guard let client = GeminiOAuthClient.discover() else {
-            throw AdapterError.notImplemented("gemini-cli install not found (its OAuth client is required)")
-        }
-        guard let refresh = GoogleCredentialSource.antigravityRefreshToken()
-                ?? GoogleCredentialSource.geminiCLIRefreshToken() else {
+        guard let blob = GoogleCredentialSource.antigravityTokenBlob()
+                ?? GoogleCredentialSource.geminiCLITokenBlob() else {
             throw AdapterError.notSignedIn
+        }
+        // The stored access token is usually still live; only pay for a
+        // refresh when it isn't. That also means a working read even if the
+        // OAuth client can't be located.
+        if let token = blob.accessToken, blob.expiry.map({ $0 > Date().addingTimeInterval(60) }) ?? false,
+           let usage = try? await loadQuota(token: token) {
+            return usage
+        }
+        guard let refresh = blob.refreshToken else { throw AdapterError.notSignedIn }
+        guard let client = GeminiOAuthClient.discover() else {
+            throw AdapterError.notImplemented("Antigravity install not found (its OAuth client is required)")
         }
         let access = try await exchange(refresh: refresh, client: client)
         return try await loadQuota(token: access)
@@ -150,36 +152,37 @@ struct GoogleAdapterImpl: UsageAdapter {
         return t
     }
 
-    /// Code Assist meters each model VERSION separately, so buckets are kept
-    /// apart rather than collapsed.
+    /// `v1internal:retrieveUserQuota` with an EMPTY body. Verified live
+    /// against Rich's Antigravity login; it answers with per-model buckets:
+    ///   { buckets: [ { modelId, tokenType, remainingFraction, resetTime } ] }
+    /// The endpoint this used to call — loadCodeAssist — carries no usage at
+    /// all, only tier eligibility, which is why the parse never round-tripped.
+    /// retrieveUserQuotaSummary exists but answers 403 for this account.
     private func loadQuota(token: String) async throws -> FetchedUsage {
-        var req = URLRequest(url: URL(string: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")!)
+        var req = URLRequest(url: URL(string: "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota")!)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "metadata": ["ideType": "IDE_UNSPECIFIED",
-                         "platform": "PLATFORM_UNSPECIFIED",
-                         "pluginType": "GEMINI"]
-        ])
+        req.httpBody = Data("{}".utf8)
         let (d, r) = try await URLSession.shared.data(for: req)
         guard let http = r as? HTTPURLResponse else { throw AdapterError.transport("no response") }
+        if http.statusCode == 401 || http.statusCode == 403 { throw AdapterError.notSignedIn }
         guard http.statusCode == 200 else { throw AdapterError.transport("HTTP \(http.statusCode)") }
-        guard let root = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
-            throw AdapterError.transport("malformed JSON")
+        guard let root = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              let buckets = root["buckets"] as? [[String: Any]] else {
+            throw AdapterError.transport("no quota buckets in response")
         }
-        var limits: [UsageLimit] = []
-        // Bucket shapes vary by account; accept the common spellings.
-        for key in ["quotaBuckets", "buckets", "userQuota"] {
-            guard let arr = root[key] as? [[String: Any]] else { continue }
-            for b in arr {
-                let name = (b["modelId"] as? String) ?? (b["name"] as? String) ?? "Quota"
-                let used = (b["usedPercent"] as? Double)
-                    ?? (b["used"] as? Double).flatMap { u in (b["limit"] as? Double).map { u / $0 * 100 } }
-                limits.append(.init(key: name, label: name, percent: used, resetsAt: nil))
-            }
+        let iso = ISO8601DateFormatter()
+        let limits: [UsageLimit] = buckets.compactMap { b in
+            guard let model = b["modelId"] as? String else { return nil }
+            // remainingFraction is REMAINING; the bars show used.
+            let used = (b["remainingFraction"] as? Double).map { (1 - $0) * 100 }
+            let type = (b["tokenType"] as? String) ?? ""
+            let label = type == "REQUESTS" ? model : "\(model) · \(type.lowercased())"
+            return UsageLimit(key: "\(model)_\(type)", label: label, percent: used,
+                              resetsAt: (b["resetTime"] as? String).flatMap { iso.date(from: $0) })
         }
-        let tier = ((root["currentTier"] as? [String: Any])?["name"] as? String)
-        return FetchedUsage(plan: tier, limits: limits)
+        guard !limits.isEmpty else { throw AdapterError.transport("quota response had no models") }
+        return FetchedUsage(plan: nil, limits: limits)
     }
 }

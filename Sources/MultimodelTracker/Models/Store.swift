@@ -106,6 +106,22 @@ final class Store: ObservableObject {
         return a
     }
 
+    /// Google's "sign-in": adopt the Antigravity or gemini-cli login already
+    /// on this Mac. The adapter reads those sources directly at fetch time,
+    /// so the account is a named slot rather than a credential holder — which
+    /// also means one is enough.
+    @discardableResult
+    func importGoogleCLI() -> Account? {
+        guard canAdd(.google), accounts(for: .google).isEmpty else { return nil }
+        let viaAntigravity = GoogleCredentialSource.antigravityTokenBlob() != nil
+        guard viaAntigravity || GoogleCredentialSource.geminiCLITokenBlob() != nil else { return nil }
+        var a = Account(provider: .google, label: viaAntigravity ? "Antigravity" : "gemini-cli")
+        a.nickname = viaAntigravity ? "Antigravity" : "gemini-cli"
+        accounts.append(a); save()
+        Task { await refresh(a) }
+        return a
+    }
+
     func update(_ account: Account) {
         guard let i = accounts.firstIndex(where: { $0.id == account.id }) else { return }
         accounts[i] = account; save()

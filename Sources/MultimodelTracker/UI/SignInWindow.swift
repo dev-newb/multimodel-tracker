@@ -40,7 +40,12 @@ final class SignInWindowController: NSObject, NSWindowDelegate {
         w.title = "Sign in — \(account.displayName)"
         w.contentView = web
         w.delegate = self
-        w.collectionBehavior = [.moveToActiveSpace]
+        // Above the Accounts panel (also .floating — later ordering wins) and
+        // pinned on top: this window has no Dock/task-manager presence, so if
+        // it slips behind something the user has to hunt for it or start the
+        // sign-in over.
+        w.level = .floating
+        w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         w.placeNearMenuBar()
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

@@ -89,8 +89,10 @@ final class WebSessionPool {
     /// Presents the provider's login inside this account's isolated store.
     func signInView(for account: Account) -> WKWebView {
         let v = view(for: account)
+        // chatgpt.com's root shows a logged-out chat page with Log in tucked
+        // in a corner — /auth/login goes straight to the account picker.
         let url = account.provider == .openai
-            ? "https://chatgpt.com/"
+            ? "https://chatgpt.com/auth/login"
             : "https://claude.ai/login"
         v.load(URLRequest(url: URL(string: url)!))
         return v

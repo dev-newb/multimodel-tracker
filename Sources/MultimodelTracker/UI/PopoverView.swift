@@ -141,7 +141,12 @@ struct AccountCard: View {
                 .fill(accent.opacity(0.85)).frame(width: 3)
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 6) {
-                    Text(account.label).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    // displayName, NOT label: the whole point of nicknames is
+                    // that they show here.
+                    Text(account.displayName).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    if let sub = account.subtitle {
+                        Text(sub).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+                    }
                     if let plan = account.plan {
                         Text(plan.uppercased())
                             .font(.system(size: 8, weight: .bold)).tracking(0.5)

@@ -86,9 +86,17 @@ struct AccountsView: View {
                     Button("Import Codex CLI") { store.importCodexCLI() }
                         .font(.system(size: 11))
                 }
-                Button("Add") { addAccount(p) }
-                    .font(.system(size: 11))
-                    .disabled(!store.canAdd(p))
+                if p == .google {
+                    // The adapter reads the Antigravity/gemini-cli login that
+                    // already lives on this Mac — importing IS the sign-in.
+                    Button("Import Antigravity / gemini-cli") { store.importGoogleCLI() }
+                        .font(.system(size: 11))
+                        .disabled(!store.accounts(for: .google).isEmpty)
+                } else {
+                    Button("Add") { addAccount(p) }
+                        .font(.system(size: 11))
+                        .disabled(!store.canAdd(p))
+                }
             }
             if accounts.isEmpty {
                 Text(emptyHint(p)).font(.system(size: 11)).foregroundStyle(.tertiary)
@@ -106,7 +114,7 @@ struct AccountsView: View {
         switch p {
         case .anthropic: return "Add an account, then sign in to claude.ai in its own window."
         case .openai:    return "Import the Codex CLI login, or add an account and sign in to chatgpt.com."
-        case .google:    return "Not yet available — see README."
+        case .google:    return "Import the Antigravity or gemini-cli login already on this Mac."
         }
     }
 
@@ -151,7 +159,11 @@ struct AccountRow: View {
                     .font(.system(size: 12, weight: .medium))
                     .focused($focused)
                     .onSubmit { onNickname(draft) }
-                    .onChange(of: focused) { isFocused in if !isFocused { onNickname(draft) } }
+                    // Commit on every keystroke. Committing only on focus loss
+                    // lost the edit outright: this lives in a non-activating
+                    // panel, so closing it (or clicking straight back to the
+                    // tray) never delivers the focus change.
+                    .onChange(of: draft) { onNickname($0) }
                 Text(account.subtitle ?? account.label)
                     .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
             }

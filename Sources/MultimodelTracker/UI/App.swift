@@ -115,6 +115,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
         }
 
+        // `--import-google` exercises the Antigravity/gemini-cli import from
+        // the command line, so the Google path can be verified without
+        // driving the panel's button.
+        if CommandLine.arguments.contains("--import-google") {
+            Task { @MainActor in
+                let existing = store.accounts(for: .google).count
+                let added = store.importGoogleCLI()
+                let outcome = added != nil ? "added"
+                    : (existing > 0 ? "already present (\(existing))" : "no credentials found")
+                FileHandle.standardError.write("import-google: \(outcome)\n".data(using: .utf8)!)
+            }
+        }
+
         // `--accounts` does the same for the Accounts window, which otherwise
         // is only reachable through a click inside the popover.
         if CommandLine.arguments.contains("--accounts") {
