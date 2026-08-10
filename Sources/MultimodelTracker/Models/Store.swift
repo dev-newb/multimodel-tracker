@@ -7,6 +7,13 @@ import WebKit
 @MainActor
 final class Store: ObservableObject {
     @Published private(set) var accounts: [Account] = []
+    /// True only while the popover or Accounts panel is actually on screen.
+    /// The animated bars gate on this: NSPopover keeps its view hierarchy
+    /// alive after dismissal, so TimelineView(.animation) happily redraws at
+    /// display rate forever behind a closed popover — measured at 25% CPU
+    /// with nothing visible.
+    @Published private(set) var uiVisible = false
+    func setUIVisible(_ v: Bool) { if uiVisible != v { uiVisible = v } }
     @Published private(set) var isRefreshing = false
     @Published private(set) var lastRefresh: Date?
 

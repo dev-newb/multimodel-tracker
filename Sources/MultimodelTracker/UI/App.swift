@@ -24,7 +24,7 @@ extension Notification.Name {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private let store = Store()
@@ -50,6 +50,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         popover = NSPopover()
         popover.behavior = .transient
+        // Transient popovers dismiss themselves when the user clicks away, so
+        // the delegate is the only reliable place to learn they closed.
+        popover.delegate = self
         // Size to the content rather than a fixed height — two accounts must
         // not leave the same empty gulf a fixed 520 produced.
         let host = NSHostingController(rootView: PopoverView(store: store))
@@ -294,8 +297,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func togglePopover() {
         guard let button = statusItem.button else { return }
-        if popover.isShown { popover.performClose(nil) }
+        if popover.isShown { popover.performClose(nil); store.setUIVisible(false) }
         else {
+            store.setUIVisible(true)
             store.noteMaxedViewing()
             store.noteBurnViewing()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -309,6 +313,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func windowWillClose(_ notification: Notification) {
+        guard (notification.object as? NSWindow) === accountsWindow else { return }
+        store.setUIVisible(popover.isShown)
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        // Accounts may still be open; only stop the clocks if nothing is up.
+        store.setUIVisible(accountsWindow?.isVisible == true)
+    }
+
     private var accountsWindow: NSWindow?
 
     @objc func openSettings() {
@@ -316,6 +330,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // dismisses itself — and popovers outrank a .floating panel, leaving
         // Accounts opening BEHIND the tray window. Close it explicitly.
         if popover.isShown { popover.performClose(nil) }
+        store.setUIVisible(true)
         if let w = accountsWindow {
             w.placeNearMenuBar(anchor: statusItem.button?.window?.frame)
             w.orderFrontRegardless(); return
@@ -351,6 +366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the nickname field during testing). Clicking a field still focuses
         // it — that's what nonactivatingPanel is for.
         w.orderFrontRegardless()
+        w.delegate = self
         accountsWindow = w
         if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
             FileHandle.standardError.write("accounts window: \(Int(w.frame.width))x\(Int(w.frame.height))\n".data(using: .utf8)!)

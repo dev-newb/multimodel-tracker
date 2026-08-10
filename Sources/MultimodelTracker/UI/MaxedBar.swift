@@ -50,23 +50,40 @@ struct MaxedBar: View {
     static let below = 22.0
     private static let canvasH = above + barH + below
 
+    /// When false the clock stops and a single frame is drawn. See
+    /// Store.uiVisible.
+    var animating = true
+
+    @ViewBuilder
     var body: some View {
-        TimelineView(.animation) { context in
-            Canvas { ctx, size in
-                let t = context.date.timeIntervalSinceReferenceDate
-                switch style {
-                case .glitch:      Self.drawGlitch(ctx, size, t: t)
-                case .bleed:       Self.drawBleed(ctx, size, t: t)
-                case .deadChannel: Self.drawDeadChannel(ctx, size, t: t)
-                case .blackHole:   Self.drawBlackHole(ctx, size, t: t)
-                case .drown:       Self.drawDrown(ctx, size, t: t)
-                case .petrify:     Self.drawPetrify(ctx, size, t: t)
-                case .neonBurnout: Self.drawNeonBurnout(ctx, size, t: t)
-                }
+        // Two branches rather than one parameterised schedule: the schedule
+        // types are unrelated, and more importantly a hidden view must have
+        // NO timeline at all — an idle schedule still redraws.
+        if animating {
+            TimelineView(.animation) { context in
+                canvas(at: context.date.timeIntervalSinceReferenceDate)
+            }
+            .frame(height: Self.canvasH)
+            .allowsHitTesting(false)
+        } else {
+            canvas(at: 0)
+                .frame(height: Self.canvasH)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func canvas(at t: Double) -> some View {
+        Canvas { ctx, size in
+            switch style {
+            case .glitch:      Self.drawGlitch(ctx, size, t: t)
+            case .bleed:       Self.drawBleed(ctx, size, t: t)
+            case .deadChannel: Self.drawDeadChannel(ctx, size, t: t)
+            case .blackHole:   Self.drawBlackHole(ctx, size, t: t)
+            case .drown:       Self.drawDrown(ctx, size, t: t)
+            case .petrify:     Self.drawPetrify(ctx, size, t: t)
+            case .neonBurnout: Self.drawNeonBurnout(ctx, size, t: t)
             }
         }
-        .frame(height: Self.canvasH)
-        .allowsHitTesting(false)
     }
 
     private static let red    = Color(red: 0.91, green: 0.27, blue: 0.23)

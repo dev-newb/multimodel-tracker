@@ -104,7 +104,8 @@ struct PopoverView: View {
                             maxedStyle: store.effectiveMaxedStyle,
                             maxedOffset: store.maxedVaried ? maxedOffsets[account.id] ?? 0 : -1,
                             burnBase: store.effectiveBurnStyle,
-                            burnOffset: store.burnVaried ? burningOffsets[account.id] ?? 0 : -1)
+                            burnOffset: store.burnVaried ? burningOffsets[account.id] ?? 0 : -1,
+                            animating: store.uiVisible)
                     .padding(.horizontal, 12)
             }
         }
@@ -140,6 +141,7 @@ struct AccountCard: View {
     var burnBase: BurnStyle = .firestorm
     /// -1 = consistent; otherwise this account's first burning bar's ordinal.
     var burnOffset: Int = -1
+    var animating = true
 
     /// Style for the Nth dead bar in this card under the variety setting.
     /// Index arithmetic, not rawValue — the raw values have a hole where
@@ -223,7 +225,8 @@ struct AccountCard: View {
                     ForEach(account.limits) { l in
                         LimitRow(limit: l, accent: accent,
                                  maxedStyle: styleForMaxed(maxedOrdinals[l.id] ?? 0),
-                                 burnStyle: styleForBurn(burnOrdinals[l.id] ?? 0))
+                                 burnStyle: styleForBurn(burnOrdinals[l.id] ?? 0),
+                                 animating: animating)
                     }
                 }
             }
@@ -239,6 +242,7 @@ struct LimitRow: View {
     let accent: Color
     var maxedStyle: MaxedStyle = .glitch
     var burnStyle: BurnStyle = .firestorm
+    var animating = true
     @Environment(\.colorScheme) private var scheme
 
     /// .secondary/.tertiary are TRANSLUCENT — a bright trace behind them
@@ -289,14 +293,14 @@ struct LimitRow: View {
         }
         .background(alignment: .bottom) {
             if limit.burning, !isMaxed {
-                BurningBar(style: burnStyle, fraction: limit.fraction)
+                BurningBar(style: burnStyle, fraction: limit.fraction, animating: animating)
                     .offset(y: BurningBar.below)
             }
             if isMaxed {
                 // Bottom edge rides `below` pt past the strip so drops can
                 // fall out of the track; the trace band lands over the label,
                 // underneath its text.
-                MaxedBar(style: maxedStyle).offset(y: MaxedBar.below)
+                MaxedBar(style: maxedStyle, animating: animating).offset(y: MaxedBar.below)
             }
         }
     }

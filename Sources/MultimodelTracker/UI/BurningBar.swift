@@ -33,23 +33,38 @@ struct BurningBar: View {
     static let below = 4.0
     private static let canvasH = above + barH + below
 
+    /// When false the clock stops and a single frame is drawn. See
+    /// Store.uiVisible.
+    var animating = true
+
+    @ViewBuilder
     var body: some View {
-        TimelineView(.animation) { context in
-            Canvas { ctx, size in
-                let t = context.date.timeIntervalSinceReferenceDate
-                let w = max(2, size.width * min(max(fraction, 0), 1))
-                Self.drawTrack(ctx, size)
-                switch style {
-                case .firestorm: Self.drawFirestorm(ctx, size, w: w, t: t)
-                case .coalBed:   Self.drawCoalBed(ctx, size, w: w, t: t)
-                case .blowtorch: Self.drawBlowtorch(ctx, size, w: w, t: t)
-                case .comet:     Self.drawComet(ctx, size, w: w, t: t)
-                case .fuse:      Self.drawFuse(ctx, size, w: w, t: t)
-                }
+        // See MaxedBar: a hidden view gets no timeline at all.
+        if animating {
+            TimelineView(.animation) { context in
+                canvas(at: context.date.timeIntervalSinceReferenceDate)
+            }
+            .frame(height: Self.canvasH)
+            .allowsHitTesting(false)
+        } else {
+            canvas(at: 0)
+                .frame(height: Self.canvasH)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func canvas(at t: Double) -> some View {
+        Canvas { ctx, size in
+            let w = max(2, size.width * min(max(fraction, 0), 1))
+            Self.drawTrack(ctx, size)
+            switch style {
+            case .firestorm: Self.drawFirestorm(ctx, size, w: w, t: t)
+            case .coalBed:   Self.drawCoalBed(ctx, size, w: w, t: t)
+            case .blowtorch: Self.drawBlowtorch(ctx, size, w: w, t: t)
+            case .comet:     Self.drawComet(ctx, size, w: w, t: t)
+            case .fuse:      Self.drawFuse(ctx, size, w: w, t: t)
             }
         }
-        .frame(height: Self.canvasH)
-        .allowsHitTesting(false)
     }
 
     private static let ember  = Color(red: 1.0, green: 0.80, blue: 0.30)
