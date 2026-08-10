@@ -243,6 +243,11 @@ struct LimitRow: View {
     var maxedStyle: MaxedStyle = .glitch
     var burnStyle: BurnStyle = .firestorm
     var animating = true
+    /// Review-only: --render-tip pins the tooltip open so its size and
+    /// position can be checked without a live mouse.
+    var forceHover = false
+    @State private var hovering = false
+    private var showTip: Bool { hovering || forceHover }
     @Environment(\.colorScheme) private var scheme
 
     /// .secondary/.tertiary are TRANSLUCENT — a bright trace behind them
@@ -272,7 +277,6 @@ struct LimitRow: View {
                         .foregroundStyle(limit.burning ? Color(red: 1, green: 0.68, blue: 0.25) : .primary)
                 }
                 Text(limit.resetText).font(.system(size: 10)).foregroundStyle(opaqueTertiary)
-                    .help(limit.resetDetail)
             }
             if isMaxed {
                 // Placeholder keeping the capsule's slot; the artwork is on
@@ -291,6 +295,31 @@ struct LimitRow: View {
                 .frame(height: 5)
             }
         }
+        // The whole row is the hover target, not just the reset text, and the
+        // tooltip is ours: .help() waits 1-2s and often never fires inside a
+        // non-activating panel. contentShape makes the gaps hoverable too.
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .overlay(alignment: .bottomTrailing) {
+            if showTip {
+                Text(limit.resetDetail)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(.thickMaterial, in: RoundedRectangle(cornerRadius: 5))
+                    .overlay(RoundedRectangle(cornerRadius: 5)
+                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.28), radius: 5, y: 2)
+                    .fixedSize()
+                    // Sits over the bar so it can never be clipped by the
+                    // popover's scroll bounds, and never covers the numbers.
+                    .offset(y: 9)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(.easeOut(duration: 0.09), value: hovering)
+        .zIndex(showTip ? 1 : 0)
         .background(alignment: .bottom) {
             if limit.burning, !isMaxed {
                 BurningBar(style: burnStyle, fraction: limit.fraction, animating: animating)

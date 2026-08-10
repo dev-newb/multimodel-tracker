@@ -142,6 +142,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.terminate(nil)
         }
 
+        // `--render-tip <dir>` renders a row with the tooltip forced visible,
+        // so its size and placement can be checked without a real mouse.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-tip"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            let view = LimitRow(limit: UsageLimit(key: "5h", label: "5-hour limit", percent: 6,
+                                                  resetsAt: Date().addingTimeInterval(4 * 3600 + 21 * 60)),
+                                accent: Provider.anthropic.accent, forceHover: true)
+                .frame(width: 300)
+                .padding(24)
+                .background(Color(red: 0.13, green: 0.13, blue: 0.14))
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 2
+            if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+               let rep = NSBitmapImageRep(data: tiff),
+               let png = rep.representation(using: .png, properties: [:]) {
+                try? png.write(to: dir.appendingPathComponent("tip.png"))
+            }
+            NSApp.terminate(nil)
+        }
+
         // `--burn-sim` exercises the ported detector against synthetic pool
         // histories and prints PASS/FAIL per rule. The detector is pure, so
         // this is the whole contract: quiet drift, fallback floor, adaptive
