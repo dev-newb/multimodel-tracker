@@ -158,6 +158,15 @@ struct AccountsView: View {
                     .labelsHidden().fixedSize()
                 }
                 .padding(.horizontal, 2)
+                if store.googleMode == .antigravity {
+                    Toggle(isOn: Binding(get: { store.googleShowForeign },
+                                         set: { store.setGoogleShowForeign($0) })) {
+                        Text("Show Claude & GPT-OSS routed through Antigravity")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    .toggleStyle(.checkbox)
+                    .padding(.horizontal, 2)
+                }
             }
             ForEach(accounts) { account in
                 AccountRow(account: account, accent: p.accent,
