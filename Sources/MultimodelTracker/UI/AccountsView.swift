@@ -145,6 +145,20 @@ struct AccountsView: View {
             if accounts.isEmpty {
                 Text(emptyHint(p)).font(.system(size: 11)).foregroundStyle(.tertiary)
             }
+            if p == .google, !accounts.isEmpty {
+                HStack(spacing: 8) {
+                    Text("Read usage from").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Spacer()
+                    Picker("", selection: Binding(get: { store.googleMode.rawValue },
+                                                  set: { store.setGoogleMode(GoogleAuthMode(rawValue: $0) ?? .antigravity) })) {
+                        ForEach(GoogleAuthMode.allCases, id: \.rawValue) { m in
+                            Text(m.displayName).tag(m.rawValue)
+                        }
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                .padding(.horizontal, 2)
+            }
             ForEach(accounts) { account in
                 AccountRow(account: account, accent: p.accent,
                            onNickname: { store.setNickname($0, for: account.id) },

@@ -107,6 +107,18 @@ final class Store: ObservableObject {
     @Published private(set) var maxedVaried: Bool =
         UserDefaults.standard.bool(forKey: "mmt.maxedVaried")
 
+    /// Which Google surface to read. Antigravity is the default: it is what
+    /// the IDE actually meters, and the legacy Code Assist buckets read 0%
+    /// while agent usage is in flight.
+    @Published private(set) var googleMode: GoogleAuthMode =
+        GoogleAuthMode(rawValue: UserDefaults.standard.integer(forKey: "mmt.googleMode")) ?? .antigravity
+
+    func setGoogleMode(_ m: GoogleAuthMode) {
+        googleMode = m
+        UserDefaults.standard.set(m.rawValue, forKey: "mmt.googleMode")
+        if let g = accounts(for: .google).first { Task { await refresh(g) } }
+    }
+
     func setMaxedFixed(_ v: Int) {
         maxedFixed = v
         UserDefaults.standard.set(v, forKey: "mmt.maxedFixed")
@@ -305,7 +317,10 @@ final class Store: ObservableObject {
                                  accountId: creds.accountId, for: a.id)
         }
         do {
-            let fetched = try await ProviderRegistry.adapter(for: a.provider).fetch(account: a)
+            let adapter: UsageAdapter = a.provider == .google
+                ? GoogleAdapterImpl(mode: googleMode)
+                : ProviderRegistry.adapter(for: a.provider)
+            let fetched = try await adapter.fetch(account: a)
             if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
                 FileHandle.standardError.write(
                     "refresh \(a.provider.rawValue)/\(a.displayName): \(fetched.limits.map(\.key).joined(separator: ","))\n"

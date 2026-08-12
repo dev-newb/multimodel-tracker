@@ -142,6 +142,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.terminate(nil)
         }
 
+        // `--google-modes` fetches BOTH Google surfaces and prints them, so
+        // the per-model path can be proved against the legacy buckets.
+        if CommandLine.arguments.contains("--google-modes") {
+            Task { @MainActor in
+                guard let acct = store.accounts(for: .google).first else {
+                    FileHandle.standardError.write("no google account\n".data(using: .utf8)!); exit(1)
+                }
+                for mode in GoogleAuthMode.allCases {
+                    do {
+                        let u = try await GoogleAdapterImpl(mode: mode).fetch(account: acct)
+                        var out = "\n[\(mode.displayName)] plan=\(u.plan ?? "-") rows=\(u.limits.count)\n"
+                        for l in u.limits {
+                            out += "   \(l.label): \(l.percent.map { String(format: "%.1f%%", $0) } ?? "-")"
+                                + "  \(l.resetText)\n"
+                        }
+                        FileHandle.standardError.write(out.data(using: .utf8)!)
+                    } catch {
+                        FileHandle.standardError.write("\n[\(mode.displayName)] FAILED: \(error)\n".data(using: .utf8)!)
+                    }
+                }
+                exit(0)
+            }
+        }
+
         // `--render-tip <dir>` renders a row with the tooltip forced visible,
         // so its size and placement can be checked without a real mouse.
         if let i = CommandLine.arguments.firstIndex(of: "--render-tip"),
