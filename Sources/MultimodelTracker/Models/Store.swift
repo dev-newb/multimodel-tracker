@@ -113,19 +113,9 @@ final class Store: ObservableObject {
     @Published private(set) var googleMode: GoogleAuthMode =
         GoogleAuthMode(rawValue: UserDefaults.standard.integer(forKey: "mmt.googleMode")) ?? .antigravity
 
-    /// Claude and GPT-OSS routed through Antigravity — off by default.
-    @Published private(set) var googleShowForeign: Bool =
-        UserDefaults.standard.bool(forKey: "mmt.googleShowForeign")
-
     func setGoogleMode(_ m: GoogleAuthMode) {
         googleMode = m
         UserDefaults.standard.set(m.rawValue, forKey: "mmt.googleMode")
-        refreshGoogle()
-    }
-
-    func setGoogleShowForeign(_ v: Bool) {
-        googleShowForeign = v
-        UserDefaults.standard.set(v, forKey: "mmt.googleShowForeign")
         refreshGoogle()
     }
 
@@ -332,7 +322,7 @@ final class Store: ObservableObject {
         }
         do {
             let adapter: UsageAdapter = a.provider == .google
-                ? GoogleAdapterImpl(mode: googleMode, showForeignModels: googleShowForeign)
+                ? GoogleAdapterImpl(mode: googleMode)
                 : ProviderRegistry.adapter(for: a.provider)
             let fetched = try await adapter.fetch(account: a)
             if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {

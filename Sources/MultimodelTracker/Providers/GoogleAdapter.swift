@@ -165,11 +165,6 @@ enum GoogleAuthMode: Int, CaseIterable {
 
 struct GoogleAdapterImpl: UsageAdapter {
     var mode: GoogleAuthMode = .antigravity
-    /// Antigravity also routes Claude and GPT-OSS, metered in their own pool.
-    /// Hidden by default: under a GOOGLE heading they read as someone else's
-    /// models, and the Anthropic section already tracks a real Claude
-    /// subscription — two unrelated Claude numbers invite misreading.
-    var showForeignModels = false
 
     /// The project id comes from loadCodeAssist and rarely changes; holding it
     /// avoids a second round trip on every poll.
@@ -269,7 +264,7 @@ struct GoogleAdapterImpl: UsageAdapter {
             if let p = Self.cachedProject { body["project"] = p }
             let root = try await call("fetchAvailableModels", body: body,
                                       token: token, agent: "antigravity")
-            let usage = try Self.parseModels(root, showForeign: showForeignModels)
+            let usage = try Self.parseModels(root)
             Self.lastGood = (Date(), usage)
             return usage
         } catch {
@@ -286,7 +281,18 @@ struct GoogleAdapterImpl: UsageAdapter {
     /// 24 rows would be 22 duplicates. Group by that pair and name each group
     /// after the families inside it, so the row count follows how Google
     /// actually meters rather than how many model ids it lists.
-    static func parseModels(_ root: [String: Any], showForeign: Bool = false) throws -> FetchedUsage {
+    /// Models Antigravity routes but Google does not make: Claude, GPT-OSS,
+    /// and anything else that isn't a Gemini/Gemma/Imagen family name.
+    static func isForeign(_ id: String) -> Bool {
+        let s = id.lowercased()
+        if s.contains("claude") || s.contains("gpt") || s.contains("llama")
+            || s.contains("mistral") || s.contains("qwen") || s.contains("deepseek") {
+            return true
+        }
+        return !(s.contains("gemini") || s.contains("gemma") || s.contains("imagen"))
+    }
+
+    static func parseModels(_ root: [String: Any]) throws -> FetchedUsage {
         var entries: [(id: String, quota: [String: Any])] = []
         if let dict = root["models"] as? [String: Any] {
             for (id, v) in dict {
@@ -303,6 +309,12 @@ struct GoogleAdapterImpl: UsageAdapter {
         // Editor-internal pools, not something a user spends deliberately.
         entries = entries.filter { !$0.id.hasPrefix("chat_") && !$0.id.hasPrefix("tab_")
                                    && !$0.id.hasPrefix("rev") }
+        // This is the GOOGLE section: drop every non-Google model BEFORE
+        // grouping. Filtering whole pools instead let foreign models ride
+        // along whenever their pool happened to match Gemini's numbers —
+        // right after a reset everything reads 1.0, which merged all 20
+        // models into one row labelled "Claude · GPT-OSS · Gemini".
+        entries = entries.filter { !Self.isForeign($0.id) }
         guard !entries.isEmpty else { throw AdapterError.transport("no models with quota") }
 
         let iso = ISO8601DateFormatter()
@@ -311,11 +323,7 @@ struct GoogleAdapterImpl: UsageAdapter {
             guard let remaining = e.quota["remainingFraction"] as? Double else { continue }
             let resetStr = (e.quota["resetTime"] as? String) ?? ""
             let key = "\(remaining)|\(resetStr)"
-            let family: String
-            let id = e.id.lowercased()
-            if id.contains("claude") { family = "Claude" }
-            else if id.contains("gpt") { family = "GPT-OSS" }
-            else { family = "Gemini" }
+            let family = "Gemini"
             var g = groups[key] ?? (pct: (1 - remaining) * 100,
                                     reset: resetStr.isEmpty ? nil : iso.date(from: resetStr),
                                     families: [], n: 0)
@@ -323,9 +331,6 @@ struct GoogleAdapterImpl: UsageAdapter {
             groups[key] = g
         }
         let limits = groups
-            // A pool counts as Google's if any Gemini model sits in it, so a
-            // mixed pool is never dropped — only the purely foreign one.
-            .filter { showForeign || $0.value.families.contains("Gemini") }
             .sorted { ($0.value.pct, $0.key) > ($1.value.pct, $1.key) }
             .map { key, g -> UsageLimit in
                 let name = g.families.sorted().joined(separator: " · ")
