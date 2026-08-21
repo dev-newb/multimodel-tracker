@@ -183,6 +183,13 @@ final class Store: ObservableObject {
         save()
     }
 
+    /// Surfaces a sign-in failure on the account row — a browser flow can
+    /// fail while the app has no window up to report it.
+    func setError(_ message: String?, for id: UUID) {
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        accounts[i].error = message; save()
+    }
+
     func setLabel(_ label: String, for id: UUID) {
         guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
         accounts[i].label = label; save()

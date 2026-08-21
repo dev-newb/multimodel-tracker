@@ -184,6 +184,22 @@ struct AccountsView: View {
 
     private func beginSignIn(_ account: Account) {
         guard account.provider != .google else { return }
+        // OpenAI goes through the real browser: passkeys cannot work in an
+        // embedded WKWebView, and passkey-only ChatGPT accounts exist.
+        if account.provider == .openai {
+            Task {
+                do {
+                    let t = try await OpenAIOAuth.signIn()
+                    Keychain.storeOpenAI(accessToken: t.accessToken, accountId: t.accountID,
+                                         refreshToken: t.refreshToken, for: account.id)
+                    if let email = t.email { store.setLabel(email, for: account.id) }
+                    await store.refresh(account)
+                } catch {
+                    store.setError(error.localizedDescription, for: account.id)
+                }
+            }
+            return
+        }
         var controller: SignInWindowController?
         let c = SignInWindowController(account: account) { ok in
             guard ok else { return }

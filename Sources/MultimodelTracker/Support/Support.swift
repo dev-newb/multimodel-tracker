@@ -9,7 +9,7 @@ enum Support {
 /// Tokens never touch UserDefaults — only the Keychain. One item per account
 /// id so four subscriptions per vendor stay separate.
 enum Keychain {
-    struct OpenAICreds { let accessToken: String; let accountId: String? }
+    struct OpenAICreds { let accessToken: String; let accountId: String?; var refreshToken: String? }
 
     /// Per-launch cache. The keychain is read once per account per run; every
     /// later poll is served from memory, so a poll can never trigger a
@@ -21,7 +21,8 @@ enum Keychain {
         guard let raw = read(service: "MultimodelTracker.openai", account: account.uuidString),
               let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: String],
               let token = obj["access_token"] else { throw AdapterError.notSignedIn }
-        let creds = OpenAICreds(accessToken: token, accountId: obj["account_id"])
+        let creds = OpenAICreds(accessToken: token, accountId: obj["account_id"],
+                                refreshToken: obj["refresh_token"])
         openAICache[account] = creds
         return creds
     }
@@ -43,7 +44,8 @@ enum Keychain {
         guard let raw,
               let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: String],
               let token = obj["access_token"] else { throw AdapterError.notSignedIn }
-        let creds = OpenAICreds(accessToken: token, accountId: obj["account_id"])
+        let creds = OpenAICreds(accessToken: token, accountId: obj["account_id"],
+                                refreshToken: obj["refresh_token"])
         openAICache[account] = creds
         return creds
     }
@@ -94,10 +96,12 @@ extension Keychain {
     static let openAIService    = "MultimodelTracker.openai"
     static let anthropicService = "MultimodelTracker.anthropic"
 
-    static func storeOpenAI(accessToken: String, accountId: String?, for account: UUID) {
+    static func storeOpenAI(accessToken: String, accountId: String?,
+                            refreshToken: String? = nil, for account: UUID) {
         invalidateCache(for: account)
         var obj = ["access_token": accessToken]
         if let a = accountId { obj["account_id"] = a }
+        if let r = refreshToken { obj["refresh_token"] = r }
         guard let d = try? JSONSerialization.data(withJSONObject: obj) else { return }
         store(service: openAIService, account: account.uuidString, data: d)
     }

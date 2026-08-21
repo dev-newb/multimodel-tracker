@@ -41,10 +41,17 @@ struct OpenAIAdapter: UsageAdapter {
         do {
             return try await fetchOnce(creds)
         } catch AdapterError.notSignedIn {
-            // Web-session tokens expire; the chatgpt.com cookies in this
-            // account's data store usually outlive them. Re-mint silently and
-            // retry once before surfacing "not signed in". Codex-CLI-imported
-            // accounts have no cookie jar — the re-mint just returns nil.
+            // Renew, cheapest route first. A refresh token (browser OAuth)
+            // needs no browser and no cookies; the cookie-jar re-mint is the
+            // fallback for accounts signed in through the old web window.
+            if let refresh = creds.refreshToken,
+               let renewed = try? await OpenAIOAuth.refresh(refresh) {
+                Keychain.storeOpenAI(accessToken: renewed.accessToken,
+                                     accountId: renewed.accountID ?? creds.accountId,
+                                     refreshToken: renewed.refreshToken, for: account.id)
+                let fresh = try await Keychain.openAICredentialsAsync(for: account.id)
+                return try await fetchOnce(fresh)
+            }
             guard let session = try? await WebSessionPool.shared.openAIWebSession(for: account) ?? nil
             else { throw AdapterError.notSignedIn }
             Keychain.storeOpenAI(accessToken: session.accessToken,
