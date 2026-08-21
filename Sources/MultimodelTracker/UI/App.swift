@@ -360,6 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as? NSWindow) === accountsWindow else { return }
+        accountsWindow = nil
         store.setUIVisible(popover.isShown)
     }
 
@@ -371,31 +372,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var accountsWindow: NSWindow?
 
     @objc func openSettings() {
-        // The panel doesn't take key focus, so a transient popover no longer
-        // dismisses itself — and popovers outrank a .floating panel, leaving
-        // Accounts opening BEHIND the tray window. Close it explicitly.
+        // Popovers outrank a .floating panel, so a visible popover would sit
+        // on top of the panel we are about to show.
         if popover.isShown { popover.performClose(nil) }
         store.setUIVisible(true)
-        if let w = accountsWindow {
-            w.placeNearMenuBar(anchor: statusItem.button?.window?.frame)
-            w.orderFrontRegardless(); return
-        }
-        // Spotlight pattern, not a plain window. moveToActiveSpace proved
-        // unreliable here — the window kept surfacing on the Space it was born
-        // on — and NSApp.activate can itself switch Spaces toward the app's
-        // other windows (this app keeps hidden webview hosts). A floating
-        // non-activating panel on every Space cannot be on the wrong one, and
-        // it takes keystrokes for the nickname fields without activating us.
-        // Borderless: no traffic lights, no title bar, not draggable. This
-        // belongs under the menu bar like the popover, not parked somewhere.
-        let w = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
-                        styleMask: [.borderless, .nonactivatingPanel],
-                        backing: .buffered, defer: false)
-        w.isMovable = false
+
+        // Built fresh every time rather than retained and re-shown. A retained
+        // window belongs to the Space it was created on; recreating it here
+        // means it always appears on the Space the user is on WITHOUT
+        // canJoinAllSpaces, which made it follow them everywhere instead.
+        accountsWindow?.close()
+
+        let w = AccountsPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
+                              styleMask: [.borderless, .nonactivatingPanel],
+                              backing: .buffered, defer: false)
+        // Draggable by its background: it has no title bar to grab, and a
+        // sign-in window can land underneath it.
+        w.isMovable = true
+        w.isMovableByWindowBackground = true
         w.isOpaque = false
         w.backgroundColor = .clear
         w.hasShadow = true
-        w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // Deliberately NOT canJoinAllSpaces — that is what made it follow the
+        // user across workspaces.
+        w.collectionBehavior = [.fullScreenAuxiliary]
         w.level = .floating
         w.hidesOnDeactivate = false
         let host = NSHostingController(rootView: AccountsView(store: store))
@@ -406,17 +406,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         w.setContentSize(host.view.fittingSize)
         w.isReleasedWhenClosed = false
         w.placeNearMenuBar(anchor: statusItem.button?.window?.frame)
-        // Order front WITHOUT key status: grabbing key here steals whatever
-        // the user is mid-typing elsewhere (it captured a stray keystroke into
-        // the nickname field during testing). Clicking a field still focuses
-        // it — that's what nonactivatingPanel is for.
-        w.orderFrontRegardless()
+        // Key, but WITHOUT activating the app: a borderless panel refuses key
+        // status by default, and without it the nickname fields silently
+        // swallow every keystroke — renaming an account was impossible.
+        w.makeKeyAndOrderFront(nil)
         w.delegate = self
         accountsWindow = w
         if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
-            FileHandle.standardError.write("accounts window: \(Int(w.frame.width))x\(Int(w.frame.height))\n".data(using: .utf8)!)
+            FileHandle.standardError.write("accounts window: \(Int(w.frame.width))x\(Int(w.frame.height)) key=\(w.canBecomeKey)\n".data(using: .utf8)!)
         }
     }
+
 }
 
 extension NSWindow {
@@ -435,4 +435,12 @@ extension NSWindow {
         let x = min(max(focus.x - frame.width / 2, v.minX + 8), v.maxX - frame.width - 8)
         setFrameOrigin(NSPoint(x: x, y: v.maxY - frame.height - 4))
     }
+}
+
+
+/// A borderless panel that can still take keyboard focus. NSWindow refuses
+/// key status for borderless windows, which left every text field in the
+/// Accounts panel unable to receive a single keystroke.
+final class AccountsPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
 }

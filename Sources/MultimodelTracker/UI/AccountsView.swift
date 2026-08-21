@@ -8,21 +8,22 @@ struct AccountsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Text("Accounts").font(.system(size: 15, weight: .semibold))
-                Spacer()
-                Text("up to \(Provider.maxAccountsPerProvider) per provider")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                // Replaces the traffic lights: this panel has no title bar, so
-                // it needs its own way back to the tray.
+                // Back sits where a close button would on macOS — top left —
+                // with the title on the right and the capacity note reading
+                // into it: "up to 4 per provider  Accounts".
                 Button {
                     NotificationCenter.default.post(name: .mmtShowTray, object: nil)
                 } label: {
                     Image(systemName: "arrow.uturn.backward.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 22))
+                        .foregroundStyle(Color.accentColor)
                 }
                 .buttonStyle(.plain)
                 .help("Back to the tracker")
+                Spacer()
+                Text("up to \(Provider.maxAccountsPerProvider) per provider")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                Text("Accounts").font(.system(size: 15, weight: .semibold))
             }
             .padding(16)
             Divider()
@@ -228,9 +229,16 @@ struct AccountRow: View {
         HStack(spacing: 10) {
             RoundedRectangle(cornerRadius: 1.5).fill(accent.opacity(0.8)).frame(width: 3, height: 30)
             VStack(alignment: .leading, spacing: 2) {
-                TextField("Nickname", text: $draft)
+                // Looked like a static label, so nobody knew it was editable.
+                // A field chrome plus a placeholder that says what it does.
+                TextField("Rename\u{2026}", text: $draft)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12, weight: .medium))
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(Color.primary.opacity(focused ? 0.10 : 0.05),
+                                in: RoundedRectangle(cornerRadius: 4))
+                    .overlay(RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(Color.primary.opacity(focused ? 0.35 : 0.12), lineWidth: 0.5))
                     .focused($focused)
                     .onSubmit { onNickname(draft) }
                     // Commit on every keystroke. Committing only on focus loss
