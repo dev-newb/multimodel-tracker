@@ -34,11 +34,39 @@ final class SignInWindowController: NSObject, NSWindowDelegate {
         web.removeFromSuperview()          // leave the hidden host
         web.frame = NSRect(x: 0, y: 0, width: 520, height: 720)
 
+        // Passkeys cannot work here and fail SILENTLY: WebAuthn inside a
+        // WKWebView needs com.apple.developer.web-browser-public-key-credential,
+        // which Apple grants only to apps that register as default browsers.
+        // Without it navigator.credentials is absent, so "Continue with
+        // passkey" does nothing at all and the user is stuck with no error.
+        // Say so up front rather than let them click into a dead end.
+        let banner = NSTextField(labelWithString:
+            "Passkeys don\u{2019}t work in this window — use email & password"
+            + (account.provider == .openai ? ", or Import Codex CLI." : "."))
+        banner.font = .systemFont(ofSize: 11, weight: .medium)
+        banner.textColor = .secondaryLabelColor
+        banner.alignment = .center
+        banner.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView(frame: web.frame)
+        web.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(banner)
+        container.addSubview(web)
+        NSLayoutConstraint.activate([
+            banner.topAnchor.constraint(equalTo: container.topAnchor, constant: 7),
+            banner.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+            banner.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
+            web.topAnchor.constraint(equalTo: banner.bottomAnchor, constant: 7),
+            web.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            web.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            web.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
+
         let w = NSWindow(contentRect: web.frame,
                          styleMask: [.titled, .closable, .resizable],
                          backing: .buffered, defer: false)
         w.title = "Sign in — \(account.displayName)"
-        w.contentView = web
+        w.contentView = container
         w.delegate = self
         // Above the Accounts panel (also .floating — later ordering wins) and
         // pinned on top: this window has no Dock/task-manager presence, so if
