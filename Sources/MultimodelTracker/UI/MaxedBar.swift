@@ -7,15 +7,16 @@ enum MaxedStyle: Int, CaseIterable {
     // theirs. Fracture (1) became glitch; flatline (0) was removed outright —
     // a stored 0 no longer resolves, which effectiveMaxedStyle treats as
     // "cycle". Style arithmetic must use allCases indices, never rawValue.
+    // blackHole (4) removed at Rich's request — its middle-out collapse read
+    // as arbitrary; a stored maxedFixed of 4 now falls back to cycling.
     case glitch = 1, bleed = 2, deadChannel = 3
-    case blackHole = 4, drown = 5, petrify = 6, neonBurnout = 7
+    case drown = 5, petrify = 6, neonBurnout = 7
 
     var displayName: String {
         switch self {
         case .glitch:      return "Glitch"
         case .bleed:       return "Bleed"
         case .deadChannel: return "Dead channel"
-        case .blackHole:   return "Black hole"
         case .drown:       return "Drown"
         case .petrify:     return "Petrify"
         case .neonBurnout: return "Neon burnout"
@@ -78,7 +79,6 @@ struct MaxedBar: View {
             case .glitch:      Self.drawGlitch(ctx, size, t: t)
             case .bleed:       Self.drawBleed(ctx, size, t: t)
             case .deadChannel: Self.drawDeadChannel(ctx, size, t: t)
-            case .blackHole:   Self.drawBlackHole(ctx, size, t: t)
             case .drown:       Self.drawDrown(ctx, size, t: t)
             case .petrify:     Self.drawPetrify(ctx, size, t: t)
             case .neonBurnout: Self.drawNeonBurnout(ctx, size, t: t)
@@ -119,34 +119,6 @@ struct MaxedBar: View {
         }
     }
 
-    // MARK: black hole — swallowed into a point, then torn back out
-
-    private static func drawBlackHole(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
-        let p = (t / 3.2).truncatingRemainder(dividingBy: 1)
-        // Collapse to a sliver, hold, then snap back.
-        let scale: Double
-        switch p {
-        case ..<0.12:  scale = 1
-        case ..<0.48:  scale = 1 - 0.98 * easeOut((p - 0.12) / 0.36)
-        case ..<0.62:  scale = 0.02
-        default:       scale = 0.02 + 0.98 * easeOut((p - 0.62) / 0.38)
-        }
-        let w = size.width * scale
-        let rect = CGRect(x: (size.width - w) / 2, y: above, width: max(1, w), height: barH)
-        ctx.fill(Path(roundedRect: rect, cornerRadius: barH / 2), with: .color(red))
-        // Ring pulse at the moment it vanishes.
-        if p > 0.46, p < 0.75 {
-            let e = (p - 0.46) / 0.29
-            let r = 3 + 26 * e
-            // Flat ellipse no taller than the strip: a rounder ring poked
-            // above the canvas and drew as a clipped arc.
-            let ring = CGRect(x: size.width / 2 - r, y: above - 1,
-                              width: r * 2, height: barH + 2)
-            ctx.stroke(Path(ellipseIn: ring), with: .color(red.opacity(0.85 * (1 - e))),
-                       lineWidth: 1)
-        }
-    }
-
     // MARK: drown — a dark waterline rises over the bar, bubbles escape
 
     private static func drawDrown(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
@@ -179,24 +151,19 @@ struct MaxedBar: View {
     // MARK: petrify — colour drains to stone and cracks spider through
 
     private static func drawPetrify(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
-        let p = (t / 5.2).truncatingRemainder(dividingBy: 1)
-        let stone = p < 0.12 ? 0 : (p < 0.45 ? easeOut((p - 0.12) / 0.33)
-                                             : (p < 0.88 ? 1 : 1 - easeOut((p - 0.88) / 0.12)))
-        let colour = Color(red: 0.91 + (0.54 - 0.91) * stone,
-                           green: 0.27 + (0.54 - 0.27) * stone,
-                           blue: 0.23 + (0.55 - 0.23) * stone)
+        // Rich wanted this to "simply stay ash" — no red cycle. Petrified is
+        // motionless stone: a fixed ash bar with the cracks already set.
+        let stone = Color(red: 0.54, green: 0.54, blue: 0.55)
         let bar = CGRect(x: 0, y: above, width: size.width, height: barH)
-        ctx.fill(Path(roundedRect: bar, cornerRadius: barH / 2), with: .color(colour))
-        guard stone > 0.35 else { return }
+        ctx.fill(Path(roundedRect: bar, cornerRadius: barH / 2), with: .color(stone))
         var c = ctx
         c.clip(to: Path(roundedRect: bar, cornerRadius: barH / 2))
-        let alpha = (stone - 0.35) / 0.65
         for x in [0.24, 0.52, 0.76] {
             var path = Path()
             path.move(to: CGPoint(x: x * size.width, y: above))
             path.addLine(to: CGPoint(x: x * size.width + 2.5, y: above + barH * 0.55))
             path.addLine(to: CGPoint(x: x * size.width - 1.5, y: above + barH))
-            c.stroke(path, with: .color(.black.opacity(0.55 * alpha)), lineWidth: 0.9)
+            c.stroke(path, with: .color(.black.opacity(0.55)), lineWidth: 0.9)
         }
     }
 
