@@ -244,8 +244,11 @@ struct AccountRow: View {
                     // Commit on every keystroke. Committing only on focus loss
                     // lost the edit outright: this lives in a non-activating
                     // panel, so closing it (or clicking straight back to the
-                    // tray) never delivers the focus change.
-                    .onChange(of: draft) { onNickname($0) }
+                    // tray) never delivers the focus change. Skip the no-op
+                    // write the initial onAppear populate would otherwise fire.
+                    .onChange(of: draft) { new in
+                        if new != (account.nickname ?? "") { onNickname(new) }
+                    }
                 Text(account.subtitle ?? account.label)
                     .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
             }

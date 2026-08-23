@@ -412,6 +412,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         w.makeKeyAndOrderFront(nil)
         w.delegate = self
         accountsWindow = w
+        // Closing the previous panel above flipped this false via
+        // windowWillClose; the panel is visible now, so re-assert it.
+        store.setUIVisible(true)
         if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
             FileHandle.standardError.write("accounts window: \(Int(w.frame.width))x\(Int(w.frame.height)) key=\(w.canBecomeKey)\n".data(using: .utf8)!)
         }

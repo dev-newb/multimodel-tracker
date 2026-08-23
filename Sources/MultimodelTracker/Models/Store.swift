@@ -292,9 +292,17 @@ final class Store: ObservableObject {
         }
     }
 
-    func update(_ account: Account) {
-        guard let i = accounts.firstIndex(where: { $0.id == account.id }) else { return }
-        accounts[i] = account; save()
+    /// Writes back ONLY the fields a refresh produces, into the CURRENT stored
+    /// account. The user may rename or re-sign-in DURING the network await;
+    /// replacing the whole struct with the pre-await snapshot reverted that —
+    /// a rename could silently undo itself on the next poll.
+    private func applyFetched(_ fetched: Account, to id: UUID) {
+        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        accounts[i].limits = fetched.limits
+        accounts[i].plan = fetched.plan
+        accounts[i].error = fetched.error
+        accounts[i].lastRefreshed = fetched.lastRefreshed
+        save()
     }
 
     /// Refreshes every account concurrently, but staggered per provider — N
@@ -343,7 +351,7 @@ final class Store: ObservableObject {
         } catch {
             a.error = String(describing: error)
         }
-        update(a)
+        applyFetched(a, to: account.id)
     }
 
     /// Appends this poll to each pool's history, runs the detector, and marks

@@ -16,17 +16,6 @@ enum Keychain {
     /// password prompt.
     private static var openAICache: [UUID: OpenAICreds] = [:]
 
-    static func openAICredentials(for account: UUID) throws -> OpenAICreds {
-        if let hit = openAICache[account] { return hit }
-        guard let raw = read(service: "MultimodelTracker.openai", account: account.uuidString),
-              let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: String],
-              let token = obj["access_token"] else { throw AdapterError.notSignedIn }
-        let creds = OpenAICreds(accessToken: token, accountId: obj["account_id"],
-                                refreshToken: obj["refresh_token"])
-        openAICache[account] = creds
-        return creds
-    }
-
     /// `SecItemCopyMatching` blocks for as long as the password panel is up.
     /// Called straight from the @MainActor store that froze the entire UI —
     /// no popover, no Accounts window — until the prompt was answered. Only
