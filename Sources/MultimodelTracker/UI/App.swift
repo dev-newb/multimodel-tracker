@@ -360,6 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as? NSWindow) === accountsWindow else { return }
+        stopWatchingOutsideClick()
         accountsWindow = nil
         store.setUIVisible(popover.isShown)
     }
@@ -370,6 +371,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     private var accountsWindow: NSWindow?
+    /// Live only while the Accounts panel is open.
+    private var outsideClickMonitors: [Any] = []
+
+    /// Click-outside-to-dismiss. A non-activating panel never loses key the
+    /// way an ordinary window does, so resignKey can't drive this — the click
+    /// has to be watched for directly. Two monitors are needed: the global one
+    /// sees clicks in OTHER apps, the local one sees clicks elsewhere in this
+    /// app (the status item, the popover).
+    private func watchForOutsideClick(_ panel: NSWindow) {
+        stopWatchingOutsideClick()
+        let global = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            // A click in ANOTHER app activates it. A .transient popover
+            // dismisses itself the instant we lose focus, so "go back to the
+            // tracker" here would open the popover and kill it in the same
+            // breath. Just dismiss; the user is somewhere else now.
+            Task { @MainActor in self?.closeAccountsPanel(returningToTracker: false) }
+        }
+        let local = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            Task { @MainActor in
+                guard let self, let panel = self.accountsWindow else { return }
+                // Not the panel itself, and not a sign-in window it spawned.
+                guard event.window !== panel,
+                      !SignInWindowController.owns(event.window) else { return }
+                // Still our app, so the popover will survive: go back to the
+                // tracker, exactly like the back button.
+                self.closeAccountsPanel(returningToTracker: true)
+            }
+            return event
+        }
+        outsideClickMonitors = [global, local].compactMap { $0 }
+        _ = panel
+    }
+
+    private func stopWatchingOutsideClick() {
+        for m in outsideClickMonitors { NSEvent.removeMonitor(m) }
+        outsideClickMonitors = []
+    }
+
+    /// Returning to the tracker posts the same notification the back button
+    /// posts, so the two stay in step by construction — one path, not two
+    /// that can drift apart.
+    private func closeAccountsPanel(returningToTracker: Bool) {
+        if returningToTracker {
+            NotificationCenter.default.post(name: .mmtShowTray, object: nil)
+        } else {
+            accountsWindow?.close()
+        }
+    }
 
     @objc func openSettings() {
         // Popovers outrank a .floating panel, so a visible popover would sit
@@ -412,6 +461,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         w.makeKeyAndOrderFront(nil)
         w.delegate = self
         accountsWindow = w
+        watchForOutsideClick(w)
         // Closing the previous panel above flipped this false via
         // windowWillClose; the panel is visible now, so re-assert it.
         store.setUIVisible(true)

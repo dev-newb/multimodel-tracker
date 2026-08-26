@@ -292,6 +292,25 @@ struct GoogleAdapterImpl: UsageAdapter {
         return !(s.contains("gemini") || s.contains("gemma") || s.contains("imagen"))
     }
 
+    /// A pool's identity is WHICH MODELS are in it, never its usage value.
+    /// The key used to be "\(remainingFraction)|\(resetTime)", which changed
+    /// every time usage moved. Three things broke: burn history accumulated a
+    /// new entry per distinct value (2,743 orphaned pools and 476 KB of prefs
+    /// on Rich's Mac), burn detection could never fire for Google because each
+    /// value started a fresh empty history, and the SwiftUI row identity
+    /// churned on every refresh since UsageLimit.id IS the key.
+    ///
+    /// FNV-1a rather than hashValue: Swift's hashing is seeded per launch, so
+    /// hashValue would produce a different key every time the app restarts —
+    /// exactly the bug being fixed, one launch at a time.
+    static func stableKey(for models: [String]) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in models.sorted().joined(separator: ",").utf8 {
+            hash = (hash ^ UInt64(byte)) &* 0x100000001b3
+        }
+        return "gemini-\(String(hash, radix: 36))"
+    }
+
     static func parseModels(_ root: [String: Any]) throws -> FetchedUsage {
         var entries: [(id: String, quota: [String: Any])] = []
         if let dict = root["models"] as? [String: Any] {
@@ -318,23 +337,25 @@ struct GoogleAdapterImpl: UsageAdapter {
         guard !entries.isEmpty else { throw AdapterError.transport("no models with quota") }
 
         let iso = ISO8601DateFormatter()
-        var groups: [String: (pct: Double, reset: Date?, families: Set<String>, n: Int)] = [:]
+        var groups: [String: (pct: Double, reset: Date?, families: Set<String>, n: Int, models: [String])] = [:]
         for e in entries {
             guard let remaining = e.quota["remainingFraction"] as? Double else { continue }
             let resetStr = (e.quota["resetTime"] as? String) ?? ""
+            // Group by value, but do NOT let the value into the pool's
+            // identity — see stableKey below.
             let key = "\(remaining)|\(resetStr)"
             let family = "Gemini"
             var g = groups[key] ?? (pct: (1 - remaining) * 100,
                                     reset: resetStr.isEmpty ? nil : iso.date(from: resetStr),
-                                    families: [], n: 0)
-            g.families.insert(family); g.n += 1
+                                    families: [], n: 0, models: [])
+            g.families.insert(family); g.n += 1; g.models.append(e.id)
             groups[key] = g
         }
         let limits = groups
             .sorted { ($0.value.pct, $0.key) > ($1.value.pct, $1.key) }
             .map { key, g -> UsageLimit in
                 let name = g.families.sorted().joined(separator: " · ")
-                return UsageLimit(key: key,
+                return UsageLimit(key: Self.stableKey(for: g.models),
                                   label: "\(name) · \(g.n) model\(g.n == 1 ? "" : "s")",
                                   percent: g.pct, resetsAt: g.reset)
             }

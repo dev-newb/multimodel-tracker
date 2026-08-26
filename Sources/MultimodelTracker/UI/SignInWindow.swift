@@ -28,6 +28,14 @@ final class SignInWindowController: NSObject, NSWindowDelegate {
         super.init()
     }
 
+    /// The panel's click-outside dismissal must not fire for our OWN sign-in
+    /// windows — the user opened those from the panel and expects to come
+    /// back to it.
+    static func owns(_ window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return active.values.contains { $0.window === window }
+    }
+
     func present() {
         Self.active[account.id] = self
         let web = WebSessionPool.shared.signInView(for: account)

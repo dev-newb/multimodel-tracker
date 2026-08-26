@@ -56,6 +56,15 @@ final class Store: ObservableObject {
     /// missed poll but reject gaps that span sleep or downtime.
     static let burnPairMaxGap: TimeInterval = 7.5 * 60
 
+    /// The detector reads a 10-minute window plus baseline pairs older than
+    /// it, and switches to the adaptive threshold at 50 pairs. At a 3-minute
+    /// poll that is ~51 samples, so 240 (12 hours) is already 4x what the
+    /// maths needs. The old 700/48h retention served a usage graph this app
+    /// does not have, and every extra sample is re-serialised into prefs on
+    /// every single refresh.
+    static let burnHistoryMax = 240
+    static let burnHistoryAge: TimeInterval = 12 * 3600
+
     struct BurnSample: Codable { let t: Date; let v: Double }
     private var burnHistory: [String: [BurnSample]] = [:]
     /// In-memory like I'm Burning!'s — flames don't survive a relaunch,
@@ -312,6 +321,7 @@ final class Store: ObservableObject {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false; lastRefresh = Date() }
+        pruneBurnHistory()
         await withTaskGroup(of: Void.self) { group in
             for (offset, account) in accounts.enumerated() {
                 group.addTask { [weak self] in
@@ -366,9 +376,10 @@ final class Store: ObservableObject {
             let stamp = "\(accountID)/\(limit.key)"
             var samples = burnHistory[stamp] ?? []
             samples.append(BurnSample(t: now, v: v))
-            // 48h of 3-min polls is 960; the detector needs far less.
-            if samples.count > 700 { samples.removeFirst(samples.count - 700) }
-            samples.removeAll { now.timeIntervalSince($0.t) > 48 * 3600 }
+            if samples.count > Self.burnHistoryMax {
+                samples.removeFirst(samples.count - Self.burnHistoryMax)
+            }
+            samples.removeAll { now.timeIntervalSince($0.t) > Self.burnHistoryAge }
             burnHistory[stamp] = samples
             changed = true
             burnUntil[stamp] = Self.evaluateBurn(samples: samples, now: now,
@@ -378,6 +389,23 @@ final class Store: ObservableObject {
         }
         if changed { saveBurnHistory() }
         return out
+    }
+
+    /// Drops stale samples across EVERY pool and forgets pools entirely once
+    /// they are empty. markBurning only ages the pools it touches, so a pool
+    /// that stops being reported — a renamed key, a removed account, a model
+    /// Google no longer lists — would otherwise sit in prefs forever.
+    private func pruneBurnHistory() {
+        let now = Date()
+        var changed = false
+        for (key, samples) in burnHistory {
+            let kept = samples.filter { now.timeIntervalSince($0.t) <= Self.burnHistoryAge }
+            if kept.count == samples.count { continue }
+            changed = true
+            if kept.isEmpty { burnHistory.removeValue(forKey: key) }
+            else { burnHistory[key] = kept }
+        }
+        if changed { saveBurnHistory() }
     }
 
     /// The detector itself, pure so it can be exercised with synthetic
