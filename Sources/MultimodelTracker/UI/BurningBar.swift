@@ -114,15 +114,23 @@ struct BurningBar: View {
                    with: .color(ember.opacity(0.5 * sin(.pi * p))))
         }
 
-        // Twice the embers, thrown higher and wider.
+        // Embers are born INSIDE the bar and rise out through its top edge.
+        // They used to start at `above + barH`, which is the UNDERSIDE, and
+        // the ellipse then hung below it — so the fire appeared to shed
+        // downward out of the bar instead of burning up off it.
+        //
+        // Positions are centres here, not top-left corners: at phase 0 the
+        // centre sits in the bar's upper third, so the ember's top already
+        // bleeds slightly past the edge while its body is still in the coals.
         for i in 0..<12 {
             let phase = (t / 0.9 + Double(i) * 0.083).truncatingRemainder(dividingBy: 1)
             let x = w * (0.04 + 0.08 * Double(i))
             guard x < w else { continue }
             let drift = (FX.hash01(i, 3) - 0.5) * 14
-            let y = above + barH - 1 - 22 * phase
             let r = (1.0 + FX.hash01(i, 8) * 1.4) * (1 - phase * 0.55)
-            ctx.fill(Path(ellipseIn: CGRect(x: x + drift * phase, y: y, width: r * 2, height: r * 2)),
+            let cy = above + barH * 0.32 - 22 * phase
+            ctx.fill(Path(ellipseIn: CGRect(x: x + drift * phase - r, y: cy - r,
+                                            width: r * 2, height: r * 2)),
                      with: .color(ember.opacity(0.95 * (1 - phase))))
         }
     }
