@@ -21,6 +21,9 @@ struct MultimodelTrackerApp {
 extension Notification.Name {
     /// Posted by any window that wants to hand focus back to the tray popover.
     static let mmtShowTray = Notification.Name("mmt.showTray")
+    /// The badge is AppKit, not SwiftUI, so a settings change has to tell it
+    /// to redraw — it observes nothing.
+    static let mmtBadgeStyleChanged = Notification.Name("mmt.badgeStyleChanged")
 }
 
 @MainActor
@@ -58,6 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let host = NSHostingController(rootView: PopoverView(store: store))
         host.sizingOptions = [.preferredContentSize]
         popover.contentViewController = host
+
+        NotificationCenter.default.addObserver(forName: .mmtBadgeStyleChanged, object: nil,
+                                               queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.renderBadges() }
+        }
 
         NotificationCenter.default.addObserver(forName: .mmtShowTray, object: nil,
                                                queue: .main) { [weak self] _ in
@@ -344,13 +352,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let parts = Provider.allCases.compactMap { p -> NSAttributedString? in
             let worst = store.accounts(for: p).compactMap(\.worstPercent).max()
             guard let w = worst else { return nil }
-            // Below the warning thresholds each vendor keeps its OWN colour
-            // rather than going plain white. All-white meant that with
-            // everything healthy the badge read as anonymous text and looked
-            // broken — the colours had not gone anywhere, there was simply
-            // nothing above 75%.
+            // Amber at 75 and red at 90 are permanent: severity is the point
+            // of the badge and must not be switchable off. The only choice is
+            // what a HEALTHY number looks like — vendor accent, or plain
+            // white as it was originally.
+            let healthy: NSColor = store.badgeTinted ? p.nsAccent : .labelColor
             let colour: NSColor = w >= 90 ? .systemRed
-                                 : (w >= 75 ? .systemOrange : p.nsAccent)
+                                 : (w >= 75 ? .systemOrange : healthy)
             return NSAttributedString(string: "\(p.displayName.prefix(1))\(Int(w))",
                                       attributes: attrs(colour))
         }

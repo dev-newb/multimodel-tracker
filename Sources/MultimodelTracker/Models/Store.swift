@@ -143,6 +143,19 @@ final class Store: ObservableObject {
     @Published private(set) var maxedVaried: Bool =
         UserDefaults.standard.bool(forKey: "mmt.maxedVaried")
 
+    /// Whether the menu-bar numbers carry each vendor's colour when healthy.
+    /// The warning colours at 75% and 90% are NOT optional — severity should
+    /// never be switchable off — so this only chooses between vendor accents
+    /// and plain white below those thresholds.
+    @Published private(set) var badgeTinted: Bool =
+        UserDefaults.standard.object(forKey: "mmt.badgeTinted") as? Bool ?? true
+
+    func setBadgeTinted(_ v: Bool) {
+        badgeTinted = v
+        UserDefaults.standard.set(v, forKey: "mmt.badgeTinted")
+        NotificationCenter.default.post(name: .mmtBadgeStyleChanged, object: nil)
+    }
+
     /// Which Google surface to read. Antigravity is the default: it is what
     /// the IDE actually meters, and the legacy Code Assist buckets read 0%
     /// while agent usage is in flight.

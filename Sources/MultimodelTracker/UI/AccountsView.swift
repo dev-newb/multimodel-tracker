@@ -43,6 +43,8 @@ struct AccountsView: View {
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxHeight: 680)
             Divider()
+            badgeSection
+            Divider()
             deadBarSection
             Divider()
             soundSection
@@ -66,6 +68,32 @@ struct AccountsView: View {
         .onChange(of: store.accounts.count) { _ in NSCursor.arrow.set() }
         .onDisappear { NSCursor.arrow.set() }
     }
+
+    /// Menu-bar appearance. Only the healthy colour is offered: amber at 75%
+    /// and red at 90% stay on permanently.
+    private var badgeSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("MENU BAR").font(.system(size: 10, weight: .bold)).tracking(0.8)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Numbers when healthy").font(.system(size: 12))
+                    Text("Amber past 75% and red past 90% either way")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                }
+                Spacer()
+                OptionPicker(width: Self.pickerWidth,
+                             options: Self.badgeOptions,
+                             selection: Binding(get: { store.badgeTinted },
+                                                set: { store.setBadgeTinted($0) }))
+            }
+        }
+        .padding(16)
+    }
+
+    static let badgeOptions: [(Bool, String)] = [
+        (true, "Vendor colours"), (false, "Plain white"),
+    ]
 
     /// The three alert sounds. Each is independently switchable, can point at
     /// the user's own file, and has its own volume — matching I'm Burning!.
