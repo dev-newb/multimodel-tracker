@@ -471,13 +471,9 @@ struct SoundRow: View {
                 Image(systemName: setting.volume < 0.01 ? "speaker.slash" : "speaker.wave.2")
                     .font(.system(size: 9))
                     .foregroundStyle(.secondary)
-                // Small, not mini: the mini slider renders with a clipped
-                // track and a translucent knob over the panel's material.
-                Slider(value: Binding(get: { setting.volume },
-                                      set: { sounds.setVolume($0, for: kind) }),
-                       in: 0...1)
-                    .controlSize(.small)
-                    .frame(width: Self.volumeColumn)
+                VolumeSlider(value: setting.volume, width: Self.volumeColumn) {
+                    sounds.setVolume($0, for: kind)
+                }
             }
             .padding(.leading, 20)
         }
@@ -497,5 +493,56 @@ struct SoundRow: View {
         if panel.runModal() == .OK, let url = panel.url {
             sounds.setPath(url.path, for: kind)
         }
+    }
+}
+
+
+/// A hand-drawn volume slider.
+///
+/// AppKit's Slider renders its knob through the window's vibrancy, and this
+/// panel is deliberately non-opaque (borderless, clear background, material
+/// supplied by the view). The knob came out transparent — the track filled
+/// but the handle was invisible. Shrinking the control size only clipped the
+/// track as well. Drawing it directly sidesteps the compositing entirely and
+/// matches the bars this app already renders by hand.
+struct VolumeSlider: View {
+    let value: Double
+    var width: CGFloat = 104
+    let onChange: (Double) -> Void
+
+    private let knob: CGFloat = 11
+    private let track: CGFloat = 3.5
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let travel = max(1, w - knob)          // the knob's centre stays inside
+            let clamped = min(max(value, 0), 1)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.primary.opacity(0.16))
+                    .frame(height: track)
+                Capsule()
+                    .fill(Color.accentColor)
+                    .frame(width: knob / 2 + travel * clamped, height: track)
+                Circle()
+                    .fill(Color.white)
+                    .overlay(Circle().strokeBorder(Color.black.opacity(0.22), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.35), radius: 1.5, y: 0.5)
+                    .frame(width: knob, height: knob)
+                    .offset(x: travel * clamped)
+            }
+            .frame(height: knob, alignment: .center)
+            // The whole strip is draggable, and a plain click jumps the knob
+            // there — minimumDistance 0 makes press and drag one gesture.
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { g in
+                        onChange(min(max((g.location.x - knob / 2) / travel, 0), 1))
+                    }
+            )
+        }
+        .frame(width: width, height: knob)
     }
 }
