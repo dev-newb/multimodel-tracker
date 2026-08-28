@@ -18,7 +18,12 @@ final class WebSessionPool {
     /// them live, the same trick the Electron tracker uses with its hidden
     /// BrowserWindow. The window is never shown.
     private lazy var host: NSWindow = {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+        // Parked far OFF-SCREEN. At (0,0) this invisible window occupied a
+        // real 900x700 patch of the display, and the WKWebViews inside it are
+        // the only thing in this app that sets I-beam and resize cursors —
+        // text and page furniture under a pointer WebKit still tracks. Rich
+        // saw exactly those, and only over the rows sitting in that region.
+        let w = NSWindow(contentRect: NSRect(x: -30000, y: -30000, width: 900, height: 700),
                          styleMask: [.borderless], backing: .buffered, defer: false)
         w.isReleasedWhenClosed = false
         w.alphaValue = 0

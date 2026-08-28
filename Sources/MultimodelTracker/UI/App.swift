@@ -490,6 +490,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     /// Live only while the Accounts panel is open.
     private var outsideClickMonitors: [Any] = []
     private var arrowMonitors: [Any] = []
+    private var arrowTimer: Timer?
 
     /// Click-outside-to-dismiss. A non-activating panel never loses key the
     /// way an ordinary window does, so resignKey can't drive this — the click
@@ -543,6 +544,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             if self?.pointerIsOverOurUI() == true { apply() }
         }
         arrowMonitors = [local, global].compactMap { $0 }
+        // Events alone are not enough. WebKit sets the cursor on its own
+        // schedule — during a page relayout, not in response to a move — so
+        // it can change while the pointer is perfectly still, which is what
+        // "flashes and changes rapidly" describes. A short repeating check
+        // reasserts the arrow whatever set it and whenever.
+        arrowTimer?.invalidate()
+        arrowTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.pointerIsOverOurUI() else { return }
+                if NSCursor.currentSystem != NSCursor.arrow { NSCursor.arrow.set() }
+            }
+        }
         _ = panel
     }
 
@@ -559,6 +572,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private func stopWatchingArrowCursor() {
         for m in arrowMonitors { NSEvent.removeMonitor(m) }
         arrowMonitors = []
+        arrowTimer?.invalidate(); arrowTimer = nil
     }
 
     private func stopWatchingOutsideClick() {
