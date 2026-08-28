@@ -59,6 +59,12 @@ struct AccountsView: View {
         .onTapGesture(count: 2) {
             NotificationCenter.default.post(name: .mmtShowTray, object: nil)
         }
+        // Adding or removing an account rebuilds the rows underneath the
+        // pointer. Any nickname field it was over loses its tracking area
+        // mid-hover, leaving the I-beam stuck — reset on every change to the
+        // list, not just on close.
+        .onChange(of: store.accounts.count) { _ in NSCursor.arrow.set() }
+        .onDisappear { NSCursor.arrow.set() }
     }
 
     /// The three alert sounds. Each is independently switchable, can point at

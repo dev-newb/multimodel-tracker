@@ -344,7 +344,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let parts = Provider.allCases.compactMap { p -> NSAttributedString? in
             let worst = store.accounts(for: p).compactMap(\.worstPercent).max()
             guard let w = worst else { return nil }
-            let colour: NSColor = w >= 90 ? .systemRed : (w >= 75 ? .systemOrange : .labelColor)
+            // Below the warning thresholds each vendor keeps its OWN colour
+            // rather than going plain white. All-white meant that with
+            // everything healthy the badge read as anonymous text and looked
+            // broken — the colours had not gone anywhere, there was simply
+            // nothing above 75%.
+            let colour: NSColor = w >= 90 ? .systemRed
+                                 : (w >= 75 ? .systemOrange : p.nsAccent)
             return NSAttributedString(string: "\(p.displayName.prefix(1))\(Int(w))",
                                       attributes: attrs(colour))
         }
@@ -379,6 +385,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     func windowWillClose(_ notification: Notification) {
         guard (notification.object as? NSWindow) === accountsWindow else { return }
+        // A text field pushes the I-beam via a tracking area. Destroying the
+        // panel while the pointer is inside one tears that area down without
+        // ever delivering mouseExited, so the I-beam is left pushed and
+        // follows the user around the desktop. Put the arrow back by hand.
+        NSCursor.arrow.set()
         stopWatchingOutsideClick()
         accountsWindow = nil
         store.setUIVisible(popover.isShown)

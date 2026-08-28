@@ -20,6 +20,15 @@ enum Provider: String, CaseIterable, Identifiable, Codable {
         case .google:    return Color(red: 0.26, green: 0.52, blue: 0.96)   // blue
         }
     }
+    /// AppKit twin of `accent`, for the status-item badge.
+    var nsAccent: NSColor {
+        switch self {
+        case .anthropic: return NSColor(red: 0.85, green: 0.47, blue: 0.34, alpha: 1)
+        case .openai:    return NSColor(red: 0.06, green: 0.64, blue: 0.50, alpha: 1)
+        case .google:    return NSColor(red: 0.26, green: 0.52, blue: 0.96, alpha: 1)
+        }
+    }
+
     /// Hard ceiling per vendor — four subscriptions each, per the brief.
     static let maxAccountsPerProvider = 4
 }
