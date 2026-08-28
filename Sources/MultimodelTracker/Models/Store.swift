@@ -52,9 +52,20 @@ final class Store: ObservableObject {
     static let burnBaselineMin = 50
     static let burnSettle: TimeInterval = 45 * 60
     static let burnCooling: TimeInterval = 8 * 60
-    /// Baseline pairs must be one poll apart (3 min); allow slack for a
-    /// missed poll but reject gaps that span sleep or downtime.
-    static let burnPairMaxGap: TimeInterval = 7.5 * 60
+    /// How often the app polls. Everything cadence-dependent derives from
+    /// this rather than hardcoding a matching constant somewhere else.
+    static let pollInterval: TimeInterval = 180
+
+    /// Baseline pairs must be roughly one poll apart: allow slack for a missed
+    /// poll, but reject gaps that span sleep or downtime. COMPUTED from the
+    /// poll interval, matching I'm Burning!'s sampleGapLimitMs — max(3 min,
+    /// interval x 2.5) — so changing the cadence can never silently invalidate
+    /// the baseline the way a stale constant would.
+    static let sampleGapFloor: TimeInterval = 3 * 60
+    static let sampleGapMultiplier: Double = 2.5
+    static var burnPairMaxGap: TimeInterval {
+        max(sampleGapFloor, pollInterval * sampleGapMultiplier)
+    }
 
     /// The detector reads a 10-minute window plus baseline pairs older than
     /// it, and switches to the adaptive threshold at 50 pairs. At a 3-minute
@@ -64,6 +75,22 @@ final class Store: ObservableObject {
     /// every single refresh.
     static let burnHistoryMax = 240
     static let burnHistoryAge: TimeInterval = 12 * 3600
+
+    // MARK: alert-sound triggers (ported from I'm Burning!)
+    /// Every trigger is seeded on first observation and cannot fire on it: a
+    /// fresh launch legitimately "sees" every pool, bank and burning state as
+    /// new, and without the guard the app would greet you with three alarms.
+    private var soundSeeded = false
+    private var burningBefore: Set<String> = []
+    private struct PoolSnapshot { let pct: Double; let resetsAt: Date? }
+    private var poolBefore: [String: PoolSnapshot] = [:]
+    private var bankedBefore: [UUID: Int] = [:]
+    /// Set during a refresh pass, acted on once at the end.
+    private var pendingEarlyReset = false
+    private var pendingBanked = false
+
+    static let earlyResetFrom = 5.0   // was at least this full...
+    static let earlyResetTo = 1.0     // ...and is now this empty
 
     struct BurnSample: Codable { let t: Date; let v: Double }
     private var burnHistory: [String: [BurnSample]] = [:]
@@ -320,7 +347,11 @@ final class Store: ObservableObject {
     func refreshAll() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        defer { isRefreshing = false; lastRefresh = Date() }
+        pendingEarlyReset = false; pendingBanked = false
+        defer {
+            isRefreshing = false; lastRefresh = Date()
+            fireAlertSounds()
+        }
         pruneBurnHistory()
         await withTaskGroup(of: Void.self) { group in
             for (offset, account) in accounts.enumerated() {
@@ -355,6 +386,7 @@ final class Store: ObservableObject {
                     "refresh \(a.provider.rawValue)/\(a.displayName): \(fetched.limits.map(\.key).joined(separator: ","))\n"
                         .data(using: .utf8)!)
             }
+            noteAlertTriggers(fetched: fetched, accountID: a.id)
             a.limits = markBurning(fetched: fetched.limits, accountID: a.id)
             a.plan = fetched.plan
             a.error = nil; a.lastRefreshed = Date()
@@ -362,6 +394,28 @@ final class Store: ObservableObject {
             a.error = String(describing: error)
         }
         applyFetched(a, to: account.id)
+    }
+
+    /// An early clear is a pool that fell from full-ish to empty while the
+    /// provider's PROMISED reset was still in the future. Scheduled rollovers
+    /// stay silent because by the time those read empty, the promised time has
+    /// already passed.
+    private func noteAlertTriggers(fetched: FetchedUsage, accountID: UUID) {
+        for limit in fetched.limits {
+            guard let pct = limit.percent else { continue }
+            let key = "\(accountID)/\(limit.key)"
+            if let prev = poolBefore[key],
+               prev.pct >= Self.earlyResetFrom,
+               pct <= Self.earlyResetTo,
+               let promised = prev.resetsAt, promised > Date() {
+                pendingEarlyReset = true
+            }
+            poolBefore[key] = PoolSnapshot(pct: pct, resetsAt: limit.resetsAt)
+        }
+        if let bank = fetched.bankedResets {
+            if let prev = bankedBefore[accountID], bank > prev { pendingBanked = true }
+            bankedBefore[accountID] = bank
+        }
     }
 
     /// Appends this poll to each pool's history, runs the detector, and marks
@@ -389,6 +443,29 @@ final class Store: ObservableObject {
         }
         if changed { saveBurnHistory() }
         return out
+    }
+
+    /// Decides which alert to play once the whole refresh pass is done.
+    /// Banked outranks an early clear on the same pass — it is the rarer and
+    /// more notable event — and only one sound plays per refresh even when
+    /// several pools clear at once.
+    private func fireAlertSounds() {
+        let burningNow = Set(accounts.flatMap { a in
+            a.limits.filter(\.burning).map { "\(a.id)/\($0.key)" }
+        })
+        defer {
+            burningBefore = burningNow
+            soundSeeded = true
+            pendingEarlyReset = false; pendingBanked = false
+        }
+        guard soundSeeded else { return }      // never fire on first load
+
+        if pendingBanked { Sounds.shared.play(.banked); return }
+        if pendingEarlyReset { Sounds.shared.play(.reset); return }
+        // Edge trigger: something is burning now that was not burning before.
+        if burningNow.contains(where: { !burningBefore.contains($0) }) {
+            Sounds.shared.play(.burn)
+        }
     }
 
     /// Drops stale samples across EVERY pool and forgets pools entirely once

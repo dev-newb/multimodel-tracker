@@ -115,7 +115,7 @@ struct PopoverView: View {
         HStack(spacing: 14) {
             Button("Refresh") { Task { await store.refreshAll() } }
                 .buttonStyle(.plain).font(.system(size: 12, weight: .medium))
-            Button("Accounts…") { NSApp.sendAction(#selector(AppDelegate.openSettings), to: nil, from: nil) }
+            Button("Config…") { NSApp.sendAction(#selector(AppDelegate.openSettings), to: nil, from: nil) }
                 .buttonStyle(.plain).font(.system(size: 12))
             Spacer()
             Button("Quit") { NSApp.terminate(nil) }

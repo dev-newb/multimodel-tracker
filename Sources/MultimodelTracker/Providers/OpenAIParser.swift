@@ -34,11 +34,14 @@ enum OpenAIParser {
         // Show the banked-reset count whenever the field exists — including 0.
         // Hiding the row at zero made "resets aren't showing" indistinguishable
         // from "you have none".
+        var banked: Int?
         if let credits = root["rate_limit_reset_credits"] as? [String: Any],
            let n = credits["available_count"] as? Int {
+            banked = n
             limits.append(.init(key: "resets", label: "Banked resets · \(n)",
                                 percent: nil, resetsAt: nil))
         }
-        return FetchedUsage(plan: root["plan_type"] as? String, limits: limits)
+        return FetchedUsage(plan: root["plan_type"] as? String, limits: limits,
+                            bankedResets: banked)
     }
 }

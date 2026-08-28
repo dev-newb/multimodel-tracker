@@ -3,6 +3,7 @@ import SwiftUI
 /// Where accounts are added, nicknamed, signed in and removed.
 struct AccountsView: View {
     @ObservedObject var store: Store
+    @ObservedObject private var sounds = Sounds.shared
     @State private var signIn: SignInWindowController?
 
     var body: some View {
@@ -23,7 +24,7 @@ struct AccountsView: View {
                 Spacer()
                 Text("up to \(Provider.maxAccountsPerProvider) per provider")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
-                Text("Accounts").font(.system(size: 15, weight: .semibold))
+                Text("Config").font(.system(size: 15, weight: .semibold))
             }
             .padding(16)
             Divider()
@@ -43,6 +44,8 @@ struct AccountsView: View {
             .frame(maxHeight: 680)
             Divider()
             deadBarSection
+            Divider()
+            soundSection
         }
         .frame(width: 480)
         // The panel is borderless and clear, so the view carries the window's
@@ -56,6 +59,19 @@ struct AccountsView: View {
         .onTapGesture(count: 2) {
             NotificationCenter.default.post(name: .mmtShowTray, object: nil)
         }
+    }
+
+    /// The three alert sounds. Each is independently switchable, can point at
+    /// the user's own file, and has its own volume — matching I'm Burning!.
+    private var soundSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("SOUNDS").font(.system(size: 10, weight: .bold)).tracking(0.8)
+                .foregroundStyle(.secondary)
+            ForEach(SoundKind.allCases) { kind in
+                SoundRow(kind: kind, sounds: sounds)
+            }
+        }
+        .padding(16)
     }
 
     static let distributionOptions: [(Bool, String)] = [
@@ -394,5 +410,56 @@ struct OptionPicker<Value: Hashable>: View {
         .menuStyle(.button)
         .buttonStyle(.bordered)
         .frame(width: width)
+    }
+}
+
+
+/// One alert sound: on/off, which file, how loud, and a way to hear it.
+struct SoundRow: View {
+    let kind: SoundKind
+    @ObservedObject var sounds: Sounds
+
+    var body: some View {
+        let setting = sounds.settings[kind] ?? SoundSetting()
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Toggle(isOn: Binding(get: { setting.enabled },
+                                     set: { sounds.setEnabled($0, for: kind) })) {
+                    Text(kind.displayName).font(.system(size: 12))
+                }
+                .toggleStyle(.checkbox)
+                Spacer()
+                // Test ignores the enabled flag, so a muted sound can still be
+                // auditioned before switching it on.
+                Button("Test") { sounds.play(kind, force: true) }
+                    .font(.system(size: 11))
+            }
+            HStack(spacing: 8) {
+                Text(sounds.label(for: kind))
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    .lineLimit(1).truncationMode(.middle)
+                Button("Choose…") { chooseFile() }.font(.system(size: 10))
+                if setting.path != nil {
+                    Button("Default") { sounds.setPath(nil, for: kind) }.font(.system(size: 10))
+                }
+                Spacer()
+                Slider(value: Binding(get: { setting.volume },
+                                      set: { sounds.setVolume($0, for: kind) }),
+                       in: 0...1)
+                    .frame(width: 90)
+                    .controlSize(.mini)
+            }
+            .padding(.leading, 18)
+        }
+    }
+
+    private func chooseFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audio]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        if panel.runModal() == .OK, let url = panel.url {
+            sounds.setPath(url.path, for: kind)
+        }
     }
 }

@@ -1,6 +1,18 @@
 import Foundation
 
-struct FetchedUsage { let plan: String?; let limits: [UsageLimit] }
+struct FetchedUsage {
+    let plan: String?
+    let limits: [UsageLimit]
+    /// OpenAI's banked limit-reset count. Kept as a number as well as in the
+    /// row label, because the "banked reset added" alert needs to compare it
+    /// against the previous refresh — parsing it back out of a label would
+    /// break the moment the wording changed.
+    var bankedResets: Int?
+
+    init(plan: String?, limits: [UsageLimit], bankedResets: Int? = nil) {
+        self.plan = plan; self.limits = limits; self.bankedResets = bankedResets
+    }
+}
 
 enum AdapterError: Error, CustomStringConvertible {
     case notSignedIn, blocked(String), transport(String), notImplemented(String)

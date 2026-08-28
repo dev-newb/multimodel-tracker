@@ -11,6 +11,9 @@ swift build -c "$CONF"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp ".build/$CONF/MultimodelTracker" "$APP/Contents/MacOS/MultimodelTracker"
+# Alert audio, copied byte-identical — never trimmed, normalised or re-encoded.
+mkdir -p "$APP/Contents/Resources/sounds"
+cp Resources/sounds/* "$APP/Contents/Resources/sounds/"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

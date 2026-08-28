@@ -68,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
 
         renderBadges()
-        timer = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: Store.pollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.store.refreshAll()
                 self?.renderBadges()
