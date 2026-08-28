@@ -26,6 +26,9 @@ struct PopoverView: View {
                 }
                 .padding(.vertical, 12)
             }
+            // Same rubber-banding fix as the Config panel: no bounce while the
+            // list fits, normal scrolling once it doesn't.
+            .scrollBounceBehavior(.basedOnSize)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxHeight: maxListHeight)
             Divider().opacity(0.35)

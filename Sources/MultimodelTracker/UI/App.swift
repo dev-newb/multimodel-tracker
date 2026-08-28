@@ -272,7 +272,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                         try? await Task.sleep(for: .milliseconds(60))
                     }
                     try? await Task.sleep(for: .milliseconds(200))
-                    out += "  y-\(Int(dy)): current=\(name(NSCursor.current)) system=\(name(NSCursor.currentSystem))\n"
+                    // What the governor decided, and the AppKit chain under
+                    // the pointer that made it decide that — the ground truth
+                    // for "SwiftUI's TextField is backed by NSTextField".
+                    let want = self.desiredCursor(at: NSEvent.mouseLocation)
+                    var chain: [String] = []
+                    var v = self.hitView(at: NSEvent.mouseLocation)
+                    while let cur = v, chain.count < 4 {
+                        chain.append(String(describing: type(of: cur)))
+                        v = cur.superview
+                    }
+                    out += "  y-\(Int(dy)): system=\(name(NSCursor.currentSystem))"
+                        + " want=\(want.map { $0 === NSCursor.iBeam ? "iBeam" : "arrow" } ?? "nil")"
+                        + " hit=\(chain.joined(separator: "<"))\n"
+                    // Flicker check: with the pointer still, sample fast. More
+                    // than one distinct cursor here means something is still
+                    // fighting.
+                    var seen = Set<String>()
+                    for _ in 0..<12 {
+                        if let c = NSCursor.currentSystem { seen.insert(name(c)) }
+                        try? await Task.sleep(for: .milliseconds(50))
+                    }
+                    if seen.count > 1 { out += "    FLICKER: \(seen.sorted().joined(separator: ", "))\n" }
                 }
                 out += "  --- windows owned by this app:\n"
                 for win in NSApp.windows {
@@ -359,6 +380,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             let allOK = results.allSatisfy(\.1)
             FileHandle.standardError.write("burn-sim \(allOK ? "ALL PASS" : "FAILURES")\n".data(using: .utf8)!)
             exit(allOK ? 0 : 1)
+        }
+
+        // `--loopback-test` exercises the OAuth redirect catcher end to end
+        // without a browser: bind an ephemeral port, hit ourselves with the
+        // redirect, expect the code back — and a wrong state rejected.
+        if CommandLine.arguments.contains("--loopback-test") {
+            Task {
+                func hit(_ port: UInt16, query: String) async {
+                    _ = try? await URLSession.shared.data(
+                        from: URL(string: "http://localhost:\(port)/callback?\(query)")!)
+                }
+                do {
+                    let good = try LoopbackCatcher(port: 0, expectedState: "st4te")
+                    let port = try await good.ready()
+                    async let code = good.awaitCode()
+                    await hit(port, query: "code=c0de&state=st4te")
+                    let got = try await code
+                    var pass = got == "c0de"
+                    FileHandle.standardError.write(
+                        "loopback ephemeral-port \(port): code=\(got) \(pass ? "PASS" : "FAIL")\n".data(using: .utf8)!)
+
+                    let strict = try LoopbackCatcher(port: 0, expectedState: "right")
+                    let port2 = try await strict.ready()
+                    async let code2 = strict.awaitCode()
+                    await hit(port2, query: "code=c0de&state=wrong")
+                    do {
+                        _ = try await code2
+                        pass = false
+                        FileHandle.standardError.write("loopback state-mismatch: accepted — FAIL\n".data(using: .utf8)!)
+                    } catch {
+                        FileHandle.standardError.write("loopback state-mismatch: rejected — PASS\n".data(using: .utf8)!)
+                    }
+                    exit(pass ? 0 : 1)
+                } catch {
+                    FileHandle.standardError.write("loopback FAIL: \(error)\n".data(using: .utf8)!)
+                    exit(1)
+                }
+            }
         }
 
         // `--recover` rebuilds accounts from surviving credentials.
@@ -453,7 +512,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if popover.isShown { popover.performClose(nil); store.setUIVisible(false) }
         else {
             store.setUIVisible(true)
-            watchForArrowCursor(popover.contentViewController?.view.window ?? statusItem.button!.window!)
+            startCursorGovernor()
             store.noteMaxedViewing()
             store.noteBurnViewing()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -474,14 +533,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // ever delivering mouseExited, so the I-beam is left pushed and
         // follows the user around the desktop. Put the arrow back by hand.
         NSCursor.arrow.set()
-        stopWatchingArrowCursor()
+        stopCursorGovernor()
         stopWatchingOutsideClick()
         accountsWindow = nil
         store.setUIVisible(popover.isShown)
     }
 
     func popoverDidClose(_ notification: Notification) {
-        if accountsWindow == nil { stopWatchingArrowCursor() }
+        if accountsWindow == nil { stopCursorGovernor() }
         // Accounts may still be open; only stop the clocks if nothing is up.
         store.setUIVisible(accountsWindow?.isVisible == true)
     }
@@ -509,9 +568,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let local = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             Task { @MainActor in
                 guard let self, let panel = self.accountsWindow else { return }
-                // Not the panel itself, and not a sign-in window it spawned.
-                guard event.window !== panel,
-                      !SignInWindowController.owns(event.window) else { return }
+                // Anything but the panel itself. (Sign-in used to spawn its
+                // own window here; both vendors go through the real browser
+                // now, so ours is the only window to spare.)
+                guard event.window !== panel else { return }
                 // Still our app, so the popover will survive: go back to the
                 // tracker, exactly like the back button.
                 self.closeAccountsPanel(returningToTracker: true)
@@ -522,41 +582,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         _ = panel
     }
 
-    /// Forces the arrow back after every pointer move inside the panel.
+    /// The cursor policy: the I-beam over editable text — the nickname
+    /// fields, the one place typing happens — and the plain arrow everywhere
+    /// else. Decided by hit-testing what is actually under the pointer.
     ///
-    /// A local monitor sees the event BEFORE the view does, so setting the
-    /// cursor here directly would just be overwritten by the control's own
-    /// cursorUpdate a moment later. Hopping to the next runloop pass puts our
-    /// set AFTER theirs, which is what actually makes it stick.
-    private func watchForArrowCursor(_ panel: NSWindow) {
-        stopWatchingArrowCursor()
+    /// This replaces forcing the arrow everywhere, which is what the flicker
+    /// WAS. The old timer compared `NSCursor.currentSystem` to the arrow by
+    /// object identity; currentSystem returns a RECONSTRUCTED cursor, never
+    /// the singleton, so the check always read "different" and the arrow was
+    /// re-set every 80ms — colliding forever with the I-beam the text fields
+    /// push through their own tracking areas. Text bar, arrow, text bar. The
+    /// governor ends the fight instead of trying to win it faster: over a
+    /// field the I-beam is the DESIRED cursor and nothing gets contradicted;
+    /// elsewhere nothing else pushes, so one corrective set() is stable.
+    private func startCursorGovernor() {
+        stopCursorGovernor()
         // Local AND global: the local monitor only sees events routed to this
         // app, and this is an .accessory app whose panel does not activate it
-        // — hovering from another app can leave that app's cursor showing over
-        // ours. The global monitor catches exactly that case.
-        let apply: () -> Void = { DispatchQueue.main.async { NSCursor.arrow.set() } }
+        // — hovering in from another app can leave that app's cursor showing
+        // over ours. The global monitor catches exactly that case. Enforcing
+        // hops to the next runloop pass so it lands AFTER any cursorUpdate
+        // the event is about to trigger, not before it.
+        let apply: () -> Void = { [weak self] in
+            DispatchQueue.main.async { self?.enforceCursor() }
+        }
         let types: NSEvent.EventTypeMask = [.mouseMoved, .mouseEntered, .mouseExited, .cursorUpdate]
-        let local = NSEvent.addLocalMonitorForEvents(matching: types) { [weak self] event in
-            if self?.pointerIsOverOurUI() == true { apply() }
-            return event
+        let local = NSEvent.addLocalMonitorForEvents(matching: types) { event in
+            apply(); return event
         }
-        let global = NSEvent.addGlobalMonitorForEvents(matching: types) { [weak self] _ in
-            if self?.pointerIsOverOurUI() == true { apply() }
-        }
+        let global = NSEvent.addGlobalMonitorForEvents(matching: types) { _ in apply() }
         arrowMonitors = [local, global].compactMap { $0 }
-        // Events alone are not enough. WebKit sets the cursor on its own
-        // schedule — during a page relayout, not in response to a move — so
-        // it can change while the pointer is perfectly still, which is what
-        // "flashes and changes rapidly" describes. A short repeating check
-        // reasserts the arrow whatever set it and whenever.
+        // Backstop for cursors set with the pointer perfectly still (a
+        // relayout can do that). Idle ticks are free: enforceCursor touches
+        // the cursor only when the live one genuinely differs.
         arrowTimer?.invalidate()
-        arrowTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.pointerIsOverOurUI() else { return }
-                if NSCursor.currentSystem != NSCursor.arrow { NSCursor.arrow.set() }
-            }
+        arrowTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.enforceCursor() }
         }
-        _ = panel
+    }
+
+    /// The deepest AppKit view under the pointer, in whichever of our
+    /// windows contains it.
+    private func hitView(at p: NSPoint) -> NSView? {
+        var target: NSWindow?
+        if let w = accountsWindow, w.isVisible, w.frame.contains(p) { target = w }
+        else if popover?.isShown == true,
+                let w = popover.contentViewController?.view.window, w.frame.contains(p) { target = w }
+        guard let win = target, let content = win.contentView else { return nil }
+        let wp = win.convertPoint(fromScreen: p)
+        let root = content.superview ?? content
+        return root.hitTest(root.convert(wp, from: nil))
+    }
+
+    /// Nil = the pointer is not over our UI; leave the cursor alone.
+    func desiredCursor(at p: NSPoint) -> NSCursor? {
+        guard pointerIsOverOurUI() else { return nil }
+        var v = hitView(at: p)
+        while let cur = v {
+            // NSText covers the field editor that appears while editing;
+            // NSTextField is the resting field (SwiftUI's TextField is backed
+            // by one). Both mean "editable text here".
+            if cur is NSText { return .iBeam }
+            if let tf = cur as? NSTextField, tf.isEditable { return .iBeam }
+            v = cur.superview
+        }
+        return .arrow
+    }
+
+    private func enforceCursor() {
+        guard let want = desiredCursor(at: NSEvent.mouseLocation) else { return }
+        // Fingerprint by image bytes + hotspot — the probe's trick, promoted
+        // to production, because identity comparison against currentSystem
+        // can never succeed.
+        let wantPrint = want === NSCursor.iBeam ? Self.iBeamPrint : Self.arrowPrint
+        if let live = NSCursor.currentSystem, Self.cursorFingerprint(live) == wantPrint { return }
+        want.set()
+    }
+
+    private static let arrowPrint = cursorFingerprint(.arrow)
+    private static let iBeamPrint = cursorFingerprint(.iBeam)
+    static func cursorFingerprint(_ c: NSCursor) -> String {
+        let tiff = c.image.tiffRepresentation ?? Data()
+        var h: UInt64 = 0xcbf29ce484222325
+        for b in tiff { h = (h ^ UInt64(b)) &* 0x100000001b3 }
+        return "\(String(h, radix: 36))@\(Int(c.hotSpot.x)),\(Int(c.hotSpot.y))"
     }
 
     /// True when the pointer sits inside any window this app is showing —
@@ -569,7 +678,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         return false
     }
 
-    private func stopWatchingArrowCursor() {
+    private func stopCursorGovernor() {
         for m in arrowMonitors { NSEvent.removeMonitor(m) }
         arrowMonitors = []
         arrowTimer?.invalidate(); arrowTimer = nil
@@ -634,19 +743,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // rects, but AppKit controls set their cursors through tracking areas
         // (cursorUpdate:), which it does not touch — which is why disabling
         // rects alone changed nothing. Both are handled: rects off here, and
-        // cursorUpdate overridden by the monitor in watchForArrowCursor.
+        // tracking-area pushes reconciled by the cursor governor.
         w.disableCursorRects()
         w.acceptsMouseMovedEvents = true
         NSCursor.arrow.set()
         w.delegate = self
         accountsWindow = w
         watchForOutsideClick(w)
-        watchForArrowCursor(w)
+        startCursorGovernor()
         // Closing the previous panel above flipped this false via
         // windowWillClose; the panel is visible now, so re-assert it.
         store.setUIVisible(true)
         if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
             FileHandle.standardError.write("accounts window: \(Int(w.frame.width))x\(Int(w.frame.height)) key=\(w.canBecomeKey)\n".data(using: .utf8)!)
+            // Scroll geometry: is the accounts section hugging its content or
+            // stretched to the cap? (documentView vs scroll frame heights)
+            func walk(_ v: NSView) {
+                if let sv = v as? NSScrollView {
+                    let doc = sv.documentView?.frame.height ?? -1
+                    FileHandle.standardError.write(
+                        "  scroll \(type(of: sv)) frame=\(Int(sv.frame.height)) doc=\(Int(doc))\n".data(using: .utf8)!)
+                }
+                v.subviews.forEach(walk)
+            }
+            if let c = w.contentView { walk(c) }
         }
     }
 
@@ -676,4 +796,15 @@ extension NSWindow {
 /// Accounts panel unable to receive a single keystroke.
 final class AccountsPanel: NSPanel {
     override var canBecomeKey: Bool { true }
+
+    /// cursorUpdate is the channel AppKit controls use to push their own
+    /// cursors (tracking areas — the half disableCursorRects can't reach).
+    /// Swallowing it here means nothing inside the panel can set a cursor at
+    /// all; the governor in AppDelegate is the single owner, so there is no
+    /// second writer left to flicker against. The governor still SEES these
+    /// events — its monitors observe them before dispatch reaches us.
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .cursorUpdate { return }
+        super.sendEvent(event)
+    }
 }

@@ -4,7 +4,6 @@ import SwiftUI
 struct AccountsView: View {
     @ObservedObject var store: Store
     @ObservedObject private var sounds = Sounds.shared
-    @State private var signIn: SignInWindowController?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -36,6 +35,11 @@ struct AccountsView: View {
                 }
                 .padding(16)
             }
+            // No rubber-banding while everything fits: macOS lets a ScrollView
+            // bounce even when content == bounds, so a two-finger drag made
+            // this section wobble. basedOnSize kills that, and real scrolling
+            // (and its bounce) returns only once the content overflows 680.
+            .scrollBounceBehavior(.basedOnSize)
             // fixedSize makes the ScrollView adopt its content's ideal height
             // instead of stretching, so the window shrinks to what is actually
             // there; maxHeight keeps a full twelve accounts from running off
@@ -65,7 +69,7 @@ struct AccountsView: View {
         // pointer. Any nickname field it was over loses its tracking area
         // mid-hover, leaving the I-beam stuck — reset on every change to the
         // list, not just on close.
-        .onChange(of: store.accounts.count) { _ in
+        .onChange(of: store.accounts.count) { _, _ in
             NSCursor.arrow.set()
             // Belt and braces: drop any rect a destroyed row left behind.
             NSApp.windows.forEach { $0.discardCursorRects() }
@@ -245,8 +249,8 @@ struct AccountsView: View {
 
     private func emptyHint(_ p: Provider) -> String {
         switch p {
-        case .anthropic: return "Add an account, then sign in to claude.ai in its own window."
-        case .openai:    return "Import the Codex CLI login, or add an account and sign in to chatgpt.com."
+        case .anthropic: return "Add an account, then sign in with your browser."
+        case .openai:    return "Import the Codex CLI login, or add an account and sign in with your browser."
         case .google:    return "Import the Antigravity or gemini-cli login already on this Mac."
         }
     }
@@ -257,35 +261,39 @@ struct AccountsView: View {
         if p != .google { beginSignIn(account) }
     }
 
+    /// Both vendors sign in through the real browser: passkeys cannot work in
+    /// an embedded WKWebView (passkey-only accounts exist for both), and an
+    /// existing browser session turns the flow into a single Authorize click.
+    /// Google has no sign-in at all — its "login" is importing the Antigravity
+    /// or gemini-cli credentials already on this Mac.
     private func beginSignIn(_ account: Account) {
         guard account.provider != .google else { return }
-        // OpenAI goes through the real browser: passkeys cannot work in an
-        // embedded WKWebView, and passkey-only ChatGPT accounts exist.
-        if account.provider == .openai {
-            Task {
-                do {
+        Task {
+            do {
+                let email: String?
+                switch account.provider {
+                case .openai:
                     let t = try await OpenAIOAuth.signIn()
                     Keychain.storeOpenAI(accessToken: t.accessToken, accountId: t.accountID,
                                          refreshToken: t.refreshToken, for: account.id)
-                    if let email = t.email { store.setLabel(email, for: account.id) }
-                    await store.refresh(account)
-                } catch {
-                    store.setError(error.localizedDescription, for: account.id)
+                    email = t.email
+                case .anthropic:
+                    let t = try await AnthropicOAuth.signIn()
+                    Keychain.storeAnthropic(accessToken: t.accessToken,
+                                            refreshToken: t.refreshToken,
+                                            expiresAt: t.expiresAt, for: account.id)
+                    email = t.email
+                case .google:
+                    return
                 }
+                // The flow learns the email; put it on the row so the account
+                // is recognisable, like the Codex import does.
+                if let email { store.setLabel(email, for: account.id) }
+                await store.refresh(account)
+            } catch {
+                store.setError(error.localizedDescription, for: account.id)
             }
-            return
         }
-        var controller: SignInWindowController?
-        let c = SignInWindowController(account: account) { ok in
-            guard ok else { return }
-            // OpenAI sign-in learns the email; put it on the row so the
-            // account is recognisable, like the Codex import does.
-            if let email = controller?.email { store.setLabel(email, for: account.id) }
-            Task { await store.refresh(account) }
-        }
-        controller = c
-        signIn = c
-        c.present()
     }
 }
 
@@ -320,7 +328,7 @@ struct AccountRow: View {
                     // panel, so closing it (or clicking straight back to the
                     // tray) never delivers the focus change. Skip the no-op
                     // write the initial onAppear populate would otherwise fire.
-                    .onChange(of: draft) { new in
+                    .onChange(of: draft) { _, new in
                         if new != (account.nickname ?? "") { onNickname(new) }
                     }
                 Text(account.subtitle ?? account.label)

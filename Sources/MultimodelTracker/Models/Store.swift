@@ -301,6 +301,15 @@ final class Store: ObservableObject {
             notes.append("openai \(id.uuidString.prefix(8)) — token recovered from keychain")
         }
 
+        // Browser-OAuth Claude accounts live in the keychain like OpenAI's;
+        // the cookie-jar scan below only ever finds the legacy window logins.
+        for id in Keychain.anthropicAccountIDs() where !known.contains(id) {
+            guard canAdd(.anthropic) else { notes.append("anthropic: no free slots"); break }
+            accounts.append(Account(id: id, provider: .anthropic, label: "Recovered Claude"))
+            known.insert(id)
+            notes.append("anthropic \(id.uuidString.prefix(8)) — OAuth token recovered from keychain")
+        }
+
         for id in Self.anthropicDataStoreIDs() where !known.contains(id) && !openAIIDs.contains(id) {
             guard canAdd(.anthropic) else { notes.append("anthropic: no free slots"); break }
             accounts.append(Account(id: id, provider: .anthropic, label: "Recovered Claude"))

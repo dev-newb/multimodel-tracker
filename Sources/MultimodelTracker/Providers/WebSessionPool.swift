@@ -1,8 +1,10 @@
 import WebKit
 
-/// One hidden WKWebView per Anthropic account, each with its OWN data store,
-/// so four claude.ai subscriptions can be signed in simultaneously — a single
-/// shared cookie jar is what limits the Electron app to one.
+/// One hidden WKWebView per LEGACY account, each with its OWN data store.
+/// New sign-ins go through the browser OAuth flows and never touch this pool;
+/// it survives for the accounts that predate them — claude.ai cookie jars and
+/// chatgpt.com sessions that can still re-mint a token — so an upgrade never
+/// logs anyone out.
 ///
 /// A browser engine is required rather than URLSession: claude.ai is behind
 /// Cloudflare, which rejects plain HTTP client fingerprints. WebKit passes —
@@ -91,18 +93,6 @@ final class WebSessionPool {
         throw AdapterError.transport("page never produced a bridge result")
     }
 
-    /// Presents the provider's login inside this account's isolated store.
-    func signInView(for account: Account) -> WKWebView {
-        let v = view(for: account)
-        // chatgpt.com's root shows a logged-out chat page with Log in tucked
-        // in a corner — /auth/login goes straight to the account picker.
-        let url = account.provider == .openai
-            ? "https://chatgpt.com/auth/login"
-            : "https://claude.ai/login"
-        v.load(URLRequest(url: URL(string: url)!))
-        return v
-    }
-
     struct OpenAIWebSession {
         let accessToken: String
         let accountId: String?
@@ -152,35 +142,6 @@ final class WebSessionPool {
               let auth = obj["https://api.openai.com/auth"] as? [String: Any]
         else { return nil }
         return auth["chatgpt_account_id"] as? String
-    }
-
-    /// The organisations this account can see. Empty (or a throw) means the
-    /// cookie jar has no valid session — which is also how sign-in completion
-    /// is detected.
-    func organizations(for account: Account) async throws -> [(id: String, name: String)] {
-        let v = view(for: account)
-        if v.url == nil {
-            v.load(URLRequest(url: URL(string: "https://claude.ai/")!))
-            try? await Task.sleep(for: .seconds(2))
-        }
-        let js = """
-        try {
-          const r = await fetch('https://claude.ai/api/organizations', {credentials:'include'});
-          const t = await r.text();
-          return JSON.stringify({ status: r.status, body: t });
-        } catch (e) { return JSON.stringify({ status: 0, body: String(e) }); }
-        """
-        guard let s = try? await callBridge(js, in: v, for: account.id),
-              let d = s.data(using: .utf8),
-              let outer = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-              (outer["status"] as? Int) == 200,
-              let bodyData = (outer["body"] as? String)?.data(using: .utf8),
-              let arr = try? JSONSerialization.jsonObject(with: bodyData) as? [[String: Any]]
-        else { return [] }
-        return arr.compactMap { o in
-            guard let id = o["uuid"] as? String else { return nil }
-            return (id, (o["name"] as? String) ?? "Organization")
-        }
     }
 
     /// One line per probe: does a trivial return work, does fetch work.

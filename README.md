@@ -32,12 +32,15 @@ keychain access after every rebuild.
 
 ## Signing in
 
-- **Anthropic** — each account opens claude.ai in its own window with its own
-  isolated cookie jar. Sign in normally; the app detects the session and
-  closes the window. Four accounts means four simultaneous logins.
+- **Anthropic** — per-account OAuth in your real browser (the same
+  "log in with your Claude account" flow Claude Code runs). If you're already
+  signed in to claude.ai there, it's a single Authorize click; the app keeps a
+  refresh token per account, so four accounts stay signed in simultaneously.
+  Accounts from the old embedded-window flow keep working through their
+  isolated cookie jars.
 - **OpenAI** — either one-click **Import Codex CLI** (adopts `~/.codex/auth.json`)
-  or per-account web sign-in at chatgpt.com, same isolated-jar model. Expired
-  web tokens re-mint silently from the surviving cookies.
+  or per-account OAuth in your real browser (Codex CLI's flow). Legacy
+  web-window accounts re-mint expired tokens silently from surviving cookies.
 - **Google** — **Import Antigravity / gemini-cli**: the login already on your
   Mac *is* the credential. Quota comes from the Code Assist
   `retrieveUserQuota` endpoint, one bucket per Gemini model.
@@ -68,14 +71,16 @@ once.
 bearer token and `chatgpt-account-id`. Multiple accounts is just multiple
 token pairs, stored per-account in the Keychain.
 
-**Anthropic — needs a browser engine.** claude.ai sits behind Cloudflare,
-which rejects plain HTTP client fingerprints, and auth is cookie/session
-rather than a bearer token. WebKit passes the check; presenting an honest
-WebKit user agent is required (claiming to be Chrome from a WebKit engine is
-an inconsistency that puts login into an unsolvable challenge loop).
-Multiple accounts therefore means multiple *isolated cookie jars* — one
-`WKWebsiteDataStore(forIdentifier:)` per account. A shared jar is exactly
-what limits other tools to one Claude login.
+**Anthropic — OAuth first, browser engine for legacy.** Accounts signed in
+through the browser hold an `api.anthropic.com` bearer token; that host's
+usage endpoint answers a plain HTTPS GET with the same `limits[]` payload as
+claude.ai's own, so polling needs no browser engine at all. Accounts from
+the old embedded-window flow still poll claude.ai, which sits behind
+Cloudflare and rejects plain HTTP client fingerprints — WebKit passes the
+check (presenting an honest WebKit user agent is required; claiming to be
+Chrome from a WebKit engine puts login into an unsolvable challenge loop).
+Those accounts keep their *isolated cookie jars* — one
+`WKWebsiteDataStore(forIdentifier:)` each.
 
 **Google — borrowed credentials.** There is no public OAuth client for Code
 Assist quota. The app reads the refresh token Antigravity (or gemini-cli)
@@ -106,6 +111,8 @@ Antigravity's token can never work.
 | `--burn-sim` | run the burn detector against synthetic histories (6 rules, PASS/FAIL) |
 | `--recover` | rebuild the account list from surviving keychain items and cookie jars |
 | `--bridge-test` | probe the claude.ai page bridge |
+| `--cursor-probe` | walk the pointer down the Config panel, report live cursor vs the governor's decision |
+| `--loopback-test` | exercise the OAuth redirect catcher without a browser |
 | `MMT_DEBUG=1` | log refreshes and window metrics to stderr |
 
 ## Layout
@@ -113,15 +120,18 @@ Antigravity's token can never work.
 ```
 Models/     Domain.swift      Provider, Account, UsageLimit
             Store.swift       account CRUD, refresh, burn detector, persistence
-Providers/  Adapter.swift     UsageAdapter protocol + OpenAI adapter
+Providers/  Adapter.swift     UsageAdapter protocol + OpenAI/Anthropic adapters
             OpenAIParser      wham/usage → UsageLimit
+            OpenAIOAuth       browser OAuth, Codex CLI's client
+            AnthropicOAuth    browser OAuth, Claude Code's client
+            OAuthLoopback     shared PKCE material + loopback redirect catcher
             GoogleAdapter     Antigravity/gemini-cli credentials + quota
-            WebSessionPool    per-account WKWebView + Anthropic parser + bridge
+            WebSessionPool    legacy per-account WKWebView + Anthropic parser
 Support/    Support.swift     Keychain wrapper, Codex CLI import
-UI/         App.swift         status item, badges, popover, debug flags
+UI/         App.swift         status item, badges, popover, cursor governor,
+                              debug flags
             PopoverView       provider → account → pools
             AccountsView      accounts + bar-effect preferences
             MaxedBar          the eight dead-bar treatments
             BurningBar        the five burning treatments
-            SignInWindow      per-account sign-in flow
 ```

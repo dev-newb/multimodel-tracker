@@ -88,12 +88,56 @@ struct OpenAIAdapter: UsageAdapter {
     }
 }
 
-/// Anthropic needs a real browser context — claude.ai sits behind Cloudflare,
-/// which rejects plain URLSession fingerprints. Each account gets its own
-/// WKWebView data store so several subscriptions can be signed in at once.
-/// (Verified: WebKit clears the Cloudflare check and reaches the real API.)
+/// Anthropic, OAuth first: accounts signed in through the browser hold an
+/// api.anthropic.com bearer token, and that host's usage endpoint answers a
+/// plain URLSession — no Cloudflare, no browser engine. It returns the same
+/// limits[] payload as claude.ai's own usage endpoint, so the parser is
+/// shared. Accounts from the old embedded-window flow have no token and fall
+/// through to their per-account claude.ai cookie jar, which still needs
+/// WebKit to pass Cloudflare.
 struct AnthropicAdapter: UsageAdapter {
+    static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
+
     func fetch(account: Account) async throws -> FetchedUsage {
-        try await WebSessionPool.shared.fetchUsage(for: account)
+        guard let creds = try? await Keychain.anthropicCredentialsAsync(for: account.id) else {
+            return try await WebSessionPool.shared.fetchUsage(for: account)
+        }
+        // Refresh ahead of a known expiry rather than spending a doomed
+        // round trip; the expiry is stored precisely so this test is local.
+        var live = creds
+        if let exp = creds.expiresAt, exp <= Date().addingTimeInterval(120) {
+            live = try await refreshed(creds, account: account.id)
+        }
+        do {
+            return try await fetchOnce(live.accessToken)
+        } catch AdapterError.notSignedIn {
+            // The token died early (revocation, clock skew) — one refresh,
+            // one retry, then give up to the "Sign in" button.
+            let renewed = try await refreshed(live, account: account.id)
+            return try await fetchOnce(renewed.accessToken)
+        }
+    }
+
+    private func refreshed(_ creds: Keychain.AnthropicCreds,
+                           account: UUID) async throws -> Keychain.AnthropicCreds {
+        guard let rt = creds.refreshToken,
+              let t = try? await AnthropicOAuth.refresh(rt) else {
+            throw AdapterError.notSignedIn
+        }
+        Keychain.storeAnthropic(accessToken: t.accessToken,
+                                refreshToken: t.refreshToken ?? rt,
+                                expiresAt: t.expiresAt, for: account)
+        return try await Keychain.anthropicCredentialsAsync(for: account)
+    }
+
+    private func fetchOnce(_ token: String) async throws -> FetchedUsage {
+        var req = URLRequest(url: Self.endpoint)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue(AnthropicOAuth.betaHeader, forHTTPHeaderField: "anthropic-beta")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw AdapterError.transport("no response") }
+        if http.statusCode == 401 || http.statusCode == 403 { throw AdapterError.notSignedIn }
+        guard http.statusCode == 200 else { throw AdapterError.transport("HTTP \(http.statusCode)") }
+        return try AnthropicParser.parse(data)
     }
 }

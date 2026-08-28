@@ -1,7 +1,5 @@
 import Foundation
 import AppKit
-import CryptoKit
-import Network
 
 /// Signs an OpenAI account in through the user's REAL browser.
 ///
@@ -32,15 +30,12 @@ enum OpenAIOAuth {
 
     enum Failure: LocalizedError {
         case portBusy
-        case cancelled
         case badResponse(String)
 
         var errorDescription: String? {
             switch self {
             case .portBusy:
                 return "Port 1455 is busy — quit any Codex CLI login in progress and retry."
-            case .cancelled:
-                return "Sign-in was cancelled or timed out."
             case .badResponse(let s):
                 return "OpenAI rejected the sign-in: \(s)"
             }
@@ -48,9 +43,8 @@ enum OpenAIOAuth {
     }
 
     static func signIn() async throws -> Tokens {
-        let verifier = randomURLSafe(64)
-        let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URLEncoded
-        let state = randomURLSafe(24)
+        let verifier = OAuthPKCE.randomURLSafe(64)
+        let state = OAuthPKCE.randomURLSafe(24)
 
         var comps = URLComponents(string: "https://auth.openai.com/oauth/authorize")!
         comps.queryItems = [
@@ -58,7 +52,7 @@ enum OpenAIOAuth {
             .init(name: "redirect_uri", value: redirectURI),
             .init(name: "response_type", value: "code"),
             .init(name: "scope", value: "openid profile email offline_access"),
-            .init(name: "code_challenge", value: challenge),
+            .init(name: "code_challenge", value: OAuthPKCE.challenge(for: verifier)),
             .init(name: "code_challenge_method", value: "S256"),
             .init(name: "state", value: state),
             // OpenAI-specific: without these the issued token lacks the
@@ -67,13 +61,18 @@ enum OpenAIOAuth {
             .init(name: "codex_cli_simplified_flow", value: "true"),
         ]
 
-        // Listen BEFORE opening the browser, or a fast redirect races us.
-        let waiter = try LoopbackCatcher(port: port, expectedState: state)
-        defer { waiter.stop() }
-        NSWorkspace.shared.open(comps.url!)
-
-        let code = try await waiter.awaitCode()
-        return try await exchange(code: code, verifier: verifier)
+        do {
+            // Listen BEFORE opening the browser, or a fast redirect races us.
+            let waiter = try LoopbackCatcher(port: port, expectedState: state)
+            defer { waiter.stop() }
+            _ = try await waiter.ready()
+            NSWorkspace.shared.open(comps.url!)
+            let code = try await waiter.awaitCode()
+            return try await exchange(code: code, verifier: verifier)
+        } catch LoopbackError.portBusy {
+            // The generic message can't know WHO holds 1455; here we do.
+            throw Failure.portBusy
+        }
     }
 
     private static func exchange(code: String, verifier: String) async throws -> Tokens {
@@ -122,7 +121,7 @@ enum OpenAIOAuth {
         var accountID: String?
         var email: String?
         if let idToken = obj["id_token"] as? String {
-            let claims = decodeJWT(idToken)
+            let claims = JWT.claims(idToken)
             let auth = claims["https://api.openai.com/auth"] as? [String: Any]
             accountID = (auth?["chatgpt_account_id"] as? String) ?? (claims["sub"] as? String)
             email = claims["email"] as? String
@@ -131,8 +130,10 @@ enum OpenAIOAuth {
                       refreshToken: obj["refresh_token"] as? String,
                       accountID: accountID, email: email)
     }
+}
 
-    private static func decodeJWT(_ token: String) -> [String: Any] {
+enum JWT {
+    static func claims(_ token: String) -> [String: Any] {
         let parts = token.split(separator: ".")
         guard parts.count > 1 else { return [:] }
         var b64 = String(parts[1])
@@ -142,93 +143,5 @@ enum OpenAIOAuth {
         guard let d = Data(base64Encoded: b64),
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
         return o
-    }
-
-    private static func randomURLSafe(_ bytes: Int) -> String {
-        var raw = [UInt8](repeating: 0, count: bytes)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes, &raw)
-        return Data(raw).base64URLEncoded
-    }
-}
-
-private extension Data {
-    var base64URLEncoded: String {
-        base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-    }
-}
-
-/// A one-shot loopback HTTP listener for the OAuth redirect. Deliberately
-/// minimal: read the request line, answer once, stop.
-private final class LoopbackCatcher: @unchecked Sendable {
-    private let listener: NWListener
-    private let expectedState: String
-    private var continuation: CheckedContinuation<String, Error>?
-    private var finished = false
-    private let lock = NSLock()
-
-    init(port: UInt16, expectedState: String) throws {
-        self.expectedState = expectedState
-        let params = NWParameters.tcp
-        params.allowLocalEndpointReuse = true
-        guard let nwPort = NWEndpoint.Port(rawValue: port) else { throw OpenAIOAuth.Failure.portBusy }
-        do { listener = try NWListener(using: params, on: nwPort) }
-        catch { throw OpenAIOAuth.Failure.portBusy }
-        listener.newConnectionHandler = { [weak self] conn in self?.handle(conn) }
-        listener.start(queue: .global(qos: .userInitiated))
-    }
-
-    func awaitCode() async throws -> String {
-        try await withCheckedThrowingContinuation { cont in
-            lock.lock(); continuation = cont; lock.unlock()
-            // The browser may never come back (tab closed); don't hang forever.
-            DispatchQueue.global().asyncAfter(deadline: .now() + 300) { [weak self] in
-                self?.finish(.failure(OpenAIOAuth.Failure.cancelled))
-            }
-        }
-    }
-
-    func stop() { listener.cancel() }
-
-    private func handle(_ conn: NWConnection) {
-        conn.start(queue: .global(qos: .userInitiated))
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [weak self] data, _, _, _ in
-            guard let self, let data, let text = String(data: data, encoding: .utf8) else { conn.cancel(); return }
-            let line = text.split(separator: "\r\n").first.map(String.init) ?? ""
-            let path = line.split(separator: " ").dropFirst().first.map(String.init) ?? ""
-            let items = URLComponents(string: "http://localhost" + path)?.queryItems ?? []
-            let code = items.first { $0.name == "code" }?.value
-            let state = items.first { $0.name == "state" }?.value
-            let err = items.first { $0.name == "error" }?.value
-
-            let ok = err == nil && code != nil && state == self.expectedState
-            let message = ok
-                ? "Signed in. You can close this tab and return to Multimodel Tracker."
-                : "Sign-in failed: \(err ?? "unexpected response"). Return to Multimodel Tracker and try again."
-            let html = "<!doctype html><meta charset=utf-8><title>Multimodel Tracker</title>"
-                + "<body style=\"font:15px -apple-system,system-ui;margin:60px auto;max-width:32em\">"
-                + "<p>\(message)</p></body>"
-            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
-                + "Content-Length: \(html.utf8.count)\r\nConnection: close\r\n\r\n" + html
-            conn.send(content: Data(response.utf8), completion: .contentProcessed { _ in conn.cancel() })
-
-            if ok, let code {
-                self.finish(.success(code))
-            } else if err != nil || code != nil {
-                // Only fail on a real callback; ignore favicon and stray hits.
-                self.finish(.failure(OpenAIOAuth.Failure.badResponse(err ?? "state mismatch")))
-            }
-        }
-    }
-
-    private func finish(_ result: Result<String, Error>) {
-        lock.lock()
-        guard !finished, let cont = continuation else { lock.unlock(); return }
-        finished = true; continuation = nil
-        lock.unlock()
-        cont.resume(with: result)
-        listener.cancel()
     }
 }
