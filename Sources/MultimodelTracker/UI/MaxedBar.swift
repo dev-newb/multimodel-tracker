@@ -38,6 +38,36 @@ enum MaxedStyle: Int, CaseIterable {
     }
 }
 
+/// Deterministic pseudo-randomness for the effects. These draw functions are
+/// pure functions of time with no per-frame state, so `Double.random` would
+/// re-roll 60 times a second and strobe. Hashing the EVENT INDEX instead gives
+/// a value that is random across events but rock steady within one.
+enum FX {
+    static func hash01(_ a: Int, _ salt: Int = 0) -> Double {
+        var z = UInt64(bitPattern: Int64(a &* 0x9E3779B9 &+ salt &* 0x85EBCA6B))
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        z = z ^ (z >> 31)
+        return Double(z % 100_000) / 100_000
+    }
+
+    /// Progress through an event that recurs at a randomised interval.
+    /// `slot` is the MIDPOINT of the desired range and `jitter` half its
+    /// width, so gaps land in `slot ± jitter`: (4.5, 1.5) gives 3-6 seconds.
+    /// Returns 0...1 while an event is running, nil otherwise. Checks the
+    /// previous slot too, since an event can start late and still be playing.
+    static func eventProgress(_ t: Double, slot: Double, jitter: Double,
+                              duration: Double, salt: Int) -> Double? {
+        let n = (t / slot).rounded(.down)
+        for candidate in [n, n - 1] {
+            let start = candidate * slot + hash01(Int(candidate), salt) * jitter
+            let p = (t - start) / duration
+            if p >= 0, p <= 1 { return p }
+        }
+        return nil
+    }
+}
+
 /// Replaces the plain capsule when a pool is fully burned. All three styles
 /// draw from a TimelineView clock instead of SwiftUI animation state: a
 /// popover's content view leaves the window on every close, and repeatForever
@@ -112,24 +142,65 @@ struct MaxedBar: View {
     private static let magenta = Color(red: 1, green: 0, blue: 0.5)
 
     private static func drawGlitch(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
-        // Slices tear HORIZONTALLY only, at full bar height. The first cut
-        // also offset slices vertically and shrank them below the bar — at
-        // 5pt that read as the whole animation being misaligned with its row.
+        var c = ctx
+        let bar = CGRect(x: 0, y: above, width: size.width, height: barH)
+        c.clip(to: Path(roundedRect: bar, cornerRadius: barH / 2))
+        c.fill(Path(bar), with: .color(red))
+
+        // Bursts of corruption rather than constant noise — a codec falling
+        // apart comes in hits, and a permanently broken bar reads as texture.
+        let burst = FX.eventProgress(t, slot: 1.6, jitter: 0.6, duration: 0.4, salt: 3)
+        let severity = burst.map { sin(.pi * $0) } ?? 0.12
+
+        // Macroblocks: quantised colour per cell, the way a low-quality JPEG
+        // posterises. Cells are square-ish at bar height so they read as
+        // blocks rather than stripes.
+        let cell = 5.0
+        let cols = Int(size.width / cell) + 1
+        let frame = Int(t * 14)
+        for col in 0..<cols {
+            let r = FX.hash01(frame &+ col &* 31, 7)
+            guard r < 0.10 + 0.55 * severity else { continue }
+            // Quantise to a few levels — banding, not smooth noise.
+            let level = (FX.hash01(frame &+ col &* 57, 9) * 4).rounded(.down) / 4
+            let dark = 0.35 + 0.5 * level
+            let shifted = Color(red: 0.91 * dark + 0.2 * level,
+                                green: 0.27 * dark,
+                                blue: 0.23 * dark + 0.25 * level)
+            let dy = severity > 0.3 ? (FX.hash01(frame &+ col, 13) - 0.5) * 2 : 0
+            c.fill(Path(CGRect(x: Double(col) * cell, y: above + dy,
+                               width: cell, height: barH)),
+                   with: .color(shifted))
+        }
+
+        // Slices tear horizontally, at full bar height so nothing floats out
+        // of the row.
         let slices: [(x: Double, w: Double, period: Double)] = [
-            (0.00, 0.30, 0.9),
-            (0.30, 0.45, 1.1),
-            (0.75, 0.25, 0.7),
+            (0.00, 0.30, 0.9), (0.30, 0.45, 1.1), (0.75, 0.25, 0.7),
         ]
         for (i, s) in slices.enumerated() {
             let step = Int(t / s.period * 4) &+ i * 7
             let offsets: [Double] = [0, 3, -2, 0, -4, 2, 0, 1]
-            let dx = offsets[abs(step) % offsets.count]
+            let dx = offsets[abs(step) % offsets.count] * (0.5 + severity)
             let rect = CGRect(x: s.x * size.width + dx, y: above,
                               width: s.w * size.width, height: barH)
-            // Chromatic fringes first, body over them.
-            ctx.fill(Path(rect.offsetBy(dx: 1.5, dy: 0)), with: .color(cyan.opacity(0.35)))
-            ctx.fill(Path(rect.offsetBy(dx: -1.5, dy: 0)), with: .color(magenta.opacity(0.35)))
-            ctx.fill(Path(rect), with: .color(red))
+            // Chroma fringes: the channels drift apart under compression.
+            let fringe = 1.5 + 2.5 * severity
+            c.fill(Path(rect.offsetBy(dx: fringe, dy: 0)), with: .color(cyan.opacity(0.35)))
+            c.fill(Path(rect.offsetBy(dx: -fringe, dy: 0)), with: .color(magenta.opacity(0.35)))
+            c.fill(Path(rect), with: .color(red.opacity(0.85)))
+        }
+
+        // At the peak of a burst the whole bar drops resolution.
+        if severity > 0.6 {
+            let big = 11.0
+            let n = Int(size.width / big) + 1
+            for i in 0..<n {
+                let v = FX.hash01(frame &+ i &* 97, 21)
+                c.fill(Path(CGRect(x: Double(i) * big, y: above, width: big, height: barH)),
+                       with: .color(Color(red: 0.75 + 0.25 * v, green: 0.18 * v, blue: 0.16 * v)
+                                        .opacity(0.75)))
+            }
         }
     }
 
@@ -165,13 +236,28 @@ struct MaxedBar: View {
     // MARK: petrify — colour drains to stone and cracks spider through
 
     private static func drawPetrify(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
-        // Rich wanted this to "simply stay ash" — no red cycle. Petrified is
-        // motionless stone: a fixed ash bar with the cracks already set.
+        // Stays ash — the only motion is a shimmer that crosses it every few
+        // seconds, so the bar reads as dead stone rather than a dead pixel.
         let stone = Color(red: 0.54, green: 0.54, blue: 0.55)
         let bar = CGRect(x: 0, y: above, width: size.width, height: barH)
-        ctx.fill(Path(roundedRect: bar, cornerRadius: barH / 2), with: .color(stone))
         var c = ctx
         c.clip(to: Path(roundedRect: bar, cornerRadius: barH / 2))
+        c.fill(Path(bar), with: .color(stone))
+
+        // Shimmer: a soft highlight sweeping left to right, 3-6s apart.
+        if let p = FX.eventProgress(t, slot: 4.5, jitter: 1.5, duration: 0.75, salt: 17) {
+            let bandW = size.width * 0.26
+            let x = -bandW + (size.width + bandW * 2) * p
+            let peak = sin(.pi * p)          // fade in and out, no hard edges
+            c.fill(Path(CGRect(x: x, y: above - 1, width: bandW, height: barH + 2)),
+                   with: .linearGradient(
+                        Gradient(colors: [.white.opacity(0),
+                                          .white.opacity(0.55 * peak),
+                                          .white.opacity(0)]),
+                        startPoint: CGPoint(x: x, y: 0),
+                        endPoint: CGPoint(x: x + bandW, y: 0)))
+        }
+
         for x in [0.24, 0.52, 0.76] {
             var path = Path()
             path.move(to: CGPoint(x: x * size.width, y: above))
@@ -187,18 +273,41 @@ struct MaxedBar: View {
         let bar = CGRect(x: 0, y: above, width: size.width, height: barH)
         ctx.fill(Path(roundedRect: bar, cornerRadius: barH / 2),
                  with: .color(Color(red: 0.24, green: 0.11, blue: 0.10)))
-        // Stepped, irregular flicker — a steady sine would read as a pulse,
-        // not a failing tube.
+
+        // Baseline: stepped, irregular. A smooth sine reads as a deliberate
+        // pulse rather than a tube that cannot hold its light.
         let steps: [Double] = [1, 0.2, 1, 0.35, 0.95, 0.95, 0.15, 0.85,
                                0.85, 0.1, 0.7, 0.7, 0.05, 0.6, 1, 1]
-        let lit = steps[Int(t / 0.175) % steps.count]
+        var lit = steps[Int(t / 0.175) % steps.count]
+
+        // Every 8-16s, a run of very fast strobing, then back to normal.
+        if FX.eventProgress(t, slot: 12, jitter: 4, duration: 0.7, salt: 41) != nil {
+            lit = FX.hash01(Int(t * 40), 5) < 0.45 ? 0.05 : 1.0
+        }
+
+        // Rarely — 60-180s apart — it surges brighter than it ever runs and
+        // blooms, for a third of a second.
+        var bloom = 0.0
+        if let p = FX.eventProgress(t, slot: 120, jitter: 60, duration: 0.35, salt: 77) {
+            bloom = sin(.pi * p)
+            lit = max(lit, 0.9 + 0.1 * bloom)
+        }
+
         guard lit > 0.08 else { return }
         // Halo first so the tube core stays crisp on top.
+        if bloom > 0 {
+            ctx.fill(Path(roundedRect: bar.insetBy(dx: -7 * bloom, dy: -7 * bloom),
+                          cornerRadius: barH),
+                     with: .color(red.opacity(0.22 * bloom)))
+        }
         ctx.fill(Path(roundedRect: bar.insetBy(dx: -2.5, dy: -2.5), cornerRadius: barH),
-                 with: .color(red.opacity(0.20 * lit)))
+                 with: .color(red.opacity((0.20 + 0.25 * bloom) * lit)))
         ctx.fill(Path(roundedRect: bar.insetBy(dx: -1, dy: -1), cornerRadius: barH),
-                 with: .color(red.opacity(0.30 * lit)))
-        ctx.fill(Path(roundedRect: bar, cornerRadius: barH / 2), with: .color(red.opacity(lit)))
+                 with: .color(red.opacity((0.30 + 0.3 * bloom) * lit)))
+        let core = bloom > 0
+            ? Color(red: 1, green: 0.55 + 0.35 * bloom, blue: 0.45 + 0.4 * bloom)
+            : red
+        ctx.fill(Path(roundedRect: bar, cornerRadius: barH / 2), with: .color(core.opacity(lit)))
     }
 
     // MARK: dead channel — the signal is gone, just snow
