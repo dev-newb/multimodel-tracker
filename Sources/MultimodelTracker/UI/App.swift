@@ -497,6 +497,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // status by default, and without it the nickname fields silently
         // swallow every keystroke — renaming an account was impossible.
         w.makeKeyAndOrderFront(nil)
+        // Refuse cursor rects for the whole panel. Text fields, and evidently
+        // some AppKit-backed controls near the account rows, register their
+        // own rects (I-beam, and the resize cursors Rich saw); when SwiftUI
+        // rebuilds those rows the rects are torn down without a mouseExited,
+        // so whatever was showing gets stranded. Resetting the arrow after
+        // the fact only patched the exit case — this removes the mechanism.
+        // Cost: no I-beam over the rename field, which the field's own chrome
+        // already advertises.
+        w.disableCursorRects()
+        NSCursor.arrow.set()
         w.delegate = self
         accountsWindow = w
         watchForOutsideClick(w)

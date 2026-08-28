@@ -65,7 +65,11 @@ struct AccountsView: View {
         // pointer. Any nickname field it was over loses its tracking area
         // mid-hover, leaving the I-beam stuck — reset on every change to the
         // list, not just on close.
-        .onChange(of: store.accounts.count) { _ in NSCursor.arrow.set() }
+        .onChange(of: store.accounts.count) { _ in
+            NSCursor.arrow.set()
+            // Belt and braces: drop any rect a destroyed row left behind.
+            NSApp.windows.forEach { $0.discardCursorRects() }
+        }
         .onDisappear { NSCursor.arrow.set() }
     }
 
