@@ -447,7 +447,18 @@ struct MaxedBar: View {
             i += 1
         }
 
-        // Drips leaving the underside, grey to match.
+        // The BLOOD stays blood red — only the bar went grey. Grey drips lost
+        // the whole point of the effect; the contrast against dull metal is
+        // what makes it read as bleeding.
+        let blood = Color(red: 0.72, green: 0.06, blue: 0.06)
+        // Wounds: the drips emerge from dark red seeps on the underside
+        // rather than appearing out of clean grey.
+        for d in [0.22, 0.55, 0.81] {
+            c.fill(Path(ellipseIn: CGRect(x: d * size.width - 4, y: above + barH - 2.5,
+                                          width: 8, height: 3.5)),
+                   with: .color(blood.opacity(0.85)))
+        }
+
         let drops: [(x: Double, phase: Double)] = [(0.22, 0), (0.55, 0.33), (0.81, 0.59)]
         for d in drops {
             let p = (t / 2.9 + d.phase).truncatingRemainder(dividingBy: 1)
@@ -455,7 +466,13 @@ struct MaxedBar: View {
             let stretch = 1 + 1.4 * p * (1 - p) * 4        // longest mid-fall
             let drop = CGRect(x: d.x * size.width - 1.5, y: y, width: 3, height: 4 * stretch)
             ctx.fill(Path(roundedRect: drop, cornerRadius: 1.5),
-                     with: .color(Color(white: 0.55).opacity(0.9 * (1 - p))))
+                     with: .color(blood.opacity(0.95 * (1 - p * 0.5))))
+            // A thin trail back to the wound, thinning as the drop falls.
+            if p > 0.05 {
+                ctx.fill(Path(CGRect(x: d.x * size.width - 0.6, y: above + barH - 1,
+                                     width: 1.2, height: max(0, y - (above + barH - 1)))),
+                         with: .color(blood.opacity(0.5 * (1 - p))))
+            }
         }
     }
 }
