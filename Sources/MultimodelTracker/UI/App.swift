@@ -214,6 +214,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.terminate(nil)
         }
 
+        // `--cursor-probe` walks the pointer across the open panel and reports
+        // which cursor is actually live at each point. Guessing at the source
+        // of a stray cursor twice was two attempts too many.
+        if CommandLine.arguments.contains("--cursor-probe") {
+            Task { @MainActor in
+                self.openSettings()
+                try? await Task.sleep(for: .seconds(1))
+                guard let win = self.accountsWindow else {
+                    FileHandle.standardError.write("probe: no panel\n".data(using: .utf8)!); exit(1)
+                }
+                let saved = NSEvent.mouseLocation
+                // currentSystem returns a RECONSTRUCTED cursor, never the
+                // singleton, so identity comparison always says "other".
+                // Fingerprint by image bytes + hotspot instead.
+                func fingerprint(_ c: NSCursor) -> String {
+                    let tiff = c.image.tiffRepresentation ?? Data()
+                    var h: UInt64 = 0xcbf29ce484222325
+                    for b in tiff { h = (h ^ UInt64(b)) &* 0x100000001b3 }
+                    return "\(String(h, radix: 36))@\(Int(c.hotSpot.x)),\(Int(c.hotSpot.y))"
+                }
+                let catalogue: [(NSCursor, String)] = [
+                    (.arrow, "arrow"), (.iBeam, "iBeam"),
+                    (.resizeLeftRight, "resizeLeftRight"), (.resizeUpDown, "resizeUpDown"),
+                    (.resizeLeft, "resizeLeft"), (.resizeRight, "resizeRight"),
+                    (.resizeUp, "resizeUp"), (.resizeDown, "resizeDown"),
+                    (.pointingHand, "pointingHand"), (.crosshair, "crosshair"),
+                    (.openHand, "openHand"), (.closedHand, "closedHand"),
+                    (.operationNotAllowed, "notAllowed"),
+                    (.iBeamCursorForVerticalLayout, "iBeamVertical"),
+                    (.dragCopy, "dragCopy"), (.dragLink, "dragLink"),
+                    (.contextualMenu, "contextualMenu"),
+                ]
+                var byPrint: [String: String] = [:]
+                for (c, n) in catalogue { byPrint[fingerprint(c)] = n }
+                func name(_ c: NSCursor?) -> String {
+                    guard let c else { return "nil" }
+                    let fp = fingerprint(c)
+                    return byPrint[fp] ?? "UNKNOWN[\(fp) size=\(Int(c.image.size.width))x\(Int(c.image.size.height))]"
+                }
+                let f = win.frame
+                var out = "probe: panel \(Int(f.width))x\(Int(f.height)) at \(Int(f.minX)),\(Int(f.minY)) key=\(win.isKeyWindow) active=\(NSApp.isActive)\n"
+                // Screen coords are bottom-left origin; walk down from the top.
+                for dy in stride(from: 20.0, through: min(f.height - 10, 420), by: 40) {
+                    let pt = CGPoint(x: f.midX, y: f.maxY - dy)
+                    // CGWarp uses top-left origin.
+                    // Warping does NOT drive tracking areas; posting real
+                    // mouseMoved events does, and tracking areas are what set
+                    // these cursors. Step in so enter/exit fire on the way.
+                    let h = NSScreen.main?.frame.height ?? 1000
+                    for step in stride(from: 0.0, through: 1.0, by: 0.25) {
+                        let y = pt.y + (1 - step) * 30
+                        let ev = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                                         mouseCursorPosition: CGPoint(x: pt.x, y: h - y),
+                                         mouseButton: .left)
+                        ev?.post(tap: .cghidEventTap)
+                        try? await Task.sleep(for: .milliseconds(60))
+                    }
+                    try? await Task.sleep(for: .milliseconds(200))
+                    out += "  y-\(Int(dy)): current=\(name(NSCursor.current)) system=\(name(NSCursor.currentSystem))\n"
+                }
+                out += "  --- windows owned by this app:\n"
+                for win in NSApp.windows {
+                    let fr = win.frame
+                    out += "    \(type(of: win)) visible=\(win.isVisible) onScreen=\(win.isOnActiveSpace)"
+                        + " alpha=\(win.alphaValue) ignoresMouse=\(win.ignoresMouseEvents)"
+                        + " level=\(win.level.rawValue)"
+                        + " frame=\(Int(fr.minX)),\(Int(fr.minY)) \(Int(fr.width))x\(Int(fr.height))\n"
+                }
+                let back = CGPoint(x: saved.x, y: (NSScreen.main?.frame.height ?? 1000) - saved.y)
+                CGWarpMouseCursorPosition(back)
+                FileHandle.standardError.write(out.data(using: .utf8)!)
+                exit(0)
+            }
+        }
+
         // `--burn-sim` exercises the ported detector against synthetic pool
         // histories and prints PASS/FAIL per rule. The detector is pure, so
         // this is the whole contract: quiet drift, fallback floor, adaptive
@@ -378,6 +453,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if popover.isShown { popover.performClose(nil); store.setUIVisible(false) }
         else {
             store.setUIVisible(true)
+            watchForArrowCursor(popover.contentViewController?.view.window ?? statusItem.button!.window!)
             store.noteMaxedViewing()
             store.noteBurnViewing()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -405,6 +481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     func popoverDidClose(_ notification: Notification) {
+        if accountsWindow == nil { stopWatchingArrowCursor() }
         // Accounts may still be open; only stop the clocks if nothing is up.
         store.setUIVisible(accountsWindow?.isVisible == true)
     }
@@ -412,7 +489,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var accountsWindow: NSWindow?
     /// Live only while the Accounts panel is open.
     private var outsideClickMonitors: [Any] = []
-    private var arrowMonitor: Any?
+    private var arrowMonitors: [Any] = []
 
     /// Click-outside-to-dismiss. A non-activating panel never loses key the
     /// way an ordinary window does, so resignKey can't drive this — the click
@@ -452,20 +529,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     /// set AFTER theirs, which is what actually makes it stick.
     private func watchForArrowCursor(_ panel: NSWindow) {
         stopWatchingArrowCursor()
-        arrowMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.mouseMoved, .mouseEntered, .mouseExited, .cursorUpdate]
-        ) { [weak self] event in
-            if event.window === self?.accountsWindow {
-                DispatchQueue.main.async { NSCursor.arrow.set() }
-            }
+        // Local AND global: the local monitor only sees events routed to this
+        // app, and this is an .accessory app whose panel does not activate it
+        // — hovering from another app can leave that app's cursor showing over
+        // ours. The global monitor catches exactly that case.
+        let apply: () -> Void = { DispatchQueue.main.async { NSCursor.arrow.set() } }
+        let types: NSEvent.EventTypeMask = [.mouseMoved, .mouseEntered, .mouseExited, .cursorUpdate]
+        let local = NSEvent.addLocalMonitorForEvents(matching: types) { [weak self] event in
+            if self?.pointerIsOverOurUI() == true { apply() }
             return event
         }
+        let global = NSEvent.addGlobalMonitorForEvents(matching: types) { [weak self] _ in
+            if self?.pointerIsOverOurUI() == true { apply() }
+        }
+        arrowMonitors = [local, global].compactMap { $0 }
         _ = panel
     }
 
+    /// True when the pointer sits inside any window this app is showing —
+    /// the Config panel or the tray popover.
+    private func pointerIsOverOurUI() -> Bool {
+        let p = NSEvent.mouseLocation
+        if let w = accountsWindow, w.isVisible, w.frame.contains(p) { return true }
+        if popover?.isShown == true,
+           let w = popover.contentViewController?.view.window, w.frame.contains(p) { return true }
+        return false
+    }
+
     private func stopWatchingArrowCursor() {
-        if let m = arrowMonitor { NSEvent.removeMonitor(m) }
-        arrowMonitor = nil
+        for m in arrowMonitors { NSEvent.removeMonitor(m) }
+        arrowMonitors = []
     }
 
     private func stopWatchingOutsideClick() {
