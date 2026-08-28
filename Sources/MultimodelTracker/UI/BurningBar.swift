@@ -6,6 +6,17 @@ import SwiftUI
 enum BurnStyle: Int, CaseIterable {
     case firestorm = 0, coalBed = 1, blowtorch = 2, comet = 3, fuse = 4
 
+    /// One full loop, for the Accounts preview.
+    var cycleSeconds: Double {
+        switch self {
+        case .firestorm: return 1.5
+        case .coalBed:   return 2.6
+        case .blowtorch: return 1.5
+        case .comet:     return 1.0
+        case .fuse:      return 1.6
+        }
+    }
+
     var displayName: String {
         switch self {
         case .firestorm: return "Firestorm"

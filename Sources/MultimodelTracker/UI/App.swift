@@ -187,6 +187,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.terminate(nil)
         }
 
+        // `--render-settings <dir>` renders the Accounts panel offscreen.
+        // Screenshotting it competes with whatever Rich is doing on screen.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-settings"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            let renderer = ImageRenderer(content:
+                AccountsView(store: store).frame(width: 480)
+                    .background(Color(red: 0.13, green: 0.13, blue: 0.14)))
+            renderer.scale = 2
+            if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+               let rep = NSBitmapImageRep(data: tiff),
+               let png = rep.representation(using: .png, properties: [:]) {
+                try? png.write(to: dir.appendingPathComponent("settings.png"))
+            }
+            FileHandle.standardError.write(
+                "pickerWidth=\(AccountsView.pickerWidth)\n".data(using: .utf8)!)
+            NSApp.terminate(nil)
+        }
+
         // `--burn-sim` exercises the ported detector against synthetic pool
         // histories and prints PASS/FAIL per rule. The detector is pure, so
         // this is the whole contract: quiet drift, fallback floor, adaptive

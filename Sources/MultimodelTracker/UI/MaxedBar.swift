@@ -12,6 +12,20 @@ enum MaxedStyle: Int, CaseIterable {
     case glitch = 1, bleed = 2, deadChannel = 3
     case drown = 5, petrify = 6, neonBurnout = 7
 
+    /// One full loop of this effect, used by the Accounts preview to show
+    /// each style for three complete cycles before moving on. Petrify is
+    /// static, so its "cycle" is just a sensible dwell time.
+    var cycleSeconds: Double {
+        switch self {
+        case .glitch:      return 2.0
+        case .bleed:       return 2.9
+        case .deadChannel: return 2.0
+        case .drown:       return 5.0
+        case .petrify:     return 2.0
+        case .neonBurnout: return 2.8
+        }
+    }
+
     var displayName: String {
         switch self {
         case .glitch:      return "Glitch"

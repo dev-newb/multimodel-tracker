@@ -58,6 +58,36 @@ struct AccountsView: View {
         }
     }
 
+    static let distributionOptions: [(Bool, String)] = [
+        (false, "Consistent across pools"), (true, "All different at once"),
+    ]
+    static let deadOptions: [(Int, String)] =
+        [(-1, "Cycle every 3rd view")] + MaxedStyle.allCases.map { ($0.rawValue, $0.displayName) }
+    static let burnOptions: [(Int, String)] =
+        [(-1, "Cycle every 3rd view")] + BurnStyle.allCases.map { ($0.rawValue, $0.displayName) }
+
+    /// One width for every drop-down so their edges line up. They are Menus
+    /// rather than Pickers because an NSPopUpButton sizes itself to the widest
+    /// item in ITS OWN menu, which no .frame overrides — the distribution
+    /// pickers came out wider purely because "Consistent across pools" is
+    /// longer than any style name.
+    ///
+    /// MEASURED, not hardcoded. A fixed number would be fine across screen
+    /// resolutions — points already scale with the display — but it would clip
+    /// if the system font grew or the strings were ever translated. This asks
+    /// the font how wide the longest label actually is, so the equal widths
+    /// survive both.
+    static let pickerWidth: CGFloat = {
+        let font = NSFont.systemFont(ofSize: 12)
+        let titles = distributionOptions.map(\.1) + deadOptions.map(\.1) + burnOptions.map(\.1)
+        let widest = titles
+            .map { ($0 as NSString).size(withAttributes: [.font: font]).width }
+            .max() ?? 150
+        // Room for the padding and chevron, clamped so a pathological string
+        // can't push the controls off a 480pt panel.
+        return min(max(widest.rounded(.up) + 40, 150), 250)
+    }()
+
     /// Bar-effect preferences. Each category picks a distribution first —
     /// consistent across pools, or all different at once — and only the
     /// consistent case shows an animation picker: with "all different" the
@@ -69,49 +99,39 @@ struct AccountsView: View {
             HStack(spacing: 8) {
                 Text("When several are dead").font(.system(size: 12))
                 Spacer()
-                Picker("", selection: Binding(get: { store.maxedVaried },
-                                              set: { store.setMaxedVaried($0) })) {
-                    Text("Consistent across pools").tag(false)
-                    Text("All different at once").tag(true)
-                }
-                .labelsHidden().fixedSize()
+                OptionPicker(width: Self.pickerWidth, options: Self.distributionOptions,
+                             selection: Binding(get: { store.maxedVaried },
+                                                set: { store.setMaxedVaried($0) }))
             }
             if !store.maxedVaried {
                 HStack(spacing: 8) {
                     Text("Dead animation").font(.system(size: 12)).foregroundStyle(.secondary)
                     Spacer()
-                    Picker("", selection: Binding(get: { store.maxedFixed },
-                                                  set: { store.setMaxedFixed($0) })) {
-                        Text("Cycle every 3rd view").tag(-1)
-                        ForEach(MaxedStyle.allCases, id: \.rawValue) { s in
-                            Text(s.displayName).tag(s.rawValue)
-                        }
-                    }
-                    .labelsHidden().fixedSize()
+                    OptionPicker(width: Self.pickerWidth, options: Self.deadOptions,
+                                 selection: Binding(get: { store.maxedFixed },
+                                                    set: { store.setMaxedFixed($0) }))
+                }
+                EffectPreviewRow(width: Self.pickerWidth) {
+                    DeadPreview(fixed: MaxedStyle(rawValue: store.maxedFixed))
                 }
             }
             HStack(spacing: 8) {
                 Text("When several are burning").font(.system(size: 12))
                 Spacer()
-                Picker("", selection: Binding(get: { store.burnVaried },
-                                              set: { store.setBurnVaried($0) })) {
-                    Text("Consistent across pools").tag(false)
-                    Text("All different at once").tag(true)
-                }
-                .labelsHidden().fixedSize()
+                OptionPicker(width: Self.pickerWidth, options: Self.distributionOptions,
+                             selection: Binding(get: { store.burnVaried },
+                                                set: { store.setBurnVaried($0) }))
             }
             if !store.burnVaried {
                 HStack(spacing: 8) {
                     Text("Burning animation").font(.system(size: 12)).foregroundStyle(.secondary)
                     Spacer()
-                    Picker("", selection: Binding(get: { store.burnFixed },
-                                                  set: { store.setBurnFixed($0) })) {
-                        Text("Cycle every 3rd view").tag(-1)
-                        ForEach(BurnStyle.allCases, id: \.rawValue) { s in
-                            Text(s.displayName).tag(s.rawValue)
-                        }
-                    }
-                    .labelsHidden().fixedSize()
+                    OptionPicker(width: Self.pickerWidth, options: Self.burnOptions,
+                                 selection: Binding(get: { store.burnFixed },
+                                                    set: { store.setBurnFixed($0) }))
+                }
+                EffectPreviewRow(width: Self.pickerWidth) {
+                    BurnPreview(fixed: BurnStyle(rawValue: store.burnFixed))
                 }
             }
         }
@@ -156,7 +176,7 @@ struct AccountsView: View {
                             Text(m.displayName).tag(m.rawValue)
                         }
                     }
-                    .labelsHidden().fixedSize()
+                    .labelsHidden().frame(maxWidth: .infinity).frame(width: Self.pickerWidth)
                 }
                 .padding(.horizontal, 2)
             }
@@ -263,5 +283,116 @@ struct AccountRow: View {
         .padding(.vertical, 6).padding(.horizontal, 10)
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
         .onAppear { draft = account.nickname ?? "" }
+    }
+}
+
+
+/// Right-aligns a preview under its picker, in the same column width.
+struct EffectPreviewRow<Content: View>: View {
+    let width: CGFloat
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Spacer()
+            content.frame(width: width)
+        }
+    }
+}
+
+/// Live preview of the dead-bar effect. With a style pinned it shows that
+/// one; on "Cycle every 3rd view" it walks the whole set, giving each style
+/// three complete loops before moving on, forever — the same rotation the
+/// popover will show, just without waiting three viewings to see it.
+struct DeadPreview: View {
+    let fixed: MaxedStyle?
+    @State private var start = Date()
+
+    var body: some View {
+        // A slow outer tick only decides WHICH style is showing; MaxedBar
+        // runs its own animation clock, so this doesn't drive the drawing.
+        TimelineView(.periodic(from: start, by: 0.2)) { context in
+            let style = fixed ?? Self.cycled(context.date.timeIntervalSince(start))
+            VStack(alignment: .leading, spacing: 2) {
+                MaxedBar(style: style)
+                if fixed == nil {
+                    Text(style.displayName)
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    static func cycled(_ elapsed: Double) -> MaxedStyle {
+        let all = MaxedStyle.allCases
+        let spans = all.map { $0.cycleSeconds * 3 }
+        let total = spans.reduce(0, +)
+        var t = elapsed.truncatingRemainder(dividingBy: total)
+        for (i, span) in spans.enumerated() {
+            if t < span { return all[i] }
+            t -= span
+        }
+        return all[0]
+    }
+}
+
+/// Same, for the burning effects. The bar sits at 62% so the leading-edge
+/// treatments have somewhere to burn.
+struct BurnPreview: View {
+    let fixed: BurnStyle?
+    @State private var start = Date()
+
+    var body: some View {
+        TimelineView(.periodic(from: start, by: 0.2)) { context in
+            let style = fixed ?? Self.cycled(context.date.timeIntervalSince(start))
+            VStack(alignment: .leading, spacing: 2) {
+                BurningBar(style: style, fraction: 0.62)
+                if fixed == nil {
+                    Text(style.displayName)
+                        .font(.system(size: 9)).foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    static func cycled(_ elapsed: Double) -> BurnStyle {
+        let all = BurnStyle.allCases
+        let spans = all.map { $0.cycleSeconds * 3 }
+        let total = spans.reduce(0, +)
+        var t = elapsed.truncatingRemainder(dividingBy: total)
+        for (i, span) in spans.enumerated() {
+            if t < span { return all[i] }
+            t -= span
+        }
+        return all[0]
+    }
+}
+
+
+/// A drop-down of a fixed width. See AccountsView.pickerWidth for why this
+/// exists instead of Picker.
+struct OptionPicker<Value: Hashable>: View {
+    let width: CGFloat
+    let options: [(Value, String)]
+    @Binding var selection: Value
+
+    private var title: String {
+        options.first { $0.0 == selection }?.1 ?? options.first?.1 ?? ""
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(options.indices, id: \.self) { i in
+                Button(options[i].1) { selection = options[i].0 }
+            }
+        } label: {
+            Text(title).font(.system(size: 12)).lineLimit(1)
+        }
+        // .button keeps the native push-button chrome and puts the indicator
+        // where macOS puts it; .borderlessButton drew its own leading chevron
+        // and threw the background away.
+        .menuStyle(.button)
+        .buttonStyle(.bordered)
+        .frame(width: width)
     }
 }
