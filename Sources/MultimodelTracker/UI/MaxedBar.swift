@@ -141,36 +141,51 @@ struct MaxedBar: View {
     private static let cyan = Color(red: 0, green: 1, blue: 0.92)
     private static let magenta = Color(red: 1, green: 0, blue: 0.5)
 
+    /// Hot frames are ORANGE, not the red used elsewhere — with red this read
+    /// as another burning effect rather than a broken one.
+    private static let glitchHot = Color(red: 0.95, green: 0.52, blue: 0.12)
+
     private static func drawGlitch(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
         var c = ctx
         let bar = CGRect(x: 0, y: above, width: size.width, height: barH)
         c.clip(to: Path(roundedRect: bar, cornerRadius: barH / 2))
-        c.fill(Path(bar), with: .color(red))
+
+        // Every 3 seconds a fresh grey share is drawn, 65-95%. Within the
+        // cycle each glitch frame lands grey or orange against that share, so
+        // the colour flickers unpredictably while staying mostly grey — and
+        // how mostly changes every cycle.
+        let cycle = (t / 3.0).rounded(.down)
+        let greyShare = 0.65 + FX.hash01(Int(cycle), 31) * 0.30
+
+        // 14 steps a second, not the display's 60: at full rate the flicker
+        // blurs into an average instead of reading as distinct frames.
+        let frame = Int(t * 14)
+        let isGrey = FX.hash01(frame, 43) < greyShare
+        let greyLevel = 0.34 + FX.hash01(frame, 19) * 0.34
+        let base = isGrey ? Color(white: greyLevel) : glitchHot
+        c.fill(Path(bar), with: .color(base))
 
         // Bursts of corruption rather than constant noise — a codec falling
-        // apart comes in hits, and a permanently broken bar reads as texture.
+        // apart comes in hits; permanent damage reads as texture.
         let burst = FX.eventProgress(t, slot: 1.6, jitter: 0.6, duration: 0.4, salt: 3)
         let severity = burst.map { sin(.pi * $0) } ?? 0.12
 
-        // Macroblocks: quantised colour per cell, the way a low-quality JPEG
-        // posterises. Cells are square-ish at bar height so they read as
-        // blocks rather than stripes.
+        // Macroblocks: quantised levels, the way a low-quality JPEG bands.
         let cell = 5.0
         let cols = Int(size.width / cell) + 1
-        let frame = Int(t * 14)
         for col in 0..<cols {
             let r = FX.hash01(frame &+ col &* 31, 7)
             guard r < 0.10 + 0.55 * severity else { continue }
-            // Quantise to a few levels — banding, not smooth noise.
             let level = (FX.hash01(frame &+ col &* 57, 9) * 4).rounded(.down) / 4
-            let dark = 0.35 + 0.5 * level
-            let shifted = Color(red: 0.91 * dark + 0.2 * level,
-                                green: 0.27 * dark,
-                                blue: 0.23 * dark + 0.25 * level)
+            // Blocks follow the frame's own family, so an orange frame does
+            // not sprout grey confetti and vice versa.
+            let blockColour = isGrey
+                ? Color(white: 0.18 + level * 0.62)
+                : Color(red: 0.55 + 0.45 * level, green: 0.25 + 0.35 * level, blue: 0.08)
             let dy = severity > 0.3 ? (FX.hash01(frame &+ col, 13) - 0.5) * 2 : 0
             c.fill(Path(CGRect(x: Double(col) * cell, y: above + dy,
                                width: cell, height: barH)),
-                   with: .color(shifted))
+                   with: .color(blockColour))
         }
 
         // Slices tear horizontally, at full bar height so nothing floats out
@@ -178,17 +193,18 @@ struct MaxedBar: View {
         let slices: [(x: Double, w: Double, period: Double)] = [
             (0.00, 0.30, 0.9), (0.30, 0.45, 1.1), (0.75, 0.25, 0.7),
         ]
-        for (i, s) in slices.enumerated() {
-            let step = Int(t / s.period * 4) &+ i * 7
+        for (i, sl) in slices.enumerated() {
+            let step = Int(t / sl.period * 4) &+ i * 7
             let offsets: [Double] = [0, 3, -2, 0, -4, 2, 0, 1]
             let dx = offsets[abs(step) % offsets.count] * (0.5 + severity)
-            let rect = CGRect(x: s.x * size.width + dx, y: above,
-                              width: s.w * size.width, height: barH)
-            // Chroma fringes: the channels drift apart under compression.
+            let rect = CGRect(x: sl.x * size.width + dx, y: above,
+                              width: sl.w * size.width, height: barH)
+            // Chroma fringes stay cyan/magenta whatever the base: channel
+            // separation is the glitch signature, and neither is warm.
             let fringe = 1.5 + 2.5 * severity
             c.fill(Path(rect.offsetBy(dx: fringe, dy: 0)), with: .color(cyan.opacity(0.35)))
             c.fill(Path(rect.offsetBy(dx: -fringe, dy: 0)), with: .color(magenta.opacity(0.35)))
-            c.fill(Path(rect), with: .color(red.opacity(0.85)))
+            c.fill(Path(rect), with: .color(base.opacity(0.85)))
         }
 
         // At the peak of a burst the whole bar drops resolution.
@@ -197,9 +213,11 @@ struct MaxedBar: View {
             let n = Int(size.width / big) + 1
             for i in 0..<n {
                 let v = FX.hash01(frame &+ i &* 97, 21)
+                let chunk = isGrey
+                    ? Color(white: 0.22 + v * 0.55)
+                    : Color(red: 0.7 + 0.3 * v, green: 0.35 + 0.3 * v, blue: 0.1)
                 c.fill(Path(CGRect(x: Double(i) * big, y: above, width: big, height: barH)),
-                       with: .color(Color(red: 0.75 + 0.25 * v, green: 0.18 * v, blue: 0.16 * v)
-                                        .opacity(0.75)))
+                       with: .color(chunk.opacity(0.8)))
             }
         }
     }
