@@ -132,14 +132,11 @@ struct BurningBar: View {
     private static func drawCoalBed(_ ctx: GraphicsContext, _ size: CGSize, w: Double, t: Double) {
         var c = ctx
         c.clip(to: barPath(w))
-        // The demo's CSS version tiled a background and showed a seam where
-        // the tile wrapped. Here the hotspots are drawn as discrete blobs on a
-        // continuous base, so there is no repeating texture to seam.
+        // Hotspots are discrete blobs on a continuous base, so there is no
+        // repeating texture to seam. Brightened a step from the first cut.
         c.fill(Path(CGRect(x: 0, y: above, width: w, height: barH)),
-               with: .color(Color(red: 0.36, green: 0.11, blue: 0.05)))
-        let breathe = 0.75 + 0.35 * (1 + sin(2 * .pi * t / 2.6)) / 2
-        // Overlapping and wide: narrow coals with gaps between them read as
-        // dashes, not a bed.
+               with: .color(Color(red: 0.44, green: 0.14, blue: 0.06)))
+        let breathe = 0.85 + 0.35 * (1 + sin(2 * .pi * t / 2.6)) / 2
         for i in 0..<9 {
             // Each coal drifts at its own speed and wraps independently, so
             // no shared period can line them up into a visible edge.
@@ -149,8 +146,9 @@ struct BurningBar: View {
             let rw = w * 0.26
             let rect = CGRect(x: x - rw / 2, y: above - 1.5, width: rw, height: barH + 3)
             c.fill(Path(ellipseIn: rect),
-                   with: .color(flame.opacity(0.22 + 0.5 * heat * breathe)))
+                   with: .color(flame.opacity(0.30 + 0.55 * heat * breathe)))
         }
+        // Ash drifting up off the bed.
         for i in 0..<4 {
             let phase = (t / 2.4 + Double(i) * 0.27).truncatingRemainder(dividingBy: 1)
             let x = w * (0.15 + 0.24 * Double(i))
@@ -158,6 +156,25 @@ struct BurningBar: View {
             ctx.fill(Path(ellipseIn: CGRect(x: x - 4 * phase, y: above - 13 * phase,
                                             width: 1.8, height: 1.8)),
                      with: .color(Color(white: 0.62).opacity(0.55 * (1 - phase))))
+        }
+
+        // A few small sparks off the PERIMETER — top edge, bottom edge and
+        // the leading end — so the bed reads as live coals rather than a
+        // gradient. Kept sparse and short-lived; this is a smoulder, not a
+        // firework.
+        for i in 0..<6 {
+            let life = 1.6
+            let phase = (t / life + Double(i) * 0.167).truncatingRemainder(dividingBy: 1)
+            let along = FX.hash01(i, 41)
+            let onTop = FX.hash01(i, 47) > 0.45
+            let x0 = along * w
+            let y0 = onTop ? above : above + barH
+            let vy = (onTop ? -1.0 : 0.35) * (8 + FX.hash01(i, 53) * 10)
+            let x = x0 + (FX.hash01(i, 59) - 0.5) * 12 * phase
+            let y = y0 + vy * phase + 16 * phase * phase * (onTop ? 1 : 0.4)
+            let s = 0.6 + FX.hash01(i, 67) * 0.6
+            ctx.fill(Path(ellipseIn: CGRect(x: x, y: y, width: s * 2, height: s * 2)),
+                     with: .color(ember.opacity(0.8 * (1 - phase))))
         }
     }
 
@@ -224,41 +241,60 @@ struct BurningBar: View {
     private static func drawComet(_ ctx: GraphicsContext, _ size: CGSize, w: Double, t: Double) {
         ctx.fill(barPath(w), with: .linearGradient(
             Gradient(colors: [deep, flame]), startPoint: .zero, endPoint: CGPoint(x: w, y: 0)))
+        let midY = above + barH / 2
+
+        // The tail streams BACKWARD from the head, the way a comet's does —
+        // it used to throw everything forward, which is why it read as
+        // another fuse. Its natural length is fixed, but it is clipped to the
+        // filled bar: at low usage there simply isn't bar to stream over, so
+        // the tail is cut off rather than hanging in empty track.
+        let naturalTail = 150.0
+        let tailStart = max(0, w - naturalTail)
+        let tailLen = w - tailStart
+
         var c = ctx
         c.clip(to: barPath(w))
-        // More tails, moving faster and reaching further back.
+        // A long gradient body, brightest at the head and fading to nothing.
+        c.fill(Path(CGRect(x: tailStart, y: above, width: tailLen, height: barH)),
+               with: .linearGradient(
+                    Gradient(stops: [.init(color: ember.opacity(0), location: 0),
+                                     .init(color: flame.opacity(0.45), location: 0.55),
+                                     .init(color: ember.opacity(0.95), location: 1)]),
+                    startPoint: CGPoint(x: tailStart, y: 0), endPoint: CGPoint(x: w, y: 0)))
+        // Brighter streaks running back through the tail at speed.
         for i in 0..<5 {
-            let phase = (t / 0.7 + Double(i) * 0.2).truncatingRemainder(dividingBy: 1)
-            let len = w * 0.32
-            let x = w - len - 30 * phase
-            c.fill(Path(roundedRect: CGRect(x: x, y: above + 0.5, width: len, height: barH - 1),
+            let phase = (t / 0.75 + Double(i) * 0.2).truncatingRemainder(dividingBy: 1)
+            let len = tailLen * 0.35
+            let x = w - len - (tailLen * 0.8) * phase
+            c.fill(Path(roundedRect: CGRect(x: x, y: above + 0.6, width: len, height: barH - 1.2),
                         cornerRadius: 1.5),
                    with: .linearGradient(
-                        Gradient(colors: [ember.opacity(0), ember.opacity(0.9 * (1 - phase))]),
+                        Gradient(colors: [ember.opacity(0), ember.opacity(0.85 * (1 - phase))]),
                         startPoint: CGPoint(x: x, y: 0), endPoint: CGPoint(x: x + len, y: 0)))
         }
-        // Head: harder pulse than before.
+
+        // Head: bright, hard-pulsing, sitting at the leading edge.
         let pulse = 0.7 + 0.7 * (1 + sin(2 * .pi * t / 0.32)) / 2
         let r = 5.2 * pulse
-        ctx.fill(Path(ellipseIn: CGRect(x: w - r, y: above + barH / 2 - r, width: r * 2, height: r * 2)),
+        ctx.fill(Path(ellipseIn: CGRect(x: w - r, y: midY - r, width: r * 2, height: r * 2)),
                  with: .radialGradient(
                     Gradient(colors: [Color(red: 1, green: 0.97, blue: 0.82), ember.opacity(0)]),
-                    center: CGPoint(x: w, y: above + barH / 2), startRadius: 0, endRadius: r))
+                    center: CGPoint(x: w, y: midY), startRadius: 0, endRadius: r))
 
-        // Sparks thrown off the head: up fast, then falling under gravity, so
-        // each traces a parabola rather than a straight line.
-        for i in 0..<7 {
-            let life = 1.15
-            let phase = (t / life + Double(i) * 0.143).truncatingRemainder(dividingBy: 1)
-            let vx = 6 + FX.hash01(i, 2) * 16          // forward speed
-            let vy = 15 + FX.hash01(i, 5) * 13         // initial upward speed
-            let g = 46.0
-            let x = w + vx * phase
-            // Classic projectile: rises, slows, falls back past the start.
-            let y = above + barH / 2 - (vy * phase - 0.5 * g * phase * phase)
-            let size = 1.0 + FX.hash01(i, 9) * 0.8
-            ctx.fill(Path(ellipseIn: CGRect(x: x, y: y, width: size * 2, height: size * 2)),
-                     with: .color(ember.opacity(0.95 * (1 - phase * phase))))
+        // Detritus sheds off the REAR of the tail and drifts further back,
+        // arcing under gravity. It flies whether or not the tail had room to
+        // draw, so a barely-used pool still sheds.
+        for i in 0..<9 {
+            let life = 1.3
+            let phase = (t / life + Double(i) * 0.111).truncatingRemainder(dividingBy: 1)
+            let vx = -(10 + FX.hash01(i, 2) * 26)          // backwards
+            let vy = 9 + FX.hash01(i, 5) * 14
+            let g = 40.0
+            let x = tailStart + vx * phase
+            let y = midY - (vy * phase - 0.5 * g * phase * phase)
+            let s = 0.9 + FX.hash01(i, 9) * 0.9
+            ctx.fill(Path(ellipseIn: CGRect(x: x, y: y, width: s * 2, height: s * 2)),
+                     with: .color(ember.opacity(0.9 * (1 - phase * phase))))
         }
     }
 

@@ -99,6 +99,10 @@ struct MaxedBar: View {
     /// Store.uiVisible.
     var animating = true
 
+    /// Reset each time the view appears. Drown uses it to run its
+    /// transition ONCE per opening and then hold the drowned state.
+    @State private var opened = Date()
+
     @ViewBuilder
     var body: some View {
         // Two branches rather than one parameterised schedule: the schedule
@@ -106,24 +110,26 @@ struct MaxedBar: View {
         // NO timeline at all — an idle schedule still redraws.
         if animating {
             TimelineView(.animation) { context in
-                canvas(at: context.date.timeIntervalSinceReferenceDate)
+                canvas(at: context.date.timeIntervalSinceReferenceDate,
+                       since: context.date.timeIntervalSince(opened))
             }
             .frame(height: Self.canvasH)
             .allowsHitTesting(false)
+            .onAppear { opened = Date() }
         } else {
-            canvas(at: 0)
+            canvas(at: 0, since: 999)
                 .frame(height: Self.canvasH)
                 .allowsHitTesting(false)
         }
     }
 
-    private func canvas(at t: Double) -> some View {
+    private func canvas(at t: Double, since: Double) -> some View {
         Canvas { ctx, size in
             switch style {
             case .glitch:      Self.drawGlitch(ctx, size, t: t)
             case .bleed:       Self.drawBleed(ctx, size, t: t)
             case .deadChannel: Self.drawDeadChannel(ctx, size, t: t)
-            case .drown:       Self.drawDrown(ctx, size, t: t)
+            case .drown:       Self.drawDrown(ctx, size, t: t, since: since)
             case .petrify:     Self.drawPetrify(ctx, size, t: t)
             case .neonBurnout: Self.drawNeonBurnout(ctx, size, t: t)
             }
@@ -224,29 +230,43 @@ struct MaxedBar: View {
 
     // MARK: drown — a dark waterline rises over the bar, bubbles escape
 
-    private static func drawDrown(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
-        let p = (t / 5.0).truncatingRemainder(dividingBy: 1)
-        let submerge = p < 0.15 ? 0 : (p < 0.55 ? easeOut((p - 0.15) / 0.4)
-                                                : (p < 0.9 ? 1 : 1 - easeOut((p - 0.9) / 0.1)))
-        ctx.fill(Path(roundedRect: CGRect(x: 0, y: above + submerge * 2, width: size.width, height: barH),
-                      cornerRadius: barH / 2),
-                 with: .color(Color(red: 0.76, green: 0.27, blue: 0.23)))
-        // Water creeps up from the bottom of the bar.
-        if submerge > 0 {
-            let h = barH * submerge
-            var c = ctx
-            c.clip(to: Path(roundedRect: CGRect(x: 0, y: above, width: size.width, height: barH),
-                            cornerRadius: barH / 2))
-            c.fill(Path(CGRect(x: 0, y: above + barH - h, width: size.width, height: h)),
-                   with: .color(Color(red: 0.08, green: 0.16, blue: 0.28).opacity(0.85)))
+    private static func drawDrown(_ ctx: GraphicsContext, _ size: CGSize,
+                                  t: Double, since: Double) {
+        // The sinking plays ONCE per opening and then holds. Looping it made
+        // the bar bob in and out of the water, which read as indecision
+        // rather than drowning.
+        let submerge = min(1, easeOut(since / 2.2))
+        let bar = CGRect(x: 0, y: above + submerge * 2, width: size.width, height: barH)
+        ctx.fill(Path(roundedRect: bar, cornerRadius: barH / 2),
+                 with: .color(Color(red: 0.76 - 0.34 * submerge,
+                                    green: 0.27 - 0.08 * submerge,
+                                    blue: 0.23 + 0.10 * submerge)))
+        var c = ctx
+        c.clip(to: Path(roundedRect: CGRect(x: 0, y: above, width: size.width, height: barH),
+                        cornerRadius: barH / 2))
+        // Water fills from the bottom as it goes under, then stays.
+        let h = barH * submerge
+        c.fill(Path(CGRect(x: 0, y: above + barH - h, width: size.width, height: h)),
+               with: .color(Color(red: 0.08, green: 0.16, blue: 0.28).opacity(0.85)))
+        // A faint surface ripple keeps the drowned state alive without
+        // resurfacing the bar.
+        if submerge >= 1 {
+            let wob = sin(2 * .pi * t / 2.4) * 0.6
+            c.fill(Path(CGRect(x: 0, y: above + wob, width: size.width, height: 1.1)),
+                   with: .color(Color(red: 0.45, green: 0.66, blue: 0.9).opacity(0.35)))
         }
-        for (i, x) in [0.30, 0.62, 0.84].enumerated() {
-            let bp = (t / 5.0 + Double(i) * 0.27).truncatingRemainder(dividingBy: 1)
-            guard bp > 0.5 else { continue }
-            let e = (bp - 0.5) / 0.5
-            let y = above + barH - 1 - 7 * e
-            ctx.stroke(Path(ellipseIn: CGRect(x: x * size.width - 1.5, y: y, width: 3, height: 3)),
-                       with: .color(Color(red: 0.63, green: 0.78, blue: 1).opacity(0.55 * (1 - e))),
+        // Bubbles escape continuously once it is under.
+        guard submerge > 0.35 else { return }
+        for (i, x) in [0.18, 0.36, 0.54, 0.72, 0.88].enumerated() {
+            let bp = (t / 3.2 + Double(i) * 0.2 + FX.hash01(i, 23) * 0.3)
+                .truncatingRemainder(dividingBy: 1)
+            let e = bp
+            let y = above + barH - 1 - 11 * e
+            let r = 0.9 + FX.hash01(i, 31) * 0.8
+            ctx.stroke(Path(ellipseIn: CGRect(x: x * size.width + sin(e * 6) * 1.5,
+                                              y: y, width: r * 2, height: r * 2)),
+                       with: .color(Color(red: 0.63, green: 0.78, blue: 1)
+                                        .opacity(0.5 * (1 - e) * submerge)),
                        lineWidth: 0.8)
         }
     }
@@ -254,34 +274,59 @@ struct MaxedBar: View {
     // MARK: petrify — colour drains to stone and cracks spider through
 
     private static func drawPetrify(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
-        // Stays ash — the only motion is a shimmer that crosses it every few
-        // seconds, so the bar reads as dead stone rather than a dead pixel.
-        let stone = Color(red: 0.54, green: 0.54, blue: 0.55)
         let bar = CGRect(x: 0, y: above, width: size.width, height: barH)
         var c = ctx
         c.clip(to: Path(roundedRect: bar, cornerRadius: barH / 2))
-        c.fill(Path(bar), with: .color(stone))
+        c.fill(Path(bar), with: .color(Color(white: 0.46)))
 
-        // Shimmer: a soft highlight sweeping left to right, 3-6s apart.
-        if let p = FX.eventProgress(t, slot: 4.5, jitter: 1.5, duration: 0.75, salt: 17) {
-            let bandW = size.width * 0.26
-            let x = -bandW + (size.width + bandW * 2) * p
-            let peak = sin(.pi * p)          // fade in and out, no hard edges
-            c.fill(Path(CGRect(x: x, y: above - 1, width: bandW, height: barH + 2)),
-                   with: .linearGradient(
-                        Gradient(colors: [.white.opacity(0),
-                                          .white.opacity(0.55 * peak),
-                                          .white.opacity(0)]),
-                        startPoint: CGPoint(x: x, y: 0),
-                        endPoint: CGPoint(x: x + bandW, y: 0)))
+        // Irregular facets rather than three identical strokes — the repeat
+        // read as a printed pattern instead of stone. Each facet gets its own
+        // width, tilt and shade from the hash, so no two look alike and the
+        // seams between them land at random depths.
+        var x = 0.0
+        var i = 0
+        while x < size.width {
+            let fw = 7 + FX.hash01(i, 71) * 16
+            let shade = 0.30 + FX.hash01(i, 83) * 0.34
+            let tilt = (FX.hash01(i, 97) - 0.5) * 2.2
+            var facet = Path()
+            facet.move(to: CGPoint(x: x, y: above - 1))
+            facet.addLine(to: CGPoint(x: x + fw, y: above - 1 + tilt))
+            facet.addLine(to: CGPoint(x: x + fw + tilt, y: above + barH + 1))
+            facet.addLine(to: CGPoint(x: x - tilt, y: above + barH + 1))
+            facet.closeSubpath()
+            c.fill(facet, with: .color(Color(white: shade)))
+            // A bright chip along the top edge gives each facet an angle.
+            if FX.hash01(i, 101) > 0.45 {
+                var chip = Path()
+                chip.move(to: CGPoint(x: x + 1, y: above))
+                chip.addLine(to: CGPoint(x: x + fw * 0.7, y: above))
+                chip.addLine(to: CGPoint(x: x + fw * 0.45, y: above + barH * 0.45))
+                chip.closeSubpath()
+                c.fill(chip, with: .color(Color(white: min(0.95, shade + 0.26)).opacity(0.7)))
+            }
+            // Dark fissure at the seam.
+            c.stroke(Path { p in
+                p.move(to: CGPoint(x: x, y: above - 1))
+                p.addLine(to: CGPoint(x: x - tilt, y: above + barH + 1))
+            }, with: .color(.black.opacity(0.5)), lineWidth: 0.8)
+            x += fw
+            i += 1
         }
 
-        for x in [0.24, 0.52, 0.76] {
-            var path = Path()
-            path.move(to: CGPoint(x: x * size.width, y: above))
-            path.addLine(to: CGPoint(x: x * size.width + 2.5, y: above + barH * 0.55))
-            path.addLine(to: CGPoint(x: x * size.width - 1.5, y: above + barH))
-            c.stroke(path, with: .color(.black.opacity(0.55)), lineWidth: 0.9)
+        // Shimmer: a soft highlight crossing the stone every 3-6 seconds, the
+        // only motion this effect has.
+        if let p = FX.eventProgress(t, slot: 4.5, jitter: 1.5, duration: 0.75, salt: 17) {
+            let bandW = size.width * 0.26
+            let bx = -bandW + (size.width + bandW * 2) * p
+            let peak = sin(.pi * p)
+            c.fill(Path(CGRect(x: bx, y: above - 1, width: bandW, height: barH + 2)),
+                   with: .linearGradient(
+                        Gradient(colors: [.white.opacity(0),
+                                          .white.opacity(0.6 * peak),
+                                          .white.opacity(0)]),
+                        startPoint: CGPoint(x: bx, y: 0),
+                        endPoint: CGPoint(x: bx + bandW, y: 0)))
         }
     }
 
@@ -371,8 +416,38 @@ struct MaxedBar: View {
     // MARK: bleed — overfilled, leaking down out of the track
 
     private static func drawBleed(_ ctx: GraphicsContext, _ size: CGSize, t: Double) {
-        ctx.fill(Path(roundedRect: CGRect(x: 0, y: above, width: size.width, height: barH),
-                      cornerRadius: barH / 2), with: .color(red))
+        // Grey and crinkled, not orange — as red it was one more warm bar in
+        // a set that already has several, and it read as fire rather than as
+        // something leaking out.
+        let bar = CGRect(x: 0, y: above, width: size.width, height: barH)
+        var c = ctx
+        c.clip(to: Path(roundedRect: bar, cornerRadius: barH / 2))
+        c.fill(Path(bar), with: .color(Color(white: 0.42)))
+
+        // Crinkle: uneven vertical creases and shading, like foil that has
+        // been crushed. Static, so the motion is entirely in the drips.
+        var x = 0.0
+        var i = 0
+        while x < size.width {
+            let cw = 3 + FX.hash01(i, 131) * 7
+            let shade = 0.30 + FX.hash01(i, 137) * 0.30
+            c.fill(Path(CGRect(x: x, y: above, width: cw, height: barH)),
+                   with: .linearGradient(
+                        Gradient(colors: [Color(white: shade),
+                                          Color(white: min(0.86, shade + 0.24)),
+                                          Color(white: shade * 0.8)]),
+                        startPoint: CGPoint(x: x, y: above),
+                        endPoint: CGPoint(x: x + cw, y: above + barH)))
+            // A hard crease line at each fold.
+            c.stroke(Path { p in
+                p.move(to: CGPoint(x: x, y: above))
+                p.addLine(to: CGPoint(x: x + (FX.hash01(i, 149) - 0.5) * 2, y: above + barH))
+            }, with: .color(.black.opacity(0.42)), lineWidth: 0.7)
+            x += cw
+            i += 1
+        }
+
+        // Drips leaving the underside, grey to match.
         let drops: [(x: Double, phase: Double)] = [(0.22, 0), (0.55, 0.33), (0.81, 0.59)]
         for d in drops {
             let p = (t / 2.9 + d.phase).truncatingRemainder(dividingBy: 1)
@@ -380,7 +455,7 @@ struct MaxedBar: View {
             let stretch = 1 + 1.4 * p * (1 - p) * 4        // longest mid-fall
             let drop = CGRect(x: d.x * size.width - 1.5, y: y, width: 3, height: 4 * stretch)
             ctx.fill(Path(roundedRect: drop, cornerRadius: 1.5),
-                     with: .color(red.opacity(0.9 * (1 - p))))
+                     with: .color(Color(white: 0.55).opacity(0.9 * (1 - p))))
         }
     }
 }
