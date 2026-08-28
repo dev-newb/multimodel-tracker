@@ -12,8 +12,8 @@ enum SoundKind: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .burn:   return "Burning tokens quickly"
-        case .reset:  return "Limit reset early"
-        case .banked: return "Banked reset added"
+        case .reset:  return "Limit reset early (Codex)"
+        case .banked: return "Banked reset added (Codex)"
         }
     }
 
@@ -46,6 +46,9 @@ final class Sounds: ObservableObject {
     /// that same sound first, so overlapping events retrigger cleanly instead
     /// of layering on top of each other.
     private var players: [SoundKind: AVAudioPlayer] = [:]
+    /// The name the user actually picked, shown instead of our copy's
+    /// internal filename.
+    private var originalNames: [SoundKind: String] = [:]
 
     private init() {
         for kind in SoundKind.allCases {
@@ -55,6 +58,7 @@ final class Sounds: ObservableObject {
                 enabled: d.object(forKey: prefix + "enabled") as? Bool ?? true,
                 path: d.string(forKey: prefix + "path"),
                 volume: d.object(forKey: prefix + "volume") as? Double ?? 0.85)
+            originalNames[kind] = d.string(forKey: prefix + "name")
         }
     }
 
@@ -69,17 +73,48 @@ final class Sounds: ObservableObject {
         players[kind]?.volume = Float(v)
     }
 
+    /// Where custom picks are kept. The user's original file can be moved,
+    /// renamed or deleted at any time; keeping our own copy means a chosen
+    /// sound stays working, and the bundled defaults are always still there
+    /// to revert to.
+    static var soundsDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask)[0]
+            .appendingPathComponent("MultimodelTracker/Sounds", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
+
     func setPath(_ path: String?, for kind: SoundKind) {
-        settings[kind]?.path = path
+        var stored = path
+        if let path {
+            // Copy in under a per-kind name, replacing any previous pick.
+            let src = URL(fileURLWithPath: path)
+            let dst = Self.soundsDirectory
+                .appendingPathComponent("\(kind.rawValue)-custom.\(src.pathExtension)")
+            try? FileManager.default.removeItem(at: dst)
+            if (try? FileManager.default.copyItem(at: src, to: dst)) != nil {
+                stored = dst.path
+                originalNames[kind] = src.lastPathComponent
+                UserDefaults.standard.set(src.lastPathComponent,
+                                          forKey: "mmt.sound.\(kind.rawValue).name")
+            }
+        } else {
+            originalNames[kind] = nil
+            UserDefaults.standard.removeObject(forKey: "mmt.sound.\(kind.rawValue).name")
+        }
+        settings[kind]?.path = stored
         let key = "mmt.sound.\(kind.rawValue).path"
-        if let path { UserDefaults.standard.set(path, forKey: key) }
+        if let stored { UserDefaults.standard.set(stored, forKey: key) }
         else { UserDefaults.standard.removeObject(forKey: key) }
     }
 
     func label(for kind: SoundKind) -> String {
         guard let p = settings[kind]?.path else { return kind.defaultLabel }
-        return URL(fileURLWithPath: p).lastPathComponent
+        return originalNames[kind] ?? URL(fileURLWithPath: p).lastPathComponent
     }
+
+    func isCustom(_ kind: SoundKind) -> Bool { settings[kind]?.path != nil }
 
     private func url(for kind: SoundKind) -> URL? {
         if let p = settings[kind]?.path, FileManager.default.fileExists(atPath: p) {

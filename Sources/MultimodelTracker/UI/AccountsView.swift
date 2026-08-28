@@ -415,42 +415,77 @@ struct OptionPicker<Value: Hashable>: View {
 
 
 /// One alert sound: on/off, which file, how loud, and a way to hear it.
+/// One alert sound. Laid out on a fixed grid so the controls line up down
+/// the column: the previous version let each row size itself, and the buttons
+/// landed at three different x positions because the filenames differ in
+/// length.
 struct SoundRow: View {
     let kind: SoundKind
     @ObservedObject var sounds: Sounds
 
+    /// Shared columns: the filename gets a fixed slot so every Choose button
+    /// starts at the same x, and the volume group is right-aligned.
+    private static let nameColumn: CGFloat = 168
+    private static let volumeColumn: CGFloat = 104
+
     var body: some View {
         let setting = sounds.settings[kind] ?? SoundSetting()
-        VStack(alignment: .leading, spacing: 4) {
+        let custom = sounds.isCustom(kind)
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Toggle(isOn: Binding(get: { setting.enabled },
                                      set: { sounds.setEnabled($0, for: kind) })) {
-                    Text(kind.displayName).font(.system(size: 12))
+                    Text(kind.displayName).font(.system(size: 12, weight: .medium))
                 }
                 .toggleStyle(.checkbox)
-                Spacer()
+                Spacer(minLength: 8)
                 // Test ignores the enabled flag, so a muted sound can still be
                 // auditioned before switching it on.
                 Button("Test") { sounds.play(kind, force: true) }
-                    .font(.system(size: 11))
+                    .controlSize(.small)
             }
-            HStack(spacing: 8) {
+
+            HStack(spacing: 6) {
                 Text(sounds.label(for: kind))
-                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(custom ? .secondary : .tertiary)
                     .lineLimit(1).truncationMode(.middle)
-                Button("Choose…") { chooseFile() }.font(.system(size: 10))
-                if setting.path != nil {
-                    Button("Default") { sounds.setPath(nil, for: kind) }.font(.system(size: 10))
+                    .frame(width: Self.nameColumn, alignment: .leading)
+                    .help(custom ? "Custom sound" : "Bundled default")
+
+                Button("Choose…") { chooseFile() }.controlSize(.small)
+                // Revert sits immediately beside Choose and only exists while
+                // a custom file is set, so the pair reads as one control.
+                if custom {
+                    Button {
+                        sounds.setPath(nil, for: kind)
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                    }
+                    .controlSize(.small)
+                    .help("Back to \(kind.defaultLabel)")
                 }
-                Spacer()
+
+                Spacer(minLength: 8)
+
+                Image(systemName: setting.volume < 0.01 ? "speaker.slash" : "speaker.wave.2")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                // Small, not mini: the mini slider renders with a clipped
+                // track and a translucent knob over the panel's material.
                 Slider(value: Binding(get: { setting.volume },
                                       set: { sounds.setVolume($0, for: kind) }),
                        in: 0...1)
-                    .frame(width: 90)
-                    .controlSize(.mini)
+                    .controlSize(.small)
+                    .frame(width: Self.volumeColumn)
             }
-            .padding(.leading, 18)
+            .padding(.leading, 20)
         }
+        .padding(.vertical, 9).padding(.horizontal, 11)
+        // An opaque card rather than bare material: the controls were sitting
+        // straight on the panel's blur, which is what made them look
+        // half-transparent.
+        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
     }
 
     private func chooseFile() {
@@ -458,6 +493,7 @@ struct SoundRow: View {
         panel.allowedContentTypes = [.audio]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
+        panel.prompt = "Use Sound"
         if panel.runModal() == .OK, let url = panel.url {
             sounds.setPath(url.path, for: kind)
         }
