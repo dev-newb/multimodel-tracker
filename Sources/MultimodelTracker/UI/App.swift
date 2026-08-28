@@ -398,6 +398,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // ever delivering mouseExited, so the I-beam is left pushed and
         // follows the user around the desktop. Put the arrow back by hand.
         NSCursor.arrow.set()
+        stopWatchingArrowCursor()
         stopWatchingOutsideClick()
         accountsWindow = nil
         store.setUIVisible(popover.isShown)
@@ -411,6 +412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var accountsWindow: NSWindow?
     /// Live only while the Accounts panel is open.
     private var outsideClickMonitors: [Any] = []
+    private var arrowMonitor: Any?
 
     /// Click-outside-to-dismiss. A non-activating panel never loses key the
     /// way an ordinary window does, so resignKey can't drive this — the click
@@ -440,6 +442,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
         outsideClickMonitors = [global, local].compactMap { $0 }
         _ = panel
+    }
+
+    /// Forces the arrow back after every pointer move inside the panel.
+    ///
+    /// A local monitor sees the event BEFORE the view does, so setting the
+    /// cursor here directly would just be overwritten by the control's own
+    /// cursorUpdate a moment later. Hopping to the next runloop pass puts our
+    /// set AFTER theirs, which is what actually makes it stick.
+    private func watchForArrowCursor(_ panel: NSWindow) {
+        stopWatchingArrowCursor()
+        arrowMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.mouseMoved, .mouseEntered, .mouseExited, .cursorUpdate]
+        ) { [weak self] event in
+            if event.window === self?.accountsWindow {
+                DispatchQueue.main.async { NSCursor.arrow.set() }
+            }
+            return event
+        }
+        _ = panel
+    }
+
+    private func stopWatchingArrowCursor() {
+        if let m = arrowMonitor { NSEvent.removeMonitor(m) }
+        arrowMonitor = nil
     }
 
     private func stopWatchingOutsideClick() {
@@ -497,19 +523,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // status by default, and without it the nickname fields silently
         // swallow every keystroke — renaming an account was impossible.
         w.makeKeyAndOrderFront(nil)
-        // Refuse cursor rects for the whole panel. Text fields, and evidently
-        // some AppKit-backed controls near the account rows, register their
-        // own rects (I-beam, and the resize cursors Rich saw); when SwiftUI
-        // rebuilds those rows the rects are torn down without a mouseExited,
-        // so whatever was showing gets stranded. Resetting the arrow after
-        // the fact only patched the exit case — this removes the mechanism.
-        // Cost: no I-beam over the rename field, which the field's own chrome
-        // already advertises.
+        // Cursor rects are only HALF the story: disableCursorRects blocks
+        // rects, but AppKit controls set their cursors through tracking areas
+        // (cursorUpdate:), which it does not touch — which is why disabling
+        // rects alone changed nothing. Both are handled: rects off here, and
+        // cursorUpdate overridden by the monitor in watchForArrowCursor.
         w.disableCursorRects()
+        w.acceptsMouseMovedEvents = true
         NSCursor.arrow.set()
         w.delegate = self
         accountsWindow = w
         watchForOutsideClick(w)
+        watchForArrowCursor(w)
         // Closing the previous panel above flipped this false via
         // windowWillClose; the panel is visible now, so re-assert it.
         store.setUIVisible(true)
