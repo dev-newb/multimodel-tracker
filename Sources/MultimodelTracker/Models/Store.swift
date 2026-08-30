@@ -134,6 +134,30 @@ final class Store: ObservableObject {
         burnCycleStyle = BurnStyle(rawValue: ((max(n, 1) - 1) / 3) % BurnStyle.allCases.count) ?? .firestorm
     }
 
+    // MARK: alert flashes
+    /// Per event: -1 = cycle each flash (the default); otherwise a pinned
+    /// style index into FlashEvent.styleNames.
+    @Published private(set) var flashPicks: [FlashEvent: Int] = Dictionary(
+        uniqueKeysWithValues: FlashEvent.allCases.map { e in
+            (e, UserDefaults.standard.object(forKey: "mmt.flash.\(e.rawValue)") as? Int ?? -1)
+        })
+
+    func setFlashPick(_ v: Int, for e: FlashEvent) {
+        flashPicks[e] = v
+        UserDefaults.standard.set(v, forKey: "mmt.flash.\(e.rawValue)")
+    }
+
+    /// The style THIS flash shows: the pinned pick, or the cycle position —
+    /// which advances once per flash, so consecutive alerts show the next
+    /// look rather than the same one forever.
+    func nextFlashStyle(for e: FlashEvent) -> Int {
+        if let p = flashPicks[e], p >= 0 { return p }
+        let key = "mmt.flashCycle.\(e.rawValue)"
+        let n = UserDefaults.standard.integer(forKey: key)
+        UserDefaults.standard.set(n + 1, forKey: key)
+        return n % FlashEvent.styleCount
+    }
+
     /// -1 = cycle every 3rd viewing (the default); otherwise a pinned
     /// MaxedStyle rawValue chosen in the Accounts window.
     @Published private(set) var maxedFixed: Int =
@@ -482,12 +506,19 @@ final class Store: ObservableObject {
         }
         guard soundSeeded else { return }      // never fire on first load
 
-        if pendingBanked { Sounds.shared.play(.banked); return }
-        if pendingEarlyReset { Sounds.shared.play(.reset); return }
+        let event: FlashEvent?
+        if pendingBanked { event = .banked }
+        else if pendingEarlyReset { event = .reset }
         // Edge trigger: something is burning now that was not burning before.
-        if burningNow.contains(where: { !burningBefore.contains($0) }) {
-            Sounds.shared.play(.burn)
-        }
+        else if burningNow.contains(where: { !burningBefore.contains($0) }) { event = .burn }
+        else { event = nil }
+        guard let event else { return }
+        Sounds.shared.play(event.soundKind)
+        // The badge flash rides the same trigger — it plays even with the
+        // sound muted, timed to the configured file's length either way.
+        NotificationCenter.default.post(name: .mmtFlashAlert, object: nil,
+                                        userInfo: ["event": event.rawValue,
+                                                   "style": nextFlashStyle(for: event)])
     }
 
     /// Drops stale samples across EVERY pool and forgets pools entirely once

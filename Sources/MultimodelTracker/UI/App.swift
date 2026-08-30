@@ -24,6 +24,9 @@ extension Notification.Name {
     /// The badge is AppKit, not SwiftUI, so a settings change has to tell it
     /// to redraw — it observes nothing.
     static let mmtBadgeStyleChanged = Notification.Name("mmt.badgeStyleChanged")
+    /// Fired by the Store when an alert event lands; userInfo carries the
+    /// event and the flash style to play on the status item.
+    static let mmtFlashAlert = Notification.Name("mmt.flashAlert")
 }
 
 @MainActor
@@ -50,6 +53,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.action = #selector(togglePopover)
         statusItem.button?.target = self
+        flash = FlashController(statusItem: statusItem)
+
+        NotificationCenter.default.addObserver(forName: .mmtFlashAlert, object: nil,
+                                               queue: .main) { [weak self] note in
+            let raw = note.userInfo?["event"] as? String
+            let style = note.userInfo?["style"] as? Int ?? 0
+            Task { @MainActor in
+                guard let self, let raw, let event = FlashEvent(rawValue: raw) else { return }
+                self.beginFlash(event: event, style: style)
+            }
+        }
 
         popover = NSPopover()
         popover.behavior = .transient
@@ -459,6 +473,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             }
         }
 
+        // `--flash <reset|banked|burn>` plays that alert's flash (and sound)
+        // on the live status item shortly after launch — the only way to see
+        // the real menu-bar rendering without waiting for a genuine alert.
+        if let i = CommandLine.arguments.firstIndex(of: "--flash"),
+           CommandLine.arguments.indices.contains(i + 1),
+           let event = FlashEvent(rawValue: CommandLine.arguments[i + 1]) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self else { return }
+                Sounds.shared.play(event.soundKind)
+                self.beginFlash(event: event, style: self.store.nextFlashStyle(for: event))
+            }
+        }
+
+        // `--render-flash <dir>` writes one PNG per event x style, mid-flash,
+        // through the same offscreen review path as --render-maxed.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-flash"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            for event in FlashEvent.allCases {
+                for style in 0..<FlashEvent.styleCount {
+                    let view = FlashFrameView(event: event, style: style, t: 2.4, k: 1,
+                                              width: 220, height: 40, scale: 1.8, darkBar: true)
+                        .background(Color(red: 0.09, green: 0.082, blue: 0.10))
+                    let renderer = ImageRenderer(content: view)
+                    renderer.scale = 2
+                    if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+                       let rep = NSBitmapImageRep(data: tiff),
+                       let png = rep.representation(using: .png, properties: [:]) {
+                        try? png.write(to: dir.appendingPathComponent("flash-\(event.rawValue)-\(style).png"))
+                    }
+                }
+            }
+            NSApp.terminate(nil)
+        }
+
         // `--accounts` does the same for the Accounts window, which otherwise
         // is only reachable through a click inside the popover.
         if CommandLine.arguments.contains("--accounts") {
@@ -483,28 +532,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let attrs: (NSColor) -> [NSAttributedString.Key: Any] = { colour in
             [.foregroundColor: colour, .font: font]
         }
-        let parts = Provider.allCases.compactMap { p -> NSAttributedString? in
-            let worst = store.accounts(for: p).compactMap(\.worstPercent).max()
-            guard let w = worst else { return nil }
-            // Amber at 75 and red at 90 are permanent: severity is the point
-            // of the badge and must not be switchable off. The only choice is
-            // what a HEALTHY number looks like — vendor accent, or plain
-            // white as it was originally.
-            let healthy: NSColor = store.badgeTinted ? p.nsAccent : .labelColor
-            let colour: NSColor = w >= 90 ? .systemRed
-                                 : (w >= 75 ? .systemOrange : healthy)
-            return NSAttributedString(string: "\(p.displayName.prefix(1))\(Int(w))",
-                                      attributes: attrs(colour))
-        }
         let joined = NSMutableAttributedString()
-        for (i, part) in parts.enumerated() {
+        for (i, seg) in badgeSegments().enumerated() {
             if i > 0 { joined.append(NSAttributedString(string: " ", attributes: attrs(.labelColor))) }
-            joined.append(part)
+            joined.append(NSAttributedString(string: seg.text, attributes: attrs(seg.colour)))
         }
         if joined.length == 0 {
             joined.append(NSAttributedString(string: "—"))
         }
         statusItem.button?.attributedTitle = joined
+    }
+
+    /// The badge's segments — one per provider with data. Amber at 75 and
+    /// red at 90 are permanent: severity is the point of the badge and must
+    /// not be switchable off; the only choice is what a HEALTHY number looks
+    /// like (vendor accent, or plain white). Shared by the attributed title
+    /// and the flash frames so the two can never disagree.
+    private func badgeSegments() -> [(text: String, colour: NSColor)] {
+        Provider.allCases.compactMap { p in
+            let worst = store.accounts(for: p).compactMap(\.worstPercent).max()
+            guard let w = worst else { return nil }
+            let healthy: NSColor = store.badgeTinted ? p.nsAccent : .labelColor
+            let colour: NSColor = w >= 90 ? .systemRed
+                                 : (w >= 75 ? .systemOrange : healthy)
+            return ("\(p.displayName.prefix(1))\(Int(w))", colour)
+        }
+    }
+
+    private var flash: FlashController?
+
+    private func beginFlash(event: FlashEvent, style: Int) {
+        guard let flash else { return }
+        let parts = badgeSegments().map { ($0.text, Color(nsColor: $0.colour)) }
+        flash.flash(event: event, style: style, badgeParts: parts,
+                    duration: Sounds.shared.duration(for: event.soundKind)) { [weak self] in
+            self?.renderBadges()
+        }
     }
 
     @objc private func togglePopover() {

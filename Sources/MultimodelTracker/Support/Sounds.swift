@@ -125,6 +125,19 @@ final class Sounds: ObservableObject {
             ?? Bundle.main.url(forResource: d.name, withExtension: d.ext)
     }
 
+    /// How long this alert's CONFIGURED file runs — the flash animation lasts
+    /// exactly this long, so a custom sound automatically retimes the flash.
+    /// Read through AVAudioPlayer like playback itself, cached per path
+    /// (choosing a new file changes the path, which misses the cache).
+    private var durationCache: [String: TimeInterval] = [:]
+    func duration(for kind: SoundKind) -> TimeInterval {
+        guard let url = url(for: kind) else { return 5 }
+        if let hit = durationCache[url.path] { return hit }
+        let d = (try? AVAudioPlayer(contentsOf: url))?.duration ?? 5
+        durationCache[url.path] = d
+        return d
+    }
+
     /// `force` ignores the enabled flag, for the Test buttons.
     func play(_ kind: SoundKind, force: Bool = false) {
         guard force || settings[kind]?.enabled == true else { return }

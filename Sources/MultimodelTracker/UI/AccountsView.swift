@@ -10,6 +10,7 @@ struct AccountsView: View {
     // no such switch — it is the panel's reason to exist.
     @AppStorage("mmt.collapse.menubar") private var menuBarCollapsed = false
     @AppStorage("mmt.collapse.effects") private var effectsCollapsed = false
+    @AppStorage("mmt.collapse.flashes") private var flashesCollapsed = false
     @AppStorage("mmt.collapse.sounds")  private var soundsCollapsed = false
 
     var body: some View {
@@ -59,6 +60,9 @@ struct AccountsView: View {
             Divider()
             SectionBar(title: "BAR EFFECTS", collapsed: $effectsCollapsed)
             if !effectsCollapsed { deadBarSection }
+            Divider()
+            SectionBar(title: "ALERT FLASHES", collapsed: $flashesCollapsed)
+            if !flashesCollapsed { flashSection }
             Divider()
             SectionBar(title: "SOUNDS", collapsed: $soundsCollapsed)
             if !soundsCollapsed { soundSection }
@@ -122,6 +126,35 @@ struct AccountsView: View {
         .padding(16)
     }
 
+    /// The menu-bar flash pickers: one per alert event, previewed the same
+    /// way the Flash Lab's inspection view showed them — a dark mock bar at
+    /// panel width with the effect looping in the badge's slot.
+    private var flashSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("The badge fades into the word for exactly as long as that alert's sound file runs.")
+                .font(.system(size: 10)).foregroundStyle(.tertiary)
+            ForEach(FlashEvent.allCases) { event in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(event.displayName).font(.system(size: 12))
+                        Spacer()
+                        OptionPicker(width: Self.pickerWidth,
+                                     options: Self.flashOptions(for: event),
+                                     selection: Binding(get: { store.flashPicks[event] ?? -1 },
+                                                        set: { store.setFlashPick($0, for: event) }))
+                    }
+                    FlashPreviewBar(event: event, pick: store.flashPicks[event] ?? -1,
+                                    animating: store.uiVisible)
+                }
+            }
+        }
+        .padding(16)
+    }
+
+    static func flashOptions(for event: FlashEvent) -> [(Int, String)] {
+        [(-1, "Cycle each flash")] + event.styleNames.enumerated().map { ($0.offset, $0.element) }
+    }
+
     static let distributionOptions: [(Bool, String)] = [
         (false, "Consistent across pools"), (true, "All different at once"),
     ]
@@ -144,6 +177,7 @@ struct AccountsView: View {
     static let pickerWidth: CGFloat = {
         let font = NSFont.systemFont(ofSize: 12)
         let titles = distributionOptions.map(\.1) + deadOptions.map(\.1) + burnOptions.map(\.1)
+            + ["Cycle each flash"] + FlashEvent.allCases.flatMap(\.styleNames)
         let widest = titles
             .map { ($0 as NSString).size(withAttributes: [.font: font]).width }
             .max() ?? 150
