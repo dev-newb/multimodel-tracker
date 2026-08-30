@@ -432,6 +432,13 @@ struct AccountRow: View {
 final class RollCoordinator: ObservableObject {
     /// The window owner installs this to receive each new height.
     var onHeight: ((CGFloat) -> Void)?
+    /// Called SYNCHRONOUSLY the moment a toggle happens — the roll's first
+    /// frame runs on the click's own runloop turn. (An earlier notification
+    /// + Task relay added two async hops plus a vsync wait, which read as
+    /// lag off the click.)
+    var onRollBegan: ((RollDriver) -> Void)?
+
+    func beginRoll(_ driver: RollDriver) { onRollBegan?(driver) }
 
     private var naturals: [String: CGFloat] = [:]
     private var progress: [String: Double] = [:]
@@ -520,11 +527,10 @@ final class RollDriver: ObservableObject {
     }
 
     /// Flips the section and hands the animation to the window owner's
-    /// display link (.mmtRollStarted): one vsync-paced clock ticks every
-    /// active roll SYNCHRONOUSLY — 60fps on a standard panel, 120 on
-    /// ProMotion. The earlier per-driver Timer with an async hop per tick
-    /// landed around 40 effective fps, which is the choppiness that was
-    /// visible.
+    /// display link: one vsync-paced clock ticks every active roll
+    /// SYNCHRONOUSLY — 60fps on a standard panel, 120 on ProMotion. The
+    /// earlier per-driver Timer with an async hop per tick landed around 40
+    /// effective fps, which is the choppiness that was visible.
     func toggle() {
         open.toggle()
         UserDefaults.standard.set(!open, forKey: key)
@@ -532,7 +538,7 @@ final class RollDriver: ObservableObject {
         target = open ? 1.0 : 0.0
         start = Date()
         animating = true
-        NotificationCenter.default.post(name: .mmtRollStarted, object: self)
+        coordinator?.beginRoll(self)
     }
 
     /// One display-link frame. Returns true when this roll has finished.

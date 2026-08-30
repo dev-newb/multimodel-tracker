@@ -30,10 +30,6 @@ extension Notification.Name {
     /// Debug only (--roll-test): asks the Config view to toggle a section
     /// exactly as a click would, so the roll can be measured headlessly.
     static let mmtRollTest = Notification.Name("mmt.rollTest")
-    /// Posted by a RollDriver when a section roll begins; object is the
-    /// driver. The panel owner drives every active roll from one
-    /// display link so shade, chevron and window share a vsync clock.
-    static let mmtRollStarted = Notification.Name("mmt.rollStarted")
 }
 
 @MainActor
@@ -61,15 +57,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         statusItem.button?.action = #selector(togglePopover)
         statusItem.button?.target = self
         flash = FlashController(statusItem: statusItem)
-
-        NotificationCenter.default.addObserver(forName: .mmtRollStarted, object: nil,
-                                               queue: .main) { [weak self] note in
-            let driver = note.object as? RollDriver
-            Task { @MainActor in
-                guard let self, let driver else { return }
-                self.rollBegan(driver)
-            }
-        }
 
         NotificationCenter.default.addObserver(forName: .mmtFlashAlert, object: nil,
                                                queue: .main) { [weak self] note in
@@ -670,10 +657,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
            let w = accountsWindow, target > w.frame.height {
             applyPanelHeight(target)
         }
-        guard rollLink == nil, let w = accountsWindow else { return }
-        let link = w.displayLink(target: self, selector: #selector(rollLinkFired))
-        link.add(to: .main, forMode: .common)
-        rollLink = link
+        // ONE display link for the panel's lifetime, paused between rolls —
+        // a link recreated after invalidate() never fired again (measured:
+        // the second roll got exactly its one manual tick and froze).
+        if rollLink == nil, let w = accountsWindow {
+            let link = w.displayLink(target: self, selector: #selector(rollLinkFired))
+            link.add(to: .main, forMode: .common)
+            rollLink = link
+        }
+        rollLink?.isPaused = false
+        // First frame NOW, on the click's own runloop turn — waiting for the
+        // next vsync (plus the old notification + Task hops) is what made
+        // the roll feel late off the click.
+        rollLinkFired()
     }
 
     @objc private func rollLinkFired() {
@@ -686,7 +682,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         guard anyFinished else { return }
         activeRolls.removeAll { !$0.animating }
         if activeRolls.isEmpty {
-            rollLink?.invalidate(); rollLink = nil
+            rollLink?.isPaused = true
             // Settle: the one shrink (or correction) for this roll.
             if let h = lastEmittedHeight { applyPanelHeight(h) }
         }
@@ -718,7 +714,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let top = f.maxY
         f.size.height = h
         f.origin.y = top - h
-        w.setFrame(f, display: true)
+        // display: false — let drawing happen on the normal cycle instead of
+        // forcing a synchronous recomposite; the region being revealed or
+        // trimmed is transparent anyway. The synchronous version added a
+        // visible beat between the click and the first motion.
+        w.setFrame(f, display: false)
         // A transparent window's shadow is computed from its drawn pixels;
         // after the content's shape changed under a static frame, recompute
         // once here rather than every frame.
@@ -925,8 +925,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // window could never follow a collapse through it.
         let coord = RollCoordinator(sectionCount: 4)
         coord.onHeight = { [weak self] h in self?.accountsPanelSetHeight(h) }
+        coord.onRollBegan = { [weak self] d in self?.rollBegan(d) }
         accountsCoordinator = coord
-        let host = NSHostingController(rootView: AccountsView(store: store, coordinator: coord))
+        // Top-aligned inside the window, explicitly: the window is often
+        // TALLER than the content now (that's the roll design), and
+        // SwiftUI's default is to CENTRE content in the proposal — which
+        // made the visible panel slide up and down as the shade moved.
+        let host = NSHostingController(rootView:
+            AccountsView(store: store, coordinator: coord)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top))
         host.sizingOptions = []
         w.contentView = host.view
         accountsHost = host
