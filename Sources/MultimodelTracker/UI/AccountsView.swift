@@ -489,8 +489,7 @@ final class RollDriver: ObservableObject {
 
     @Published private(set) var progress: Double   // 1 = open, 0 = rolled up
     private(set) var open: Bool
-    private var timer: Timer?
-    private var active = false
+    private(set) var animating = false
     private var from = 0.0, target = 0.0
     private var start = Date()
     let key: String
@@ -509,39 +508,35 @@ final class RollDriver: ObservableObject {
         c.setProgress(progress, for: key)
     }
 
+    /// Flips the section and hands the animation to the window owner's
+    /// display link (.mmtRollStarted): one vsync-paced clock ticks every
+    /// active roll SYNCHRONOUSLY — 60fps on a standard panel, 120 on
+    /// ProMotion. The earlier per-driver Timer with an async hop per tick
+    /// landed around 40 effective fps, which is the choppiness that was
+    /// visible.
     func toggle() {
         open.toggle()
         UserDefaults.standard.set(!open, forKey: key)
         from = progress
         target = open ? 1.0 : 0.0
         start = Date()
-        // One long-lived runloop Timer in .common mode, gated by `active`:
-        // invalidating and recreating it from inside its own async callback
-        // proved unreliable (a stale timer kept firing a runloop hop past
-        // invalidate). It's the same clock FlashController uses, which
-        // survives the preview TimelineViews saturating the display link.
-        active = true
-        if timer == nil {
-            let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.tick() }
-            }
-            timer = t
-            RunLoop.main.add(t, forMode: .common)
-        }
+        animating = true
+        NotificationCenter.default.post(name: .mmtRollStarted, object: self)
     }
 
-    private func tick() {
-        guard active else { return }
-        let u = min(Date().timeIntervalSince(start) / Self.duration, 1)
+    /// One display-link frame. Returns true when this roll has finished.
+    func tickNow(_ now: Date) -> Bool {
+        guard animating else { return true }
+        let u = min(now.timeIntervalSince(start) / Self.duration, 1)
         let e = u < 0.5 ? 4 * u * u * u : 1 - pow(-2 * u + 2, 3) / 2   // cubic ease-in-out
         progress = from + (target - from) * e
         coordinator?.setProgress(progress, for: key)
-        if u >= 1 { progress = target; active = false }
+        if u >= 1 { progress = target; animating = false; return true }
+        return false
     }
 
-    /// Whole-view teardown: stop the clock so a closed panel leaves nothing
-    /// running.
-    func invalidate() { timer?.invalidate(); timer = nil; active = false }
+    /// Whole-view teardown.
+    func invalidate() { animating = false }
 }
 
 /// A subsection's title bar: the label where the old header sat, and a

@@ -88,6 +88,7 @@ final class Store: ObservableObject {
     /// Set during a refresh pass, acted on once at the end.
     private var pendingEarlyReset = false
     private var pendingBanked = false
+    private var pendingLimitReached = false
 
     static let earlyResetFrom = 5.0   // was at least this full...
     static let earlyResetTo = 1.0     // ...and is now this empty
@@ -393,7 +394,7 @@ final class Store: ObservableObject {
     func refreshAll() async {
         guard !isRefreshing else { return }
         isRefreshing = true
-        pendingEarlyReset = false; pendingBanked = false
+        pendingEarlyReset = false; pendingBanked = false; pendingLimitReached = false
         defer {
             isRefreshing = false; lastRefresh = Date()
             fireAlertSounds()
@@ -456,6 +457,11 @@ final class Store: ObservableObject {
                let promised = prev.resetsAt, promised > Date() {
                 pendingEarlyReset = true
             }
+            // Edge trigger only: the wall is hit ONCE, when a pool crosses
+            // to full — a pool sitting at 100 across polls stays silent.
+            if let prev = poolBefore[key], prev.pct < 100, pct >= 100 {
+                pendingLimitReached = true
+            }
             poolBefore[key] = PoolSnapshot(pct: pct, resetsAt: limit.resetsAt)
         }
         if let bank = fetched.bankedResets {
@@ -502,12 +508,15 @@ final class Store: ObservableObject {
         defer {
             burningBefore = burningNow
             soundSeeded = true
-            pendingEarlyReset = false; pendingBanked = false
+            pendingEarlyReset = false; pendingBanked = false; pendingLimitReached = false
         }
         guard soundSeeded else { return }      // never fire on first load
 
+        // Hitting a wall outranks everything: it's the event that changes
+        // what the user can do right now.
         let event: FlashEvent?
-        if pendingBanked { event = .banked }
+        if pendingLimitReached { event = .limit }
+        else if pendingBanked { event = .banked }
         else if pendingEarlyReset { event = .reset }
         // Edge trigger: something is burning now that was not burning before.
         else if burningNow.contains(where: { !burningBefore.contains($0) }) { event = .burn }

@@ -6,7 +6,7 @@ import AppKit
 /// BYTE-IDENTICAL — never trimmed, normalised or re-encoded. The 18-second
 /// choir on a reset is deliberate: resets are a glorious event.
 enum SoundKind: String, CaseIterable, Identifiable {
-    case burn, reset, banked
+    case burn, reset, banked, limit
     var id: String { rawValue }
 
     var displayName: String {
@@ -14,6 +14,7 @@ enum SoundKind: String, CaseIterable, Identifiable {
         case .burn:   return "Burning tokens quickly"
         case .reset:  return "Limit reset early (Codex)"
         case .banked: return "Banked reset added (Codex)"
+        case .limit:  return "Usage limit reached"
         }
     }
 
@@ -23,6 +24,7 @@ enum SoundKind: String, CaseIterable, Identifiable {
         case .burn:   return ("burn-default", "wav")
         case .reset:  return ("reset-default", "mp3")
         case .banked: return ("banked-default", "mp3")
+        case .limit:  return ("limit-default", "mp3")   // a punch into rock
         }
     }
 

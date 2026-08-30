@@ -30,6 +30,10 @@ extension Notification.Name {
     /// Debug only (--roll-test): asks the Config view to toggle a section
     /// exactly as a click would, so the roll can be measured headlessly.
     static let mmtRollTest = Notification.Name("mmt.rollTest")
+    /// Posted by a RollDriver when a section roll begins; object is the
+    /// driver. The panel owner drives every active roll from one
+    /// display link so shade, chevron and window share a vsync clock.
+    static let mmtRollStarted = Notification.Name("mmt.rollStarted")
 }
 
 @MainActor
@@ -57,6 +61,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         statusItem.button?.action = #selector(togglePopover)
         statusItem.button?.target = self
         flash = FlashController(statusItem: statusItem)
+
+        NotificationCenter.default.addObserver(forName: .mmtRollStarted, object: nil,
+                                               queue: .main) { [weak self] note in
+            let driver = note.object as? RollDriver
+            Task { @MainActor in
+                guard let self, let driver else { return }
+                self.rollBegan(driver)
+            }
+        }
 
         NotificationCenter.default.addObserver(forName: .mmtFlashAlert, object: nil,
                                                queue: .main) { [weak self] note in
@@ -615,6 +628,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         NSCursor.arrow.set()
         stopCursorGovernor()
         stopWatchingOutsideClick()
+        rollLink?.invalidate(); rollLink = nil
+        activeRolls = []
         accountsHost = nil
         accountsCoordinator = nil
         lastPanelHeight = 0
@@ -633,6 +648,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var accountsHost: NSViewController?
     private var accountsCoordinator: RollCoordinator?
     private var lastPanelHeight: CGFloat = 0
+
+    /// The one clock for section rolls: a display link created from the
+    /// panel window (so it runs at THAT display's refresh — 120 on
+    /// ProMotion), ticking every active driver synchronously. Alive only
+    /// while something is actually rolling.
+    private var rollLink: CADisplayLink?
+    private var activeRolls: [RollDriver] = []
+
+    private func rollBegan(_ driver: RollDriver) {
+        if !activeRolls.contains(where: { $0 === driver }) { activeRolls.append(driver) }
+        guard rollLink == nil, let w = accountsWindow else { return }
+        let link = w.displayLink(target: self, selector: #selector(rollLinkFired))
+        link.add(to: .main, forMode: .common)
+        rollLink = link
+    }
+
+    @objc private func rollLinkFired() {
+        let now = Date()
+        activeRolls.removeAll { $0.tickNow(now) }
+        if activeRolls.isEmpty { rollLink?.invalidate(); rollLink = nil }
+    }
 
     /// Follows the view's measured-height stream, keeping the TOP edge where
     /// it is — the panel hangs from the menu bar, so growth and shrink

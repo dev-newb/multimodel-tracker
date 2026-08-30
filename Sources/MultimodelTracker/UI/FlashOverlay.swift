@@ -11,7 +11,7 @@ import AppKit
 /// deterministic functions of time (seeded lanes, no mutable state), which
 /// is what lets one painter serve both paths and stay resumable.
 enum FlashEvent: String, CaseIterable, Identifiable {
-    case reset, banked, burn
+    case reset, banked, burn, limit
     var id: String { rawValue }
 
     var text: String {
@@ -19,6 +19,7 @@ enum FlashEvent: String, CaseIterable, Identifiable {
         case .reset:  return "Reset!"
         case .banked: return "Banked Rst!"
         case .burn:   return "On Fire!"
+        case .limit:  return "Usage limit!"
         }
     }
     /// Matches the sound rows' wording — reset/banked are Codex-only events.
@@ -27,6 +28,7 @@ enum FlashEvent: String, CaseIterable, Identifiable {
         case .reset:  return "Limit reset early (Codex)"
         case .banked: return "Banked reset added (Codex)"
         case .burn:   return "Burning tokens"
+        case .limit:  return "Usage limit reached"
         }
     }
     var soundKind: SoundKind {
@@ -34,14 +36,17 @@ enum FlashEvent: String, CaseIterable, Identifiable {
         case .reset: return .reset
         case .banked: return .banked
         case .burn: return .burn
+        case .limit: return .limit
         }
     }
-    /// Approved in the Flash Lab; order is the gallery's order.
+    /// Approved in the Flash Lab; order is the gallery's order. The limit
+    /// styles are variations on the sound: a fist meeting a rock wall.
     var styleNames: [String] {
         switch self {
         case .reset:  return ["Skyroll", "Cloud Drift", "Heaven Rays", "Ascension"]
         case .banked: return ["Bill Sheen", "Coin Flip", "Money Rain", "Vault Fill"]
         case .burn:   return ["Ember Rise", "Ignition", "Flame Lick", "Coalglow"]
+        case .limit:  return ["Slam", "Crackline", "Rubble", "Quake"]
         }
     }
     static let styleCount = 4
@@ -78,6 +83,14 @@ struct FlashPalette {
         case (.burn, false):
             return .init(from: c(235,150,10), to: c(168,28,10), glow: c(255,120,30,0.5),
                          extra: c(168,160,152), core: c(235,150,10), mid: c(222,84,16), edge: c(168,28,10))
+        // Stone: light face → shadowed base; extra = dust, core/mid = the
+        // bright and amber of a fresh crack, edge = deep rock shadow.
+        case (.limit, true):
+            return .init(from: c(201,196,188), to: c(110,103,94), glow: c(214,196,168,0.55),
+                         extra: c(214,196,168), core: c(255,244,214), mid: c(255,184,77), edge: c(74,66,58))
+        case (.limit, false):
+            return .init(from: c(124,116,106), to: c(62,56,49), glow: c(160,140,110,0.5),
+                         extra: c(164,144,114), core: c(255,238,200), mid: c(196,120,20), edge: c(46,40,34))
         }
     }
 }
@@ -129,6 +142,10 @@ enum FlashPaint {
         case (.burn, 1):   ignite(&ctx, env)
         case (.burn, 2):   flare(&ctx, env)
         case (.burn, _):   coals(&ctx, env)
+        case (.limit, 0):  slam(&ctx, env)
+        case (.limit, 1):  crackline(&ctx, env)
+        case (.limit, 2):  rubble(&ctx, env)
+        case (.limit, _):  quake(&ctx, env)
         }
     }
 
@@ -515,6 +532,184 @@ enum FlashPaint {
             let r = (1 - age * 0.6) * 1.1 * env.scale
             ctx.fill(Path(ellipseIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)),
                      with: .color(Color(red: 1, green: 0.93, blue: 0.71).opacity((1 - age) * env.k)))
+        }
+    }
+}
+
+extension FlashPaint {
+    /// A shared stone treatment: cool vertical gradient, per-char tone
+    /// variation so the wall doesn't read as one flat slab.
+    private static func stoneStyle(_ env: FlashEnv, _ i: Int, darken: Double = 0) -> AnyShapeStyle {
+        let p = env.pal
+        let v = prand(Double(i), 51) * 0.18 - darken
+        return AnyShapeStyle(LinearGradient(colors: [
+            mixColor(p.from, p.to, 0.15 + v),
+            mixColor(p.from, p.to, 0.85 + v * 0.5)],
+            startPoint: .top, endPoint: .bottom))
+    }
+
+    // ---- usage limit: variations on a fist meeting a rock wall ----
+
+    /// Periodic impact: the word takes the hit — a scale punch and decaying
+    /// shake — and dust bursts off it, arcing out and falling.
+    static func slam(_ ctx: inout GraphicsContext, _ env: FlashEnv) {
+        let p = env.pal
+        let T = 1.7
+        let hit = env.t.truncatingRemainder(dividingBy: T)
+        let cycle = (env.t / T).rounded(.down)
+        let shock = exp(-hit * 6)
+        var word = ctx
+        word.translateBy(x: env.textWidth / 2 + sin(env.t * 67) * shock * 2.2 * env.scale,
+                         y: cos(env.t * 53) * shock * 1.4 * env.scale)
+        word.scaleBy(x: 1 + shock * 0.1, y: 1 + shock * 0.1)
+        word.translateBy(x: -env.textWidth / 2, y: 0)
+        word.drawLayer { layer in
+            layer.addFilter(.shadow(color: p.glow, radius: (2 + 4 * shock) * env.scale))
+            var l = layer
+            drawWord(&l, env, style: { i in stoneStyle(env, i, darken: shock * 0.12) })
+        }
+        // Dust burst, one puff of lanes per hit.
+        let a = hit / 0.9
+        if a < 1 {
+            for lane in 0..<10 {
+                let s = Double(lane)
+                guard prand(s, cycle, 52) < 0.85 else { continue }
+                let x0 = prand(s, cycle, 53) * env.textWidth
+                let vx = (prand(s, cycle, 54) - 0.5) * env.fontSize * 1.3
+                let vy = (0.4 + prand(s, cycle, 55) * 0.8) * env.fontSize
+                let x = x0 + vx * a
+                let y = env.fontSize * 0.45 - vy * a + env.fontSize * 0.9 * a * a
+                let r = (0.7 + prand(s, cycle, 56)) * env.scale * (1 - a * 0.4)
+                ctx.fill(Path(ellipseIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)),
+                         with: .color(p.extra.opacity((1 - a) * 0.7 * env.k)))
+            }
+        }
+    }
+
+    /// Cracks race through the stone lettering, flare amber-white, then fade
+    /// as the next one starts elsewhere.
+    static func crackline(_ ctx: inout GraphicsContext, _ env: FlashEnv) {
+        let p = env.pal
+        ctx.drawLayer { layer in
+            var l = layer
+            drawWord(&l, env, style: { i in stoneStyle(env, i, darken: 0.06) })
+            l.blendMode = .sourceAtop
+            let T = 2.1
+            for j in 0..<2 {
+                let local = env.t + Double(j) * T / 2
+                let cycle = (local / T).rounded(.down)
+                let phase = local.truncatingRemainder(dividingBy: T)
+                let grow = min(phase / 0.45, 1)
+                let fade = phase < 0.45 ? 1.0 : max(0, 1 - (phase - 0.45) / (T - 0.75))
+                guard fade > 0 else { continue }
+                let seed = Double(j) * 100 + cycle
+                var path = Path()
+                let n = 9
+                let y0 = (prand(seed, 61) - 0.5) * env.fontSize * 0.5
+                path.move(to: CGPoint(x: 0, y: y0))
+                let steps = Int(Double(n) * grow * 100) // hundredths for partials
+                for k in 1...n {
+                    let frac = min(max(Double(steps) / 100 - Double(k - 1), 0), 1)
+                    guard frac > 0 else { break }
+                    let px = env.textWidth * Double(k) / Double(n)
+                    let py = (prand(seed, Double(k), 62) - 0.5) * env.fontSize * 0.7
+                    let prevX = env.textWidth * Double(k - 1) / Double(n)
+                    let prevY = k == 1 ? y0 : (prand(seed, Double(k - 1), 62) - 0.5) * env.fontSize * 0.7
+                    path.addLine(to: CGPoint(x: prevX + (px - prevX) * frac,
+                                             y: prevY + (py - prevY) * frac))
+                }
+                var cracks = l
+                cracks.addFilter(.shadow(color: p.mid.opacity(0.9), radius: 3 * env.scale))
+                cracks.stroke(path, with: .color(mixColor(p.core, p.mid, 1 - fade).opacity(fade)),
+                              lineWidth: (grow < 1 ? 1.2 : 0.9) * env.scale)
+            }
+        }
+    }
+
+    /// The wall gives way: letters shiver while chips break off and fall,
+    /// tumbling, past the base.
+    static func rubble(_ ctx: inout GraphicsContext, _ env: FlashEnv) {
+        let p = env.pal
+        ctx.drawLayer { layer in
+            for i in env.chars.indices {
+                var l = layer
+                l.addFilter(.shadow(color: p.glow, radius: 1.5 * env.scale))
+                let t = charText(env.chars[i], env, stoneStyle(env, i))
+                l.draw(l.resolve(t), at: CGPoint(x: env.charX[i],
+                                                 y: sin(env.t * 23 + Double(i) * 4.2) * 0.4 * env.scale),
+                       anchor: .leading)
+            }
+        }
+        for i in env.chars.indices where env.chars[i] != " " {
+            for lane in 0..<3 {
+                let s = Double(i) * 13 + Double(lane)
+                let life = 0.8 + prand(s, 71) * 0.6
+                let pos = env.t / life + prand(s, 72)
+                let cycle = pos.rounded(.down), age = pos - cycle
+                guard prand(s, cycle, 73) < 0.4 else { continue }
+                let x = env.charX[i] + env.charW[i] * (0.1 + prand(s, cycle, 74) * 0.8)
+                    + (prand(s, cycle, 75) - 0.5) * 4 * env.scale * age
+                let y = -env.fontSize * 0.5 + age * age * env.fontSize * 1.4
+                let r = (0.8 + prand(s, cycle, 76) * 0.9) * env.scale
+                var chip = ctx
+                chip.translateBy(x: x, y: y)
+                chip.rotate(by: .radians(age * (2 + prand(s, cycle, 77) * 4)))
+                chip.fill(Path(CGRect(x: -r, y: -r * 0.7, width: r * 2, height: r * 1.4)),
+                          with: .color(mixColor(p.extra, p.to, prand(s, cycle, 78) * 0.7)
+                              .opacity((1 - age) * 0.9 * env.k)))
+            }
+        }
+    }
+
+    /// The whole wall trembles under the blow: per-letter rumble, drifting
+    /// dust haze, and thin trickles of dust shaken loose from the top.
+    static func quake(_ ctx: inout GraphicsContext, _ env: FlashEnv) {
+        let p = env.pal
+        let sway = sin(env.t * 3.1) * 0.7 * env.scale
+        ctx.drawLayer { layer in
+            var l = layer
+            l.translateBy(x: sway, y: 0)
+            l.drawLayer { inner in
+                for i in env.chars.indices {
+                    var c = inner
+                    c.addFilter(.shadow(color: p.glow, radius: 1.5 * env.scale))
+                    let t = charText(env.chars[i], env, stoneStyle(env, i))
+                    c.draw(c.resolve(t),
+                           at: CGPoint(x: env.charX[i] + sin(env.t * 31 + Double(i) * 2.9) * 0.6 * env.scale,
+                                       y: cos(env.t * 27 + Double(i) * 5.3) * 0.7 * env.scale),
+                           anchor: .leading)
+                }
+                inner.blendMode = .sourceAtop
+                for b in 0..<2 {
+                    let span = env.textWidth * 1.4
+                    let bx = (((env.t * (4 + Double(b) * 3) * env.scale)
+                        .truncatingRemainder(dividingBy: span)) + span)
+                        .truncatingRemainder(dividingBy: span) - env.textWidth * 0.2
+                    let w = env.fontSize * 1.1
+                    inner.fill(Path(CGRect(x: bx - w, y: -env.fontSize, width: w * 2, height: env.fontSize * 2)),
+                               with: .linearGradient(Gradient(stops: [
+                                    .init(color: p.extra.opacity(0), location: 0),
+                                    .init(color: p.extra.opacity(0.22), location: 0.5),
+                                    .init(color: p.extra.opacity(0), location: 1)]),
+                                  startPoint: CGPoint(x: bx - w, y: 0), endPoint: CGPoint(x: bx + w, y: 0)))
+                }
+            }
+        }
+        // Dust trickles shaken loose.
+        for lane in 0..<4 {
+            let s = Double(lane)
+            let life = 0.55 + prand(s, 81) * 0.4
+            let pos = env.t / life + prand(s, 82)
+            let cycle = pos.rounded(.down), age = pos - cycle
+            guard prand(s, cycle, 83) < 0.5 else { continue }
+            let x = prand(s, cycle, 84) * env.textWidth
+            let top = -env.fontSize * 0.5 + age * env.fontSize * 0.9
+            var trail = Path()
+            trail.move(to: CGPoint(x: x, y: top))
+            trail.addLine(to: CGPoint(x: x + (prand(s, cycle, 85) - 0.5) * 2 * env.scale,
+                                      y: top + env.fontSize * 0.35))
+            ctx.stroke(trail, with: .color(p.extra.opacity((1 - age) * 0.5 * env.k)),
+                       lineWidth: 0.8 * env.scale)
         }
     }
 }
