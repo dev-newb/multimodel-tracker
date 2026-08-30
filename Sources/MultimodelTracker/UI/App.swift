@@ -27,9 +27,6 @@ extension Notification.Name {
     /// Fired by the Store when an alert event lands; userInfo carries the
     /// event and the flash style to play on the status item.
     static let mmtFlashAlert = Notification.Name("mmt.flashAlert")
-    /// Debug only (--roll-test): asks the Config view to toggle a section
-    /// exactly as a click would, so the roll can be measured headlessly.
-    static let mmtRollTest = Notification.Name("mmt.rollTest")
 }
 
 @MainActor
@@ -218,8 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
            CommandLine.arguments.indices.contains(i + 1) {
             let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
             let renderer = ImageRenderer(content:
-                AccountsView(store: store, coordinator: RollCoordinator(sectionCount: 4))
-                    .frame(width: 480)
+                AccountsView(store: store).frame(width: 480)
                     .background(Color(red: 0.13, green: 0.13, blue: 0.14)))
             renderer.scale = 2
             if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
@@ -512,19 +508,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.terminate(nil)
         }
 
-        // `--roll-test` opens the panel and toggles a section twice through
-        // the same animated path a click takes; with MMT_DEBUG=1 the panel
-        // height stream prints, so the roll's smoothness is measurable.
-        if CommandLine.arguments.contains("--roll-test") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.openSettings() }
-            for delay in [4.0, 5.4] {
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                    NotificationCenter.default.post(name: .mmtRollTest, object: nil)
-                }
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 7) { exit(0) }
-        }
-
         // `--accounts` does the same for the Accounts window, which otherwise
         // is only reachable through a click inside the popover.
         if CommandLine.arguments.contains("--accounts") {
@@ -615,11 +598,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         NSCursor.arrow.set()
         stopCursorGovernor()
         stopWatchingOutsideClick()
-        rollLink?.invalidate(); rollLink = nil
-        activeRolls = []
         accountsHost = nil
-        accountsCoordinator = nil
-        lastEmittedHeight = nil
         accountsWindow = nil
         store.setUIVisible(popover.isShown)
     }
@@ -633,77 +612,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var accountsWindow: NSWindow?
     /// Retains the panel's hosting controller — contentView alone doesn't.
     private var accountsHost: NSViewController?
-    private var accountsCoordinator: RollCoordinator?
-
-    /// The one clock for section rolls: a display link created from the
-    /// panel window (so it runs at THAT display's refresh — 120 on
-    /// ProMotion), ticking every active driver synchronously. Alive only
-    /// while something is actually rolling.
-    private var rollLink: CADisplayLink?
-    private var activeRolls: [RollDriver] = []
-
-    private func rollBegan(_ driver: RollDriver) {
-        if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
-            FileHandle.standardError.write("roll-began \(driver.key) open=\(driver.open)\n".data(using: .utf8)!)
-        }
-        if !activeRolls.contains(where: { $0 === driver }) { activeRolls.append(driver) }
-        // The window resizes ONCE per roll, never per frame — a per-frame
-        // setFrame forced the vibrancy backdrop to recomposite every tick,
-        // which is what actually dropped frames. The window is transparent,
-        // so an oversized window is invisible: grow to the roll's final
-        // height up front; a shrink waits until the roll finishes.
-        if let target = accountsCoordinator?.projectedHeight(overriding: driver.key,
-                                                             to: driver.open ? 1 : 0),
-           let w = accountsWindow, target > w.frame.height {
-            applyPanelHeight(target)
-        }
-        // ONE display link for the panel's lifetime, paused between rolls —
-        // a link recreated after invalidate() never fired again (measured:
-        // the second roll got exactly its one manual tick and froze).
-        if rollLink == nil, let w = accountsWindow {
-            let link = w.displayLink(target: self, selector: #selector(rollLinkFired))
-            link.add(to: .main, forMode: .common)
-            rollLink = link
-        }
-        rollLink?.isPaused = false
-        // First frame NOW, on the click's own runloop turn — waiting for the
-        // next vsync (plus the old notification + Task hops) is what made
-        // the roll feel late off the click.
-        rollLinkFired()
-    }
-
-    @objc private func rollLinkFired() {
-        let now = Date()
-        // Tick a COPY: tickNow re-enters this object through the height
-        // callback, and mutating activeRolls while its own removeAll closure
-        // runs is an exclusivity violation (it trapped).
-        var anyFinished = false
-        for r in activeRolls where r.tickNow(now) { anyFinished = true }
-        guard anyFinished else { return }
-        activeRolls.removeAll { !$0.animating }
-        if activeRolls.isEmpty {
-            rollLink?.isPaused = true
-            // Settle: the one shrink (or correction) for this roll.
-            if let h = lastEmittedHeight { applyPanelHeight(h) }
-        }
-    }
-
-    private var lastEmittedHeight: CGFloat?
-
-    /// Receives the coordinator's height stream. While a roll is running,
-    /// values are only recorded — the window was pre-sized by rollBegan and
-    /// settles once at the end. When idle (panel open, sections added or
-    /// removed, previews resizing), values apply directly.
-    private func accountsPanelSetHeight(_ h: CGFloat) {
-        guard h > 1 else { return }
-        lastEmittedHeight = h
-        guard activeRolls.isEmpty else { return }
-        applyPanelHeight(h)
-    }
 
     /// The actual resize, top edge pinned — the panel hangs from the menu
-    /// bar, so growth and shrink happen at the bottom.
+    /// bar, so growth and shrink happen at the bottom. Called for discrete
+    /// changes only (tab switch, account added or removed); nothing animates.
     private func applyPanelHeight(_ h: CGFloat) {
+        guard h > 1 else { return }
         guard let w = accountsWindow, abs(w.frame.height - h) > 0.3 else { return }
         if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
             FileHandle.standardError.write(
@@ -911,37 +825,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         w.level = .floating
         w.hidesOnDeactivate = false
         // The view is installed directly, NOT as contentViewController, and
-        // with NO hosting sizing options: every automatic window-sizing path
-        // AppKit offers here commits only the END state of an animation (or,
-        // for the constraint-driven one, snaps mid-layout — the window
-        // server showed transient collapses). Instead the view MEASURES
-        // itself and streams its height per animation frame; the window just
-        // follows the stream. Top-aligned so content never re-centres while
-        // the window is momentarily a different size than the content.
-        // The panel height is arithmetic, not a geometry bridge: a
-        // RollCoordinator holds each section's natural height and live roll
-        // progress and hands back the exact window height. SwiftUI's own
-        // geometry reporting tracks growth but coalesces shrink, so the
-        // window could never follow a collapse through it.
-        let coord = RollCoordinator(sectionCount: 4)
-        coord.onHeight = { [weak self] h in self?.accountsPanelSetHeight(h) }
-        coord.onRollBegan = { [weak self] d in self?.rollBegan(d) }
-        accountsCoordinator = coord
-        // Top-aligned inside the window, explicitly: the window is often
-        // TALLER than the content now (that's the roll design), and
-        // SwiftUI's default is to CENTRE content in the proposal — which
-        // made the visible panel slide up and down as the shade moved.
+        // with NO hosting sizing options: the view measures itself
+        // post-layout and reports each discrete height (open, tab switch,
+        // account add/remove); the window matches, top edge pinned.
+        // Top-aligned explicitly: if the window is momentarily taller than
+        // the content, SwiftUI's default would CENTRE the content, making
+        // the visible panel slide around.
         let host = NSHostingController(rootView:
-            AccountsView(store: store, coordinator: coord)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top))
+            AccountsView(store: store, onHeightChange: { [weak self] h in
+                self?.applyPanelHeight(h)
+            })
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top))
         host.sizingOptions = []
         w.contentView = host.view
         accountsHost = host
-        lastEmittedHeight = nil
-        // The view seeds the coordinator with its own post-layout height
-        // (see AccountsView) and the coordinator drives every frame from
-        // there. A synchronous fittingSize here returns the unlaid
-        // placeholder, so it's deliberately not used to size the panel.
         w.isReleasedWhenClosed = false
         w.placeNearMenuBar(anchor: statusItem.button?.window?.frame)
         // Key, but WITHOUT activating the app: a borderless panel refuses key
