@@ -21,10 +21,11 @@ enum FlashEvent: String, CaseIterable, Identifiable {
         case .burn:   return "On Fire!"
         }
     }
+    /// Matches the sound rows' wording — reset/banked are Codex-only events.
     var displayName: String {
         switch self {
-        case .reset:  return "Limit reset early"
-        case .banked: return "Banked reset added"
+        case .reset:  return "Limit reset early (Codex)"
+        case .banked: return "Banked reset added (Codex)"
         case .burn:   return "Burning tokens"
         }
     }

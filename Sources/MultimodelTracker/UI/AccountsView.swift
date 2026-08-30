@@ -3,15 +3,19 @@ import SwiftUI
 /// Where accounts are added, nicknamed, signed in and removed.
 struct AccountsView: View {
     @ObservedObject var store: Store
+    /// Sizes the panel window from the sections' progress; see RollCoordinator.
+    let coordinator: RollCoordinator
     @ObservedObject private var sounds = Sounds.shared
 
     // Each settings subsection rolls up independently and remembers its
     // state across launches. The accounts list at the top deliberately has
-    // no such switch — it is the panel's reason to exist.
-    @AppStorage("mmt.collapse.menubar") private var menuBarCollapsed = false
-    @AppStorage("mmt.collapse.effects") private var effectsCollapsed = false
-    @AppStorage("mmt.collapse.flashes") private var flashesCollapsed = false
-    @AppStorage("mmt.collapse.sounds")  private var soundsCollapsed = false
+    // no such switch — it is the panel's reason to exist. One RollDriver per
+    // section owns the animation clock — see RollDriver for why SwiftUI's
+    // own animation machinery is not trusted with this.
+    @StateObject private var menuBarRoll = RollDriver(key: "mmt.collapse.menubar")
+    @StateObject private var effectsRoll = RollDriver(key: "mmt.collapse.effects")
+    @StateObject private var flashesRoll = RollDriver(key: "mmt.collapse.flashes")
+    @StateObject private var soundsRoll  = RollDriver(key: "mmt.collapse.sounds")
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -55,17 +59,17 @@ struct AccountsView: View {
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxHeight: 680)
             Divider()
-            SectionBar(title: "MENU BAR", collapsed: $menuBarCollapsed)
-            if !menuBarCollapsed { badgeSection }
+            SectionBar(title: "MENU BAR", roll: menuBarRoll)
+            Rollup(roll: menuBarRoll, coordinator: coordinator) { badgeSection }
             Divider()
-            SectionBar(title: "BAR EFFECTS", collapsed: $effectsCollapsed)
-            if !effectsCollapsed { deadBarSection }
+            SectionBar(title: "BAR EFFECTS", roll: effectsRoll)
+            Rollup(roll: effectsRoll, coordinator: coordinator) { deadBarSection }
             Divider()
-            SectionBar(title: "ALERT FLASHES", collapsed: $flashesCollapsed)
-            if !flashesCollapsed { flashSection }
+            SectionBar(title: "ALERT FLASHES", roll: flashesRoll)
+            Rollup(roll: flashesRoll, coordinator: coordinator) { flashSection }
             Divider()
-            SectionBar(title: "SOUNDS", collapsed: $soundsCollapsed)
-            if !soundsCollapsed { soundSection }
+            SectionBar(title: "SOUNDS", roll: soundsRoll)
+            Rollup(roll: soundsRoll, coordinator: coordinator) { soundSection }
         }
         .frame(width: 480)
         // The panel is borderless and clear, so the view carries the window's
@@ -88,7 +92,32 @@ struct AccountsView: View {
             // Belt and braces: drop any rect a destroyed row left behind.
             NSApp.windows.forEach { $0.discardCursorRects() }
         }
-        .onDisappear { NSCursor.arrow.set() }
+        .onAppear {
+            for d in [menuBarRoll, effectsRoll, flashesRoll, soundsRoll] { d.bind(coordinator) }
+        }
+        // ONE real total-height measurement, taken post-layout (a background
+        // GeometryReader's first value), so the coordinator can solve for
+        // chrome. Growth-only reporting is fine here: only the first value
+        // is used. A synchronous fittingSize at creation returned the unlaid
+        // placeholder height instead.
+        .background(GeometryReader { g in
+            Color.clear.onChange(of: g.size.height) { _, h in
+                coordinator.seedMeasuredHeight(h)
+            }
+            .onAppear { coordinator.seedMeasuredHeight(g.size.height) }
+        })
+        .onDisappear {
+            NSCursor.arrow.set()
+            for d in [menuBarRoll, effectsRoll, flashesRoll, soundsRoll] { d.invalidate() }
+        }
+        // --roll-test drives this; it must go through the identical animated
+        // path a SectionBar click takes or the measurement is meaningless.
+        .onReceive(NotificationCenter.default.publisher(for: .mmtRollTest)) { _ in
+            if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+                FileHandle.standardError.write("roll-test toggle, was open=\(effectsRoll.open)\n".data(using: .utf8)!)
+            }
+            effectsRoll.toggle()
+        }
     }
 
     /// Menu-bar appearance. Only the healthy colour is offered: amber at 75%
@@ -392,16 +421,142 @@ struct AccountRow: View {
 }
 
 
+/// Collects every section's stable natural height and live roll progress,
+/// and derives the panel window's height by arithmetic — because none of
+/// SwiftUI's geometry bridges track a shrink reliably (a GeometryReader in a
+/// window-filling host reports growth per-frame but coalesces shrink to its
+/// final value; fittingSize returns the unclamped ideal mid-roll). Progress
+/// is a number this code owns exactly, so the window height it implies is
+/// exact too: chrome (everything always visible) + Σ natural·progress.
+@MainActor
+final class RollCoordinator: ObservableObject {
+    /// The window owner installs this to receive each new height.
+    var onHeight: ((CGFloat) -> Void)?
+
+    private var naturals: [String: CGFloat] = [:]
+    private var progress: [String: Double] = [:]
+    /// chrome = measuredOpenHeight − Σ natural·progress at that measurement;
+    /// resolved once the first full layout height and all naturals are known.
+    private var chrome: CGFloat?
+    private var measuredHeight: CGFloat?
+    private let sectionCount: Int
+
+    init(sectionCount: Int) { self.sectionCount = sectionCount }
+
+    /// A section's content height (stable — content is fixedSize, so it does
+    /// not change as the section rolls).
+    func setNatural(_ h: CGFloat, for key: String) {
+        guard h > 1, naturals[key] != h else { return }
+        naturals[key] = h
+        resolveChromeIfPossible()
+        emit()
+    }
+
+    func setProgress(_ p: Double, for key: String) {
+        progress[key] = p
+        emit()
+    }
+
+    /// One real measurement of the whole content, taken when the panel opens.
+    func seedMeasuredHeight(_ h: CGFloat) {
+        guard measuredHeight == nil, h > 1 else { return }
+        measuredHeight = h
+        resolveChromeIfPossible()
+        emit()
+    }
+
+    private func resolveChromeIfPossible() {
+        guard chrome == nil, let measured = measuredHeight,
+              naturals.count >= sectionCount else { return }
+        let sections = naturals.reduce(0) { $0 + $1.value * (progress[$1.key] ?? 1) }
+        chrome = measured - sections
+    }
+
+    private func emit() {
+        guard let chrome else { return }
+        let sections = naturals.reduce(0) { $0 + $1.value * (progress[$1.key] ?? 1) }
+        onHeight?(chrome + sections)
+    }
+}
+
+/// Owns one section's roll animation: a 0→1 progress value eased on our own
+/// 60Hz clock and reported to the coordinator each tick. The SwiftUI shade
+/// and chevron read `progress` directly; the window height is arithmetic in
+/// the coordinator. Retargeting mid-roll just eases from wherever it is.
+@MainActor
+final class RollDriver: ObservableObject {
+    static let duration = 0.28
+
+    @Published private(set) var progress: Double   // 1 = open, 0 = rolled up
+    private(set) var open: Bool
+    private var timer: Timer?
+    private var active = false
+    private var from = 0.0, target = 0.0
+    private var start = Date()
+    let key: String
+    weak var coordinator: RollCoordinator?
+
+    /// `key` stores the COLLAPSED flag, matching the old @AppStorage keys so
+    /// existing preferences carry over.
+    init(key: String) {
+        self.key = key
+        open = !UserDefaults.standard.bool(forKey: key)
+        progress = open ? 1 : 0
+    }
+
+    func bind(_ c: RollCoordinator) {
+        coordinator = c
+        c.setProgress(progress, for: key)
+    }
+
+    func toggle() {
+        open.toggle()
+        UserDefaults.standard.set(!open, forKey: key)
+        from = progress
+        target = open ? 1.0 : 0.0
+        start = Date()
+        // One long-lived runloop Timer in .common mode, gated by `active`:
+        // invalidating and recreating it from inside its own async callback
+        // proved unreliable (a stale timer kept firing a runloop hop past
+        // invalidate). It's the same clock FlashController uses, which
+        // survives the preview TimelineViews saturating the display link.
+        active = true
+        if timer == nil {
+            let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.tick() }
+            }
+            timer = t
+            RunLoop.main.add(t, forMode: .common)
+        }
+    }
+
+    private func tick() {
+        guard active else { return }
+        let u = min(Date().timeIntervalSince(start) / Self.duration, 1)
+        let e = u < 0.5 ? 4 * u * u * u : 1 - pow(-2 * u + 2, 3) / 2   // cubic ease-in-out
+        progress = from + (target - from) * e
+        coordinator?.setProgress(progress, for: key)
+        if u >= 1 { progress = target; active = false }
+    }
+
+    /// Whole-view teardown: stop the clock so a closed panel leaves nothing
+    /// running.
+    func invalidate() { timer?.invalidate(); timer = nil; active = false }
+}
+
 /// A subsection's title bar: the label where the old header sat, and a
 /// roll-up handle — a compact chevron, centred in the bar the way a window
 /// shade's pull sits centred on its hem. The whole bar is the click target.
 struct SectionBar: View {
+    /// Kept as the shared name for the roll clock; the driver owns the value.
+    static let rollDuration = RollDriver.duration
+
     let title: String
-    @Binding var collapsed: Bool
+    @ObservedObject var roll: RollDriver
 
     var body: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.16)) { collapsed.toggle() }
+            roll.toggle()
         } label: {
             ZStack {
                 HStack {
@@ -409,16 +564,58 @@ struct SectionBar: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
-                Image(systemName: collapsed ? "chevron.compact.down" : "chevron.compact.up")
+                // One glyph rotating with the roll's own progress — a symbol
+                // swap mid-roll is a visible pop.
+                Image(systemName: "chevron.compact.up")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees((1 - roll.progress) * 180))
             }
             .padding(.horizontal, 16).padding(.vertical, 8)
             .background(Color.primary.opacity(0.04))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(collapsed ? "Show this section" : "Hide this section")
+        .help(roll.open ? "Hide this section" : "Show this section")
+    }
+}
+
+
+private struct RollupHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Rolls a section up like a window shade. The content stays in the
+/// hierarchy at its natural height while the container's height tracks the
+/// driver's progress, clipped — removal (`if !collapsed`) had nothing to
+/// interpolate, which is what made the first version lurch. The measured
+/// natural height also feeds the coordinator that sizes the window.
+struct Rollup<Content: View>: View {
+    @ObservedObject var roll: RollDriver
+    let coordinator: RollCoordinator
+    @ViewBuilder let content: Content
+    @State private var natural: CGFloat = 0
+
+    var body: some View {
+        content
+            // Keep the content at its ideal height whatever the clamp below
+            // proposes, so it slides behind the hem instead of squashing.
+            .fixedSize(horizontal: false, vertical: true)
+            .background(GeometryReader { g in
+                Color.clear.preference(key: RollupHeightKey.self, value: g.size.height)
+            })
+            .onPreferenceChange(RollupHeightKey.self) { h in
+                natural = h
+                coordinator.setNatural(h, for: roll.key)
+            }
+            .frame(height: natural > 0 ? natural * roll.progress
+                                       : (roll.open ? nil : 0),
+                   alignment: .top)
+            .clipped()
+            .opacity(roll.progress)
     }
 }
 
