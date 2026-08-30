@@ -477,6 +477,17 @@ final class RollCoordinator: ObservableObject {
         let sections = naturals.reduce(0) { $0 + $1.value * (progress[$1.key] ?? 1) }
         onHeight?(chrome + sections)
     }
+
+    /// The height the panel will need once `key`'s roll lands on `p` —
+    /// lets the window grow to its final size BEFORE an expand starts,
+    /// so nothing has to resize per frame.
+    func projectedHeight(overriding key: String, to p: Double) -> CGFloat? {
+        guard let chrome else { return nil }
+        var prog = progress
+        prog[key] = p
+        let sections = naturals.reduce(0) { $0 + $1.value * (prog[$1.key] ?? 1) }
+        return chrome + sections
+    }
 }
 
 /// Owns one section's roll animation: a 0→1 progress value eased on our own
@@ -527,13 +538,19 @@ final class RollDriver: ObservableObject {
     /// One display-link frame. Returns true when this roll has finished.
     func tickNow(_ now: Date) -> Bool {
         guard animating else { return true }
+        if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+            let dt = lastTick.map { now.timeIntervalSince($0) * 1000 } ?? 0
+            FileHandle.standardError.write("tick \(key) dt=\(String(format: "%.1f", dt))ms\n".data(using: .utf8)!)
+            lastTick = now
+        }
         let u = min(now.timeIntervalSince(start) / Self.duration, 1)
         let e = u < 0.5 ? 4 * u * u * u : 1 - pow(-2 * u + 2, 3) / 2   // cubic ease-in-out
         progress = from + (target - from) * e
         coordinator?.setProgress(progress, for: key)
-        if u >= 1 { progress = target; animating = false; return true }
+        if u >= 1 { progress = target; animating = false; lastTick = nil; return true }
         return false
     }
+    private var lastTick: Date?
 
     /// Whole-view teardown.
     func invalidate() { animating = false }

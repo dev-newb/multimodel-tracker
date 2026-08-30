@@ -632,7 +632,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         activeRolls = []
         accountsHost = nil
         accountsCoordinator = nil
-        lastPanelHeight = 0
+        lastEmittedHeight = nil
         accountsWindow = nil
         store.setUIVisible(popover.isShown)
     }
@@ -647,7 +647,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     /// Retains the panel's hosting controller — contentView alone doesn't.
     private var accountsHost: NSViewController?
     private var accountsCoordinator: RollCoordinator?
-    private var lastPanelHeight: CGFloat = 0
 
     /// The one clock for section rolls: a display link created from the
     /// panel window (so it runs at THAT display's refresh — 120 on
@@ -657,7 +656,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var activeRolls: [RollDriver] = []
 
     private func rollBegan(_ driver: RollDriver) {
+        if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+            FileHandle.standardError.write("roll-began \(driver.key) open=\(driver.open)\n".data(using: .utf8)!)
+        }
         if !activeRolls.contains(where: { $0 === driver }) { activeRolls.append(driver) }
+        // The window resizes ONCE per roll, never per frame — a per-frame
+        // setFrame forced the vibrancy backdrop to recomposite every tick,
+        // which is what actually dropped frames. The window is transparent,
+        // so an oversized window is invisible: grow to the roll's final
+        // height up front; a shrink waits until the roll finishes.
+        if let target = accountsCoordinator?.projectedHeight(overriding: driver.key,
+                                                             to: driver.open ? 1 : 0),
+           let w = accountsWindow, target > w.frame.height {
+            applyPanelHeight(target)
+        }
         guard rollLink == nil, let w = accountsWindow else { return }
         let link = w.displayLink(target: self, selector: #selector(rollLinkFired))
         link.add(to: .main, forMode: .common)
@@ -666,19 +678,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     @objc private func rollLinkFired() {
         let now = Date()
-        activeRolls.removeAll { $0.tickNow(now) }
-        if activeRolls.isEmpty { rollLink?.invalidate(); rollLink = nil }
+        // Tick a COPY: tickNow re-enters this object through the height
+        // callback, and mutating activeRolls while its own removeAll closure
+        // runs is an exclusivity violation (it trapped).
+        var anyFinished = false
+        for r in activeRolls where r.tickNow(now) { anyFinished = true }
+        guard anyFinished else { return }
+        activeRolls.removeAll { !$0.animating }
+        if activeRolls.isEmpty {
+            rollLink?.invalidate(); rollLink = nil
+            // Settle: the one shrink (or correction) for this roll.
+            if let h = lastEmittedHeight { applyPanelHeight(h) }
+        }
     }
 
-    /// Follows the view's measured-height stream, keeping the TOP edge where
-    /// it is — the panel hangs from the menu bar, so growth and shrink
-    /// happen at the bottom. No animation of its own: during a section roll
-    /// this is called once per frame with the shade's current height, so the
-    /// window edge and the content edge are the same motion by construction.
+    private var lastEmittedHeight: CGFloat?
+
+    /// Receives the coordinator's height stream. While a roll is running,
+    /// values are only recorded — the window was pre-sized by rollBegan and
+    /// settles once at the end. When idle (panel open, sections added or
+    /// removed, previews resizing), values apply directly.
     private func accountsPanelSetHeight(_ h: CGFloat) {
-        guard let w = accountsWindow, h > 1 else { return }
-        guard abs(h - lastPanelHeight) > 0.3 else { return }
-        lastPanelHeight = h
+        guard h > 1 else { return }
+        lastEmittedHeight = h
+        guard activeRolls.isEmpty else { return }
+        applyPanelHeight(h)
+    }
+
+    /// The actual resize, top edge pinned — the panel hangs from the menu
+    /// bar, so growth and shrink happen at the bottom.
+    private func applyPanelHeight(_ h: CGFloat) {
+        guard let w = accountsWindow, abs(w.frame.height - h) > 0.3 else { return }
         if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
             FileHandle.standardError.write(
                 "panel-h \(String(format: "%.3f", Date().timeIntervalSince1970)) \(Int(h))\n"
@@ -689,6 +719,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         f.size.height = h
         f.origin.y = top - h
         w.setFrame(f, display: true)
+        // A transparent window's shadow is computed from its drawn pixels;
+        // after the content's shape changed under a static frame, recompute
+        // once here rather than every frame.
+        w.invalidateShadow()
     }
 
     /// Live only while the Accounts panel is open.
@@ -896,7 +930,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         host.sizingOptions = []
         w.contentView = host.view
         accountsHost = host
-        lastPanelHeight = 0
+        lastEmittedHeight = nil
         // The view seeds the coordinator with its own post-layout height
         // (see AccountsView) and the coordinator drives every frame from
         // there. A synchronous fittingSize here returns the unlaid
