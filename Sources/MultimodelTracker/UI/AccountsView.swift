@@ -5,6 +5,13 @@ struct AccountsView: View {
     @ObservedObject var store: Store
     @ObservedObject private var sounds = Sounds.shared
 
+    // Each settings subsection rolls up independently and remembers its
+    // state across launches. The accounts list at the top deliberately has
+    // no such switch — it is the panel's reason to exist.
+    @AppStorage("mmt.collapse.menubar") private var menuBarCollapsed = false
+    @AppStorage("mmt.collapse.effects") private var effectsCollapsed = false
+    @AppStorage("mmt.collapse.sounds")  private var soundsCollapsed = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
@@ -47,11 +54,14 @@ struct AccountsView: View {
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxHeight: 680)
             Divider()
-            badgeSection
+            SectionBar(title: "MENU BAR", collapsed: $menuBarCollapsed)
+            if !menuBarCollapsed { badgeSection }
             Divider()
-            deadBarSection
+            SectionBar(title: "BAR EFFECTS", collapsed: $effectsCollapsed)
+            if !effectsCollapsed { deadBarSection }
             Divider()
-            soundSection
+            SectionBar(title: "SOUNDS", collapsed: $soundsCollapsed)
+            if !soundsCollapsed { soundSection }
         }
         .frame(width: 480)
         // The panel is borderless and clear, so the view carries the window's
@@ -81,8 +91,6 @@ struct AccountsView: View {
     /// and red at 90% stay on permanently.
     private var badgeSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("MENU BAR").font(.system(size: 10, weight: .bold)).tracking(0.8)
-                .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Numbers when healthy").font(.system(size: 12))
@@ -107,8 +115,6 @@ struct AccountsView: View {
     /// the user's own file, and has its own volume — matching I'm Burning!.
     private var soundSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("SOUNDS").font(.system(size: 10, weight: .bold)).tracking(0.8)
-                .foregroundStyle(.secondary)
             ForEach(SoundKind.allCases) { kind in
                 SoundRow(kind: kind, sounds: sounds)
             }
@@ -152,8 +158,6 @@ struct AccountsView: View {
     /// assignment is derived, so listing specific animations would be a lie.
     private var deadBarSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("BAR EFFECTS").font(.system(size: 10, weight: .bold)).tracking(0.8)
-                .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 Text("When several are dead").font(.system(size: 12))
                 Spacer()
@@ -337,6 +341,11 @@ struct AccountRow: View {
             Spacer()
             if account.provider != .google {
                 Button("Sign in", action: onSignIn).font(.system(size: 11))
+            } else {
+                // Same footprint as "Sign in", invisible: Google rows have no
+                // sign-in, and without the placeholder the nickname field ran
+                // past the margin every other row's field stops at.
+                Button("Sign in") {}.font(.system(size: 11)).hidden()
             }
             Button(role: .destructive, action: onRemove) {
                 Image(systemName: "trash").font(.system(size: 11))
@@ -345,6 +354,37 @@ struct AccountRow: View {
         .padding(.vertical, 6).padding(.horizontal, 10)
         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
         .onAppear { draft = account.nickname ?? "" }
+    }
+}
+
+
+/// A subsection's title bar: the label where the old header sat, and a
+/// roll-up handle — a compact chevron, centred in the bar the way a window
+/// shade's pull sits centred on its hem. The whole bar is the click target.
+struct SectionBar: View {
+    let title: String
+    @Binding var collapsed: Bool
+
+    var body: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.16)) { collapsed.toggle() }
+        } label: {
+            ZStack {
+                HStack {
+                    Text(title).font(.system(size: 10, weight: .bold)).tracking(0.8)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                Image(systemName: collapsed ? "chevron.compact.down" : "chevron.compact.up")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .background(Color.primary.opacity(0.04))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(collapsed ? "Show this section" : "Hide this section")
     }
 }
 
