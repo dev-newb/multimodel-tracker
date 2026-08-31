@@ -276,7 +276,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                     // Warping does NOT drive tracking areas; posting real
                     // mouseMoved events does, and tracking areas are what set
                     // these cursors. Step in so enter/exit fire on the way.
-                    let h = NSScreen.main?.frame.height ?? 1000
+                    // Flip against the PRIMARY screen (the one at origin) —
+                    // CG global coords are top-left of THAT display.
+                    // NSScreen.main is the key window's screen, which sent
+                    // the walk to the wrong monitor on multi-screen setups.
+                    let h = NSScreen.screens.first?.frame.height ?? 1000
                     for step in stride(from: 0.0, through: 1.0, by: 0.25) {
                         let y = pt.y + (1 - step) * 30
                         let ev = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
@@ -296,7 +300,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                         chain.append(String(describing: type(of: cur)))
                         v = cur.superview
                     }
-                    out += "  y-\(Int(dy)): system=\(name(NSCursor.currentSystem))"
+                    let loc = NSEvent.mouseLocation
+                    out += "  y-\(Int(dy)) at=\(Int(loc.x)),\(Int(loc.y)): system=\(name(NSCursor.currentSystem))"
                         + " want=\(want.map { $0 === NSCursor.iBeam ? "iBeam" : "arrow" } ?? "nil")"
                         + " hit=\(chain.joined(separator: "<"))\n"
                     // Flicker check: with the pointer still, sample fast. More
@@ -317,7 +322,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                         + " level=\(win.level.rawValue)"
                         + " frame=\(Int(fr.minX)),\(Int(fr.minY)) \(Int(fr.width))x\(Int(fr.height))\n"
                 }
-                let back = CGPoint(x: saved.x, y: (NSScreen.main?.frame.height ?? 1000) - saved.y)
+                let back = CGPoint(x: saved.x, y: (NSScreen.screens.first?.frame.height ?? 1000) - saved.y)
                 CGWarpMouseCursorPosition(back)
                 FileHandle.standardError.write(out.data(using: .utf8)!)
                 exit(0)
@@ -700,8 +705,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             DispatchQueue.main.async { self?.enforceCursor() }
         }
         let types: NSEvent.EventTypeMask = [.mouseMoved, .mouseEntered, .mouseExited, .cursorUpdate]
-        let local = NSEvent.addLocalMonitorForEvents(matching: types) { event in
-            apply(); return event
+        let local = NSEvent.addLocalMonitorForEvents(matching: types) { [weak self] event in
+            apply()
+            // Swallow cursorUpdate for OUR windows at the source. The panel
+            // already swallows in sendEvent, but the POPOVER's window was
+            // never protected — and AppKit quietly re-arms its cursor push
+            // machinery after window drags and resizes, which this app now
+            // does on every open and drill navigation. Eating the event here
+            // leaves the governor as the only cursor writer over our UI,
+            // whatever got re-armed.
+            if event.type == .cursorUpdate, let self,
+               let win = event.window,
+               win === self.accountsWindow
+                || win === self.popover?.contentViewController?.view.window {
+                return nil
+            }
+            return event
         }
         let global = NSEvent.addGlobalMonitorForEvents(matching: types) { _ in apply() }
         arrowMonitors = [local, global].compactMap { $0 }
@@ -743,6 +762,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     private func enforceCursor() {
+        // disableCursorRects is a COUNTED pair with enableCursorRects, and
+        // AppKit's own drag/resize handling calls enable internally — a
+        // single disable at open can silently wear off. Re-asserting here
+        // keeps the count pinned; it's a no-op when already disabled.
+        accountsWindow?.disableCursorRects()
+        popover?.contentViewController?.view.window?.disableCursorRects()
         guard let want = desiredCursor(at: NSEvent.mouseLocation) else { return }
         // Fingerprint by image bytes + hotspot — the probe's trick, promoted
         // to production, because identity comparison against currentSystem
