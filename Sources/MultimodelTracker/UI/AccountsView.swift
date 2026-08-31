@@ -66,11 +66,16 @@ struct AccountsView: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
             .padding(.bottom, 2)
-            switch configTab {
-            case .menuBar: badgeSection
-            case .effects: deadBarSection
-            case .flashes: flashSection
-            case .sounds:  soundSection
+            // Every pane stays mounted; only the selected one is visible.
+            // The ZStack therefore sizes to the TALLEST pane, so the tab
+            // area is the same height on every tab — the window never
+            // resizes on a switch and the accounts list above cannot move
+            // a pixel. Panes top-align inside the shared area.
+            ZStack(alignment: .top) {
+                tabPane(.menuBar) { badgeSection }
+                tabPane(.effects) { deadBarSection }
+                tabPane(.flashes) { flashSection }
+                tabPane(.sounds)  { soundSection }
             }
         }
         .frame(width: 480)
@@ -104,6 +109,16 @@ struct AccountsView: View {
                 .onChange(of: g.size.height) { _, h in onHeightChange?(h) }
         })
         .onDisappear { NSCursor.arrow.set() }
+    }
+
+    /// One tab pane: invisible and inert unless selected, but always laid
+    /// out, so the shared ZStack above holds its maximum size.
+    @ViewBuilder
+    private func tabPane<V: View>(_ tab: ConfigTab, @ViewBuilder _ content: () -> V) -> some View {
+        content()
+            .opacity(configTab == tab ? 1 : 0)
+            .allowsHitTesting(configTab == tab)
+            .accessibilityHidden(configTab != tab)
     }
 
     /// Menu-bar appearance. Only the healthy colour is offered: amber at 75%
@@ -158,8 +173,10 @@ struct AccountsView: View {
                                      selection: Binding(get: { store.flashPicks[event] ?? -1 },
                                                         set: { store.setFlashPick($0, for: event) }))
                     }
+                    // Animate only while this pane is the visible one — the
+                    // pane stays mounted on other tabs for sizing.
                     FlashPreviewBar(event: event, pick: store.flashPicks[event] ?? -1,
-                                    animating: store.uiVisible)
+                                    animating: store.uiVisible && configTab == .flashes)
                 }
             }
         }
