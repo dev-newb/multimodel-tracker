@@ -13,6 +13,9 @@ struct AccountsView: View {
     /// a back row — the panel is only ever as tall as what's being looked
     /// at. nil = the hub. Deliberately @State: each open starts at the hub.
     @State private var openSection: ConfigTab? = nil
+    /// Measured ideal height of the account rows, driving the rigid frame
+    /// on their scroll area.
+    @State private var accountsContentHeight: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -43,18 +46,25 @@ struct AccountsView: View {
                     }
                 }
                 .padding(16)
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: AccountsHeightKey.self, value: g.size.height)
+                })
             }
+            .onPreferenceChange(AccountsHeightKey.self) { accountsContentHeight = $0 }
             // No rubber-banding while everything fits: macOS lets a ScrollView
             // bounce even when content == bounds, so a two-finger drag made
             // this section wobble. basedOnSize kills that, and real scrolling
             // (and its bounce) returns only once the content overflows 680.
             .scrollBounceBehavior(.basedOnSize)
-            // fixedSize makes the ScrollView adopt its content's ideal height
-            // instead of stretching, so the window shrinks to what is actually
-            // there; maxHeight keeps a full twelve accounts from running off
-            // the screen, at which point it scrolls as before.
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxHeight: 680)
+            // A RIGID height — exactly the content, capped at 680 (where
+            // scrolling takes over). The previous `maxHeight:` frame was
+            // flexible: a tall window stretched it and CENTRED the account
+            // rows inside, and the stretch fed the measured height back to
+            // the window, which grew again — the panel self-inflated to
+            // maximum bloat. An explicit height can't stretch, so the
+            // accounts stay anchored to the top with zero slack.
+            .frame(height: accountsContentHeight > 0 ? min(accountsContentHeight, 680) : nil,
+                   alignment: .top)
             Divider()
             if let section = openSection {
                 VStack(alignment: .leading, spacing: 2) {
@@ -87,6 +97,11 @@ struct AccountsView: View {
             }
         }
         .frame(width: 480)
+        // Rigid overall: whatever height the window happens to be, this
+        // content holds its ideal height and hangs from the top — an
+        // oversized window shows transparent nothing below the panel, never
+        // stretched-out padding inside it.
+        .fixedSize(horizontal: false, vertical: true)
         // The panel is borderless and clear, so the view carries the window's
         // material and shape itself.
         .background(.regularMaterial)
@@ -450,6 +465,13 @@ struct AccountRow: View {
     }
 }
 
+
+private struct AccountsHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
 
 /// The settings sections reachable from the Config hub.
 enum ConfigTab: String, CaseIterable, Identifiable {
