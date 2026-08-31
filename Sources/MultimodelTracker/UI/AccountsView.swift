@@ -8,11 +8,11 @@ struct AccountsView: View {
     var onHeightChange: ((CGFloat) -> Void)? = nil
     @ObservedObject private var sounds = Sounds.shared
 
-    /// The settings below the accounts live behind tabs — one visible at a
-    /// time. (They used to roll up and down; the animation fought AppKit at
-    /// every turn and lost. Tabs need none.) The chosen tab persists.
-    @AppStorage("mmt.configTab") private var configTabRaw = ConfigTab.menuBar.rawValue
-    private var configTab: ConfigTab { ConfigTab(rawValue: configTabRaw) ?? .menuBar }
+    /// The settings below the accounts are a drill-in hub: four compact
+    /// rows, and opening one replaces the area with just that section plus
+    /// a back row — the panel is only ever as tall as what's being looked
+    /// at. nil = the hub. Deliberately @State: each open starts at the hub.
+    @State private var openSection: ConfigTab? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -56,26 +56,34 @@ struct AccountsView: View {
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxHeight: 680)
             Divider()
-            Picker("", selection: $configTabRaw) {
-                ForEach(ConfigTab.allCases) { tab in
-                    Text(tab.title).tag(tab.rawValue)
+            if let section = openSection {
+                VStack(alignment: .leading, spacing: 2) {
+                    Button {
+                        openSection = nil
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("Config").font(.system(size: 12))
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
+                    Text(section.title.uppercased())
+                        .font(.system(size: 10, weight: .bold)).tracking(0.8)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 8)
                 }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 2)
-            // Every pane stays mounted; only the selected one is visible.
-            // The ZStack therefore sizes to the TALLEST pane, so the tab
-            // area is the same height on every tab — the window never
-            // resizes on a switch and the accounts list above cannot move
-            // a pixel. Panes top-align inside the shared area.
-            ZStack(alignment: .top) {
-                tabPane(.menuBar) { badgeSection }
-                tabPane(.effects) { deadBarSection }
-                tabPane(.flashes) { flashSection }
-                tabPane(.sounds)  { soundSection }
+                .padding(.horizontal, 16).padding(.top, 12)
+                switch section {
+                case .menuBar: badgeSection
+                case .effects: deadBarSection
+                case .flashes: flashSection
+                case .sounds:  soundSection
+                }
+            } else {
+                settingsHub
             }
         }
         .frame(width: 480)
@@ -111,14 +119,35 @@ struct AccountsView: View {
         .onDisappear { NSCursor.arrow.set() }
     }
 
-    /// One tab pane: invisible and inert unless selected, but always laid
-    /// out, so the shared ZStack above holds its maximum size.
-    @ViewBuilder
-    private func tabPane<V: View>(_ tab: ConfigTab, @ViewBuilder _ content: () -> V) -> some View {
-        content()
-            .opacity(configTab == tab ? 1 : 0)
-            .allowsHitTesting(configTab == tab)
-            .accessibilityHidden(configTab != tab)
+    /// The hub: one compact row per settings section, iOS-Settings style —
+    /// tinted icon chip, label, chevron. ~130pt for all four, so the panel
+    /// at rest is barely taller than the accounts list.
+    private var settingsHub: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(ConfigTab.allCases) { section in
+                Button {
+                    openSection = section
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: section.icon)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 22, height: 22)
+                            .background(section.tint, in: RoundedRectangle(cornerRadius: 6))
+                        Text(section.title).font(.system(size: 12, weight: .medium))
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 7).padding(.horizontal, 10)
+                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(16)
     }
 
     /// Menu-bar appearance. Only the healthy colour is offered: amber at 75%
@@ -173,10 +202,8 @@ struct AccountsView: View {
                                      selection: Binding(get: { store.flashPicks[event] ?? -1 },
                                                         set: { store.setFlashPick($0, for: event) }))
                     }
-                    // Animate only while this pane is the visible one — the
-                    // pane stays mounted on other tabs for sizing.
                     FlashPreviewBar(event: event, pick: store.flashPicks[event] ?? -1,
-                                    animating: store.uiVisible && configTab == .flashes)
+                                    animating: store.uiVisible)
                 }
             }
         }
@@ -424,7 +451,7 @@ struct AccountRow: View {
 }
 
 
-/// Which settings tab is showing below the accounts list.
+/// The settings sections reachable from the Config hub.
 enum ConfigTab: String, CaseIterable, Identifiable {
     case menuBar, effects, flashes, sounds
     var id: String { rawValue }
@@ -434,6 +461,22 @@ enum ConfigTab: String, CaseIterable, Identifiable {
         case .effects: return "Bar Effects"
         case .flashes: return "Flashes"
         case .sounds:  return "Sounds"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .menuBar: return "menubar.rectangle"
+        case .effects: return "chart.bar.fill"
+        case .flashes: return "bolt.fill"
+        case .sounds:  return "speaker.wave.2.fill"
+        }
+    }
+    var tint: Color {
+        switch self {
+        case .menuBar: return Color(red: 0.24, green: 0.44, blue: 0.85)
+        case .effects: return Color(red: 0.56, green: 0.37, blue: 0.85)
+        case .flashes: return Color(red: 0.85, green: 0.58, blue: 0.24)
+        case .sounds:  return Color(red: 0.29, green: 0.62, blue: 0.42)
         }
     }
 }
