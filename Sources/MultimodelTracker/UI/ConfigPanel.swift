@@ -29,13 +29,20 @@ private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
+/// The hosting views are children of the material, so IT must be flipped
+/// too — otherwise its y=0 is the bottom and the top-down layout lands the
+/// accounts list under the hub.
+private final class FlippedEffectView: NSVisualEffectView {
+    override var isFlipped: Bool { true }
+}
+
 @MainActor
 final class ConfigPanelContainer: NSView {
     static let width: CGFloat = 480
     static let slideDuration = 0.12
     static let hubTag = "hub"
 
-    private let material = NSVisualEffectView()
+    private let material = FlippedEffectView()
     private let top: NSHostingView<AnyView>
     private let pagesClip = FlippedView()
     private let hub: NSHostingView<AnyView>
@@ -137,6 +144,11 @@ final class ConfigPanelContainer: NSView {
         hub.frame.size = NSSize(width: w, height: max(pageHeights[Self.hubTag] ?? 400, 1))
         for s in ConfigTab.allCases {
             pages[s]!.frame.size = NSSize(width: w, height: max(pageHeights[s.rawValue] ?? 900, 1))
+        }
+        if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+            FileHandle.standardError.write(
+                "layout top.y=\(Int(top.frame.minY)) pages.y=\(Int(pagesClip.frame.minY)) total=\(Int(topHeight + areaHeight))\n"
+                    .data(using: .utf8)!)
         }
         onHeightChange?(topHeight + areaHeight)
     }
