@@ -112,6 +112,17 @@ enum Keychain {
         var out: CFTypeRef?
         return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess ? out as? Data : nil
     }
+    /// First item matching the service, whatever its account attribute —
+    /// for OTHER apps' items (e.g. Claude Code's), whose account name is
+    /// theirs to choose and not ours to guess.
+    static func readAny(service: String) -> Data? {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrService as String: service,
+                                kSecReturnData as String: true,
+                                kSecMatchLimit as String: kSecMatchLimitOne]
+        var out: CFTypeRef?
+        return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess ? out as? Data : nil
+    }
     static func delete(service: String, account: String) {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrService as String: service,
@@ -191,5 +202,41 @@ enum CodexCLIImport {
         guard let d = Data(base64Encoded: b64),
               let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
         return obj
+    }
+}
+
+/// Adopts Claude Code's existing login for the first Anthropic account —
+/// the sibling of CodexCLIImport, with one deliberate difference: the
+/// refresh token is NEVER read or used. Claude Code rotates it, and
+/// consuming a rotating refresh token from outside can invalidate the CLI's
+/// own session. The access token is borrowed while fresh; when it expires,
+/// the CLI (which keeps its own copy current as it runs) is simply re-read.
+///
+/// On macOS the login lives in the keychain item "Claude Code-credentials"
+/// (a foreign item — the first read prompts until Always Allow, which
+/// sticks against this app's stable signature). ~/.claude/.credentials.json
+/// is the fallback shape used on other platforms and older installs.
+enum ClaudeCodeImport {
+    struct Creds { let accessToken: String; let expiresAt: Date? }
+
+    static func read() -> Creds? {
+        let blob = Keychain.readAny(service: "Claude Code-credentials")
+            ?? (try? Data(contentsOf: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".claude/.credentials.json")))
+        guard let blob,
+              let root = try? JSONSerialization.jsonObject(with: blob) as? [String: Any],
+              let oauth = root["claudeAiOauth"] as? [String: Any],
+              let access = oauth["accessToken"] as? String else { return nil }
+        // expiresAt is a JavaScript-style MILLISECOND epoch.
+        let expires = (oauth["expiresAt"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) }
+        return Creds(accessToken: access, expiresAt: expires)
+    }
+
+    /// Fresh enough to be worth storing — a margin past "not yet expired",
+    /// so a token about to die doesn't get adopted just in time to fail.
+    static func freshCreds() -> Creds? {
+        guard let c = read(),
+              (c.expiresAt ?? .distantFuture) > Date().addingTimeInterval(120) else { return nil }
+        return c
     }
 }

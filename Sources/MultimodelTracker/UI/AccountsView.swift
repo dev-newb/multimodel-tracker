@@ -67,26 +67,31 @@ struct AccountsView: View {
                    alignment: .top)
             Divider()
             // A push, iOS-style: the section slides in from the right while
-            // the hub slides out left, and the reverse on Back. These are
-            // offset+opacity transitions — render-layer, GPU-composited,
-            // vsync-paced — NOT the layout-height animation class that
-            // fought AppKit. The ZStack overlays the two pages during the
-            // hand-off and holds the taller height, so the window does its
-            // usual one grow at the start and one settle at the end.
+            // the hub slides out left, and the reverse on Back — pure
+            // offset+opacity, the GPU-composited render-layer class, never
+            // layout-height animation. Every page stays MOUNTED permanently
+            // and only its offset changes: the insertion/removal version
+            // built the incoming page (five live preview canvases for
+            // Flashes) between the click and the first animation frame,
+            // which is exactly the delay that was felt. The visible area
+            // holds the larger page's height for the slide, then settles.
             ZStack(alignment: .top) {
-                if let section = openSection {
-                    sectionPage(section)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .trailing).combined(with: .opacity)))
-                } else {
-                    settingsHub
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .leading).combined(with: .opacity),
-                            removal: .move(edge: .leading).combined(with: .opacity)))
+                page(settingsHub, tag: Self.hubTag,
+                     visible: openSection == nil, offEdge: -480)
+                ForEach(ConfigTab.allCases) { s in
+                    page(sectionPage(s), tag: s.rawValue,
+                         visible: openSection == s, offEdge: 480)
                 }
             }
+            .frame(height: pageAreaHeight > 0 ? pageAreaHeight : nil, alignment: .top)
             .clipped()
+            .onPreferenceChange(PageHeightsKey.self) { heights in
+                for (tag, h) in heights { pageHeights[tag] = h }
+                // Follow in-page growth (a picker revealing rows) live, but
+                // never mid-navigation — the area is deliberately held at
+                // the larger height until the slide lands.
+                if !navigating, let h = pageHeights[currentTag] { pageAreaHeight = h }
+            }
         }
         .frame(width: 480)
         // Rigid overall: whatever height the window happens to be, this
@@ -127,7 +132,51 @@ struct AccountsView: View {
     }
 
     /// The animation both navigation directions share.
-    static let pushCurve: Animation = .easeOut(duration: 0.18)
+    static let pushDuration = 0.12
+    static let pushCurve: Animation = .easeOut(duration: pushDuration)
+    static let hubTag = "hub"
+
+    @State private var pageHeights: [String: CGFloat] = [:]
+    @State private var pageAreaHeight: CGFloat = 0
+    @State private var navigating = false
+
+    private var currentTag: String { openSection?.rawValue ?? Self.hubTag }
+
+    /// One permanently mounted page: parked just off the given edge and
+    /// invisible when not current, so navigation only animates offsets —
+    /// nothing is built at click time.
+    private func page<V: View>(_ content: V, tag: String, visible: Bool,
+                               offEdge: CGFloat) -> some View {
+        content
+            // Hold ideal height even while the shared area is clamped
+            // shorter — pages slide behind the clip, never squash.
+            .fixedSize(horizontal: false, vertical: true)
+            .background(GeometryReader { g in
+                Color.clear.preference(key: PageHeightsKey.self, value: [tag: g.size.height])
+            })
+            .offset(x: visible ? 0 : offEdge)
+            .opacity(visible ? 1 : 0)
+            .allowsHitTesting(visible)
+            .accessibilityHidden(!visible)
+    }
+
+    /// Drives every hub/section move: pin the visible area to the larger of
+    /// the two pages, slide, then settle to the destination's height. The
+    /// area height itself changes with NO animation — height interpolation
+    /// is the class that fights AppKit.
+    private func navigate(to target: ConfigTab?) {
+        let toTag = target?.rawValue ?? Self.hubTag
+        let from = pageHeights[currentTag] ?? 0
+        let to = pageHeights[toTag] ?? 0
+        pageAreaHeight = max(from, to)
+        navigating = true
+        withAnimation(Self.pushCurve) { openSection = target }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pushDuration + 0.03) {
+            navigating = false
+            guard currentTag == toTag else { return }
+            if let h = pageHeights[toTag] { pageAreaHeight = h }
+        }
+    }
 
     /// One drilled-in page: back row, section title, and the section itself,
     /// as a single unit so the whole page slides together.
@@ -136,7 +185,7 @@ struct AccountsView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
                 Button {
-                    withAnimation(Self.pushCurve) { openSection = nil }
+                    navigate(to: nil)
                 } label: {
                     HStack(spacing: 3) {
                         Image(systemName: "chevron.left")
@@ -169,7 +218,7 @@ struct AccountsView: View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(ConfigTab.allCases) { section in
                 Button {
-                    withAnimation(Self.pushCurve) { openSection = section }
+                    navigate(to: section)
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: section.icon)
@@ -245,8 +294,10 @@ struct AccountsView: View {
                                      selection: Binding(get: { store.flashPicks[event] ?? -1 },
                                                         set: { store.setFlashPick($0, for: event) }))
                     }
+                    // Pages stay mounted for instant navigation; only the
+                    // visible one runs its preview clocks.
                     FlashPreviewBar(event: event, pick: store.flashPicks[event] ?? -1,
-                                    animating: store.uiVisible)
+                                    animating: store.uiVisible && openSection == .flashes)
                 }
             }
         }
@@ -349,6 +400,13 @@ struct AccountsView: View {
                     Button("Import Codex CLI") { store.importCodexCLI() }
                         .font(.system(size: 11))
                 }
+                if p == .anthropic && store.canAdd(.anthropic) {
+                    // Adopts Claude Code's own login — no browser round trip.
+                    // The first click may prompt for keychain access to the
+                    // CLI's item; Always Allow sticks.
+                    Button("Import Claude Code") { store.importClaudeCode() }
+                        .font(.system(size: 11))
+                }
                 if p == .google {
                     // The adapter reads the Antigravity/gemini-cli login that
                     // already lives on this Mac — importing IS the sign-in.
@@ -389,7 +447,7 @@ struct AccountsView: View {
 
     private func emptyHint(_ p: Provider) -> String {
         switch p {
-        case .anthropic: return "Add an account, then sign in with your browser."
+        case .anthropic: return "Import the Claude Code login, or add an account and sign in with your browser."
         case .openai:    return "Import the Codex CLI login, or add an account and sign in with your browser."
         case .google:    return "Import the Antigravity or gemini-cli login already on this Mac."
         }
@@ -493,6 +551,13 @@ struct AccountRow: View {
     }
 }
 
+
+private struct PageHeightsKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { max($0, $1) }
+    }
+}
 
 private struct AccountsHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0

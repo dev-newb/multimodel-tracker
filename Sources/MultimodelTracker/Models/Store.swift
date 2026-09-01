@@ -289,6 +289,23 @@ final class Store: ObservableObject {
         return a
     }
 
+    /// The Anthropic sibling of importCodexCLI: adopt Claude Code's login as
+    /// the first Claude account, no browser round trip. The stored creds
+    /// carry NO refresh token on purpose — see ClaudeCodeImport; when the
+    /// borrowed access token nears expiry, refresh() below re-reads the
+    /// CLI's own (self-refreshing) copy instead.
+    @discardableResult
+    func importClaudeCode() -> Account? {
+        guard canAdd(.anthropic), let creds = ClaudeCodeImport.freshCreds() else { return nil }
+        var a = Account(provider: .anthropic, label: "Claude Code")
+        Keychain.storeAnthropic(accessToken: creds.accessToken, refreshToken: nil,
+                                expiresAt: creds.expiresAt, for: a.id)
+        a.nickname = "Claude Code"
+        accounts.append(a); save()
+        Task { await refresh(a) }
+        return a
+    }
+
     /// Google's "sign-in": adopt the Antigravity or gemini-cli login already
     /// on this Mac. The adapter reads those sources directly at fetch time,
     /// so the account is a named slot rather than a credential holder — which
@@ -422,6 +439,17 @@ final class Store: ObservableObject {
            let creds = CodexCLIImport.read() {
             Keychain.storeOpenAI(accessToken: creds.accessToken,
                                  accountId: creds.accountId, for: a.id)
+        }
+        // The Claude Code import holds no refresh token by design; when its
+        // borrowed access token nears expiry, adopt the CLI's current copy —
+        // Claude Code refreshes its own login as it runs.
+        if a.provider == .anthropic, a.nickname == "Claude Code" {
+            let stored = try? await Keychain.anthropicCredentialsAsync(for: a.id)
+            let expiring = stored?.expiresAt.map { $0 <= Date().addingTimeInterval(120) } ?? true
+            if expiring, let cli = ClaudeCodeImport.freshCreds() {
+                Keychain.storeAnthropic(accessToken: cli.accessToken, refreshToken: nil,
+                                        expiresAt: cli.expiresAt, for: a.id)
+            }
         }
         do {
             let adapter: UsageAdapter = a.provider == .google
