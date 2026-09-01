@@ -66,35 +66,27 @@ struct AccountsView: View {
             .frame(height: accountsContentHeight > 0 ? min(accountsContentHeight, 680) : nil,
                    alignment: .top)
             Divider()
-            if let section = openSection {
-                VStack(alignment: .leading, spacing: 2) {
-                    Button {
-                        openSection = nil
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 10, weight: .semibold))
-                            Text("Config").font(.system(size: 12))
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                    Text(section.title.uppercased())
-                        .font(.system(size: 10, weight: .bold)).tracking(0.8)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 8)
+            // A push, iOS-style: the section slides in from the right while
+            // the hub slides out left, and the reverse on Back. These are
+            // offset+opacity transitions — render-layer, GPU-composited,
+            // vsync-paced — NOT the layout-height animation class that
+            // fought AppKit. The ZStack overlays the two pages during the
+            // hand-off and holds the taller height, so the window does its
+            // usual one grow at the start and one settle at the end.
+            ZStack(alignment: .top) {
+                if let section = openSection {
+                    sectionPage(section)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .trailing).combined(with: .opacity)))
+                } else {
+                    settingsHub
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .leading).combined(with: .opacity),
+                            removal: .move(edge: .leading).combined(with: .opacity)))
                 }
-                .padding(.horizontal, 16).padding(.top, 12)
-                switch section {
-                case .menuBar: badgeSection
-                case .effects: deadBarSection
-                case .flashes: flashSection
-                case .sounds:  soundSection
-                }
-            } else {
-                settingsHub
             }
+            .clipped()
         }
         .frame(width: 480)
         // Rigid overall: whatever height the window happens to be, this
@@ -134,6 +126,42 @@ struct AccountsView: View {
         .onDisappear { NSCursor.arrow.set() }
     }
 
+    /// The animation both navigation directions share.
+    static let pushCurve: Animation = .easeOut(duration: 0.18)
+
+    /// One drilled-in page: back row, section title, and the section itself,
+    /// as a single unit so the whole page slides together.
+    @ViewBuilder
+    private func sectionPage(_ section: ConfigTab) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 2) {
+                Button {
+                    withAnimation(Self.pushCurve) { openSection = nil }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("Config").font(.system(size: 12))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                Text(section.title.uppercased())
+                    .font(.system(size: 10, weight: .bold)).tracking(0.8)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 8)
+            }
+            .padding(.horizontal, 16).padding(.top, 12)
+            switch section {
+            case .menuBar: badgeSection
+            case .effects: deadBarSection
+            case .flashes: flashSection
+            case .sounds:  soundSection
+            }
+        }
+    }
+
     /// The hub: one compact row per settings section, iOS-Settings style —
     /// tinted icon chip, label, chevron. ~130pt for all four, so the panel
     /// at rest is barely taller than the accounts list.
@@ -141,7 +169,7 @@ struct AccountsView: View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(ConfigTab.allCases) { section in
                 Button {
-                    openSection = section
+                    withAnimation(Self.pushCurve) { openSection = section }
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: section.icon)
