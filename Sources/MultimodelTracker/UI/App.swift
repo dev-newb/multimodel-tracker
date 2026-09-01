@@ -513,6 +513,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.terminate(nil)
         }
 
+        // `--nav-test` opens the panel and drives hub -> Flashes -> hub through
+        // the container's real navigate(), so the slide's timing and the
+        // window's height steps can be read from MMT_DEBUG without a mouse.
+        if CommandLine.arguments.contains("--nav-test") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.openSettings() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                self?.accountsContainer?.navigate(to: .flashes)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.5) { [weak self] in
+                self?.accountsContainer?.navigate(to: nil)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 7) { exit(0) }
+        }
+
         // `--accounts` does the same for the Accounts window, which otherwise
         // is only reachable through a click inside the popover.
         if CommandLine.arguments.contains("--accounts") {
@@ -603,7 +617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         NSCursor.arrow.set()
         stopCursorGovernor()
         stopWatchingOutsideClick()
-        accountsHost = nil
+        accountsContainer = nil
         accountsWindow = nil
         store.setUIVisible(popover.isShown)
     }
@@ -615,8 +629,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     private var accountsWindow: NSWindow?
-    /// Retains the panel's hosting controller — contentView alone doesn't.
-    private var accountsHost: NSViewController?
+    /// The panel's content container; retained explicitly for clarity.
+    private var accountsContainer: ConfigPanelContainer?
 
     /// The actual resize, top edge pinned — the panel hangs from the menu
     /// bar, so growth and shrink happen at the bottom. Called for discrete
@@ -856,14 +870,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // Top-aligned explicitly: if the window is momentarily taller than
         // the content, SwiftUI's default would CENTRE the content, making
         // the visible panel slide around.
-        let host = NSHostingController(rootView:
-            AccountsView(store: store, onHeightChange: { [weak self] h in
-                self?.applyPanelHeight(h)
-            })
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top))
-        host.sizingOptions = []
-        w.contentView = host.view
-        accountsHost = host
+        // The panel's content is an AppKit container (ConfigPanel.swift):
+        // accounts list, hub and each settings page are separate hosting
+        // views, and navigation slides them with Core Animation. It reports
+        // its total height; the window matches it, top edge pinned.
+        let nav = ConfigNav()
+        let container = ConfigPanelContainer(store: store, nav: nav)
+        container.onHeightChange = { [weak self] h in self?.applyPanelHeight(h) }
+        container.autoresizingMask = [.width, .height]
+        w.contentView = container
+        accountsContainer = container
         w.isReleasedWhenClosed = false
         w.placeNearMenuBar(anchor: statusItem.button?.window?.frame)
         // Key, but WITHOUT activating the app: a borderless panel refuses key

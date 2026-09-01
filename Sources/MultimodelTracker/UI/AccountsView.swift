@@ -1,18 +1,13 @@
 import SwiftUI
 
-/// Where accounts are added, nicknamed, signed in and removed.
+/// The accounts list: where accounts are added, nicknamed, signed in and
+/// removed. Hosted at the top of ConfigPanelContainer; the settings pages
+/// below it are separate hosting views (see ConfigPanel.swift).
 struct AccountsView: View {
     @ObservedObject var store: Store
     /// Reports the content's height so the window owner can match it — a
     /// tab switch is one discrete resize, nothing animates.
     var onHeightChange: ((CGFloat) -> Void)? = nil
-    @ObservedObject private var sounds = Sounds.shared
-
-    /// The settings below the accounts are a drill-in hub: four compact
-    /// rows, and opening one replaces the area with just that section plus
-    /// a back row — the panel is only ever as tall as what's being looked
-    /// at. nil = the hub. Deliberately @State: each open starts at the hub.
-    @State private var openSection: ConfigTab? = nil
     /// Measured ideal height of the account rows, driving the rigid frame
     /// on their scroll area.
     @State private var accountsContentHeight: CGFloat = 0
@@ -66,32 +61,6 @@ struct AccountsView: View {
             .frame(height: accountsContentHeight > 0 ? min(accountsContentHeight, 680) : nil,
                    alignment: .top)
             Divider()
-            // A push, iOS-style: the section slides in from the right while
-            // the hub slides out left, and the reverse on Back — pure
-            // offset+opacity, the GPU-composited render-layer class, never
-            // layout-height animation. Every page stays MOUNTED permanently
-            // and only its offset changes: the insertion/removal version
-            // built the incoming page (five live preview canvases for
-            // Flashes) between the click and the first animation frame,
-            // which is exactly the delay that was felt. The visible area
-            // holds the larger page's height for the slide, then settles.
-            ZStack(alignment: .top) {
-                page(settingsHub, tag: Self.hubTag,
-                     visible: openSection == nil, offEdge: -480)
-                ForEach(ConfigTab.allCases) { s in
-                    page(sectionPage(s), tag: s.rawValue,
-                         visible: openSection == s, offEdge: 480)
-                }
-            }
-            .frame(height: pageAreaHeight > 0 ? pageAreaHeight : nil, alignment: .top)
-            .clipped()
-            .onPreferenceChange(PageHeightsKey.self) { heights in
-                for (tag, h) in heights { pageHeights[tag] = h }
-                // Follow in-page growth (a picker revealing rows) live, but
-                // never mid-navigation — the area is deliberately held at
-                // the larger height until the slide lands.
-                if !navigating, let h = pageHeights[currentTag] { pageAreaHeight = h }
-            }
         }
         .frame(width: 480)
         // Rigid overall: whatever height the window happens to be, this
@@ -99,17 +68,9 @@ struct AccountsView: View {
         // oversized window shows transparent nothing below the panel, never
         // stretched-out padding inside it.
         .fixedSize(horizontal: false, vertical: true)
-        // The panel is borderless and clear, so the view carries the window's
-        // material and shape itself.
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        // Double-click on empty space = "take me back to the tray". Controls
-        // (buttons, nickname fields) consume their own clicks, so only the
-        // background reaches this gesture.
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            NotificationCenter.default.post(name: .mmtShowTray, object: nil)
-        }
+        // Material, shape, double-click-to-tray and the settings pages all
+        // live in ConfigPanelContainer (AppKit); this view is the accounts
+        // list only.
         // Adding or removing an account rebuilds the rows underneath the
         // pointer. Any nickname field it was over loses its tracking area
         // mid-hover, leaving the I-beam stuck — reset on every change to the
@@ -131,178 +92,9 @@ struct AccountsView: View {
         .onDisappear { NSCursor.arrow.set() }
     }
 
-    /// The animation both navigation directions share.
-    static let pushDuration = 0.12
-    static let pushCurve: Animation = .easeOut(duration: pushDuration)
-    static let hubTag = "hub"
-
-    @State private var pageHeights: [String: CGFloat] = [:]
-    @State private var pageAreaHeight: CGFloat = 0
-    @State private var navigating = false
-
-    private var currentTag: String { openSection?.rawValue ?? Self.hubTag }
-
-    /// One permanently mounted page: parked just off the given edge and
-    /// invisible when not current, so navigation only animates offsets —
-    /// nothing is built at click time.
-    private func page<V: View>(_ content: V, tag: String, visible: Bool,
-                               offEdge: CGFloat) -> some View {
-        content
-            // Hold ideal height even while the shared area is clamped
-            // shorter — pages slide behind the clip, never squash.
-            .fixedSize(horizontal: false, vertical: true)
-            .background(GeometryReader { g in
-                Color.clear.preference(key: PageHeightsKey.self, value: [tag: g.size.height])
-            })
-            .offset(x: visible ? 0 : offEdge)
-            .opacity(visible ? 1 : 0)
-            .allowsHitTesting(visible)
-            .accessibilityHidden(!visible)
-    }
-
-    /// Drives every hub/section move: pin the visible area to the larger of
-    /// the two pages, slide, then settle to the destination's height. The
-    /// area height itself changes with NO animation — height interpolation
-    /// is the class that fights AppKit.
-    private func navigate(to target: ConfigTab?) {
-        let toTag = target?.rawValue ?? Self.hubTag
-        let from = pageHeights[currentTag] ?? 0
-        let to = pageHeights[toTag] ?? 0
-        pageAreaHeight = max(from, to)
-        navigating = true
-        withAnimation(Self.pushCurve) { openSection = target }
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pushDuration + 0.03) {
-            navigating = false
-            guard currentTag == toTag else { return }
-            if let h = pageHeights[toTag] { pageAreaHeight = h }
-        }
-    }
-
-    /// One drilled-in page: back row, section title, and the section itself,
-    /// as a single unit so the whole page slides together.
-    @ViewBuilder
-    private func sectionPage(_ section: ConfigTab) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 2) {
-                Button {
-                    navigate(to: nil)
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 10, weight: .semibold))
-                        Text("Config").font(.system(size: 12))
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
-                Text(section.title.uppercased())
-                    .font(.system(size: 10, weight: .bold)).tracking(0.8)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 8)
-            }
-            .padding(.horizontal, 16).padding(.top, 12)
-            switch section {
-            case .menuBar: badgeSection
-            case .effects: deadBarSection
-            case .flashes: flashSection
-            case .sounds:  soundSection
-            }
-        }
-    }
-
-    /// The hub: one compact row per settings section, iOS-Settings style —
-    /// tinted icon chip, label, chevron. ~130pt for all four, so the panel
-    /// at rest is barely taller than the accounts list.
-    private var settingsHub: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(ConfigTab.allCases) { section in
-                Button {
-                    navigate(to: section)
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: section.icon)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 22, height: 22)
-                            .background(section.tint, in: RoundedRectangle(cornerRadius: 6))
-                        Text(section.title).font(.system(size: 12, weight: .medium))
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.vertical, 7).padding(.horizontal, 10)
-                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(16)
-    }
-
-    /// Menu-bar appearance. Only the healthy colour is offered: amber at 75%
-    /// and red at 90% stay on permanently.
-    private var badgeSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Numbers when healthy").font(.system(size: 12))
-                    Text("Amber past 75% and red past 90% either way")
-                        .font(.system(size: 10)).foregroundStyle(.tertiary)
-                }
-                Spacer()
-                OptionPicker(width: Self.pickerWidth,
-                             options: Self.badgeOptions,
-                             selection: Binding(get: { store.badgeTinted },
-                                                set: { store.setBadgeTinted($0) }))
-            }
-        }
-        .padding(16)
-    }
-
     static let badgeOptions: [(Bool, String)] = [
         (true, "Vendor colours"), (false, "Plain white"),
     ]
-
-    /// The three alert sounds. Each is independently switchable, can point at
-    /// the user's own file, and has its own volume — matching I'm Burning!.
-    private var soundSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(SoundKind.allCases) { kind in
-                SoundRow(kind: kind, sounds: sounds)
-            }
-        }
-        .padding(16)
-    }
-
-    /// The menu-bar flash pickers: one per alert event, previewed the same
-    /// way the Flash Lab's inspection view showed them — a dark mock bar at
-    /// panel width with the effect looping in the badge's slot.
-    private var flashSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("The badge fades into the word for exactly as long as that alert's sound file runs.")
-                .font(.system(size: 10)).foregroundStyle(.tertiary)
-            ForEach(FlashEvent.allCases) { event in
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        Text(event.displayName).font(.system(size: 12))
-                        Spacer()
-                        OptionPicker(width: Self.pickerWidth,
-                                     options: Self.flashOptions(for: event),
-                                     selection: Binding(get: { store.flashPicks[event] ?? -1 },
-                                                        set: { store.setFlashPick($0, for: event) }))
-                    }
-                    // Pages stay mounted for instant navigation; only the
-                    // visible one runs its preview clocks.
-                    FlashPreviewBar(event: event, pick: store.flashPicks[event] ?? -1,
-                                    animating: store.uiVisible && openSection == .flashes)
-                }
-            }
-        }
-        .padding(16)
-    }
 
     static func flashOptions(for event: FlashEvent) -> [(Int, String)] {
         [(-1, "Cycle each flash")] + event.styleNames.enumerated().map { ($0.offset, $0.element) }
@@ -338,54 +130,6 @@ struct AccountsView: View {
         // can't push the controls off a 480pt panel.
         return min(max(widest.rounded(.up) + 40, 150), 250)
     }()
-
-    /// Bar-effect preferences. Each category picks a distribution first —
-    /// consistent across pools, or all different at once — and only the
-    /// consistent case shows an animation picker: with "all different" the
-    /// assignment is derived, so listing specific animations would be a lie.
-    private var deadBarSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Text("When several are dead").font(.system(size: 12))
-                Spacer()
-                OptionPicker(width: Self.pickerWidth, options: Self.distributionOptions,
-                             selection: Binding(get: { store.maxedVaried },
-                                                set: { store.setMaxedVaried($0) }))
-            }
-            if !store.maxedVaried {
-                HStack(spacing: 8) {
-                    Text("Dead animation").font(.system(size: 12)).foregroundStyle(.secondary)
-                    Spacer()
-                    OptionPicker(width: Self.pickerWidth, options: Self.deadOptions,
-                                 selection: Binding(get: { store.maxedFixed },
-                                                    set: { store.setMaxedFixed($0) }))
-                }
-                EffectPreviewRow(width: Self.pickerWidth) {
-                    DeadPreview(fixed: MaxedStyle(rawValue: store.maxedFixed))
-                }
-            }
-            HStack(spacing: 8) {
-                Text("When several are burning").font(.system(size: 12))
-                Spacer()
-                OptionPicker(width: Self.pickerWidth, options: Self.distributionOptions,
-                             selection: Binding(get: { store.burnVaried },
-                                                set: { store.setBurnVaried($0) }))
-            }
-            if !store.burnVaried {
-                HStack(spacing: 8) {
-                    Text("Burning animation").font(.system(size: 12)).foregroundStyle(.secondary)
-                    Spacer()
-                    OptionPicker(width: Self.pickerWidth, options: Self.burnOptions,
-                                 selection: Binding(get: { store.burnFixed },
-                                                    set: { store.setBurnFixed($0) }))
-                }
-                EffectPreviewRow(width: Self.pickerWidth) {
-                    BurnPreview(fixed: BurnStyle(rawValue: store.burnFixed))
-                }
-            }
-        }
-        .padding(16)
-    }
 
     private func providerBlock(_ p: Provider) -> some View {
         let accounts = store.accounts(for: p)
@@ -551,13 +295,6 @@ struct AccountRow: View {
     }
 }
 
-
-private struct PageHeightsKey: PreferenceKey {
-    static var defaultValue: [String: CGFloat] = [:]
-    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
-        value.merge(nextValue()) { max($0, $1) }
-    }
-}
 
 private struct AccountsHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0

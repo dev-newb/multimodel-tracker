@@ -871,7 +871,9 @@ struct FlashPreviewBar: View {
     private static let cycleSeconds = 4.0
 
     var body: some View {
-        TimelineView(.animation(paused: !animating)) { context in
+        // 30fps is plenty for a preview and a quarter of the main-thread
+        // cost: five of these run at once on the Flashes page.
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !animating)) { context in
             let t = context.date.timeIntervalSince(began)
             let style = pick >= 0 ? pick
                 : Int(t / Self.cycleSeconds) % FlashEvent.styleCount
