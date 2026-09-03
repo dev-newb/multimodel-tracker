@@ -29,12 +29,14 @@ extension Data {
 
 enum LoopbackError: LocalizedError {
     case portBusy
+    case listenTimeout(String)
     case cancelled
     case badCallback(String)
 
     var errorDescription: String? {
         switch self {
         case .portBusy:          return "The sign-in port is busy — retry in a moment."
+        case .listenTimeout(let s): return "The sign-in listener didn't start (\(s)). Try again."
         case .cancelled:         return "Sign-in was cancelled or timed out."
         case .badCallback(let s): return "Sign-in was rejected: \(s)"
         }
@@ -65,31 +67,57 @@ final class LoopbackCatcher: @unchecked Sendable {
         self.expectedState = expectedState
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
-        do {
-            if port == 0 {
-                listener = try NWListener(using: params)
-            } else {
-                guard let nwPort = NWEndpoint.Port(rawValue: port) else { throw LoopbackError.portBusy }
-                listener = try NWListener(using: params, on: nwPort)
-            }
-        } catch { throw LoopbackError.portBusy }
+        // Bind LOOPBACK ONLY. Listening on every interface made readiness
+        // depend on the whole network stack: with a VPN/Tailscale interface
+        // in flux the listener sat in .waiting forever, ready() never
+        // returned, and the browser never opened — no error, just nothing.
+        // The redirect targets localhost anyway.
+        let nwPort: NWEndpoint.Port
+        if port == 0 { nwPort = .any }
+        else { guard let p = NWEndpoint.Port(rawValue: port) else { throw LoopbackError.portBusy }; nwPort = p }
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: nwPort)
+        do { listener = try NWListener(using: params) } catch { throw LoopbackError.portBusy }
         listener.newConnectionHandler = { [weak self] conn in self?.handle(conn) }
         listener.stateUpdateHandler = { [weak self] state in
+            if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+                FileHandle.standardError.write("loopback state: \(state)\n".data(using: .utf8)!)
+            }
             switch state {
             case .ready:
                 self?.finishReady(.success(self?.listener.port?.rawValue ?? port))
             case .failed, .cancelled:
                 self?.finishReady(.failure(LoopbackError.portBusy))
+            case .waiting(let err):
+                // .waiting can resolve, but on loopback it shouldn't happen at
+                // all; the ready() timeout reports it if it sticks.
+                self?.lastWait = "\(err)"
             default: break
             }
         }
         listener.start(queue: .global(qos: .userInitiated))
     }
 
+    private var lastWait: String?
+
     /// Resolves once the socket is actually listening, with the bound port.
     /// Await this BEFORE opening the browser: a fast redirect into a port
-    /// that has not finished binding is silently lost.
+    /// that has not finished binding is silently lost. Bounded: a listener
+    /// that never reports ready must become an error the row can show, not
+    /// a silent hang with no browser.
     func ready() async throws -> UInt16 {
+        try await withThrowingTaskGroup(of: UInt16.self) { group in
+            group.addTask { try await self.readyValue() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(4))
+                throw LoopbackError.listenTimeout(self.lastWait ?? "no ready signal in 4s")
+            }
+            let v = try await group.next()!
+            group.cancelAll()
+            return v
+        }
+    }
+
+    private func readyValue() async throws -> UInt16 {
         try await withCheckedThrowingContinuation { cont in
             lock.lock()
             if let done = readyResult {

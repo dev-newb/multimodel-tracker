@@ -71,8 +71,13 @@ enum OpenAIParser {
             limits.append(.init(key: "resets", label: "Banked resets · \(n)",
                                 percent: nil, resetsAt: nil))
         }
-        return FetchedUsage(plan: root["plan_type"] as? String, limits: limits,
-                            bankedResets: banked)
+        var out = FetchedUsage(plan: root["plan_type"] as? String, limits: limits,
+                               bankedResets: banked)
+        // The payload names its owner; rows that never learned their email
+        // (a browser sign-in whose id_token lacked one, a recovered token)
+        // pick it up from here.
+        out.accountEmail = root["email"] as? String
+        return out
     }
 
     /// A window's identity and its human name, from its length. The key must

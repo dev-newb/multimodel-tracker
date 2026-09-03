@@ -54,6 +54,8 @@ enum AnthropicOAuth {
         defer { waiter.stop() }
         let port = try await waiter.ready()
         let redirect = "http://localhost:\(port)/callback"
+        let debug = ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil
+        if debug { FileHandle.standardError.write("oauth: listener ready on \(port)\n".data(using: .utf8)!) }
 
         var comps = URLComponents(string: authorizeURL)!
         comps.queryItems = [
@@ -66,7 +68,9 @@ enum AnthropicOAuth {
             .init(name: "code_challenge_method", value: "S256"),
             .init(name: "state", value: state),
         ]
-        NSWorkspace.shared.open(comps.url!)
+        let opened = NSWorkspace.shared.open(comps.url!)
+        if debug { FileHandle.standardError.write("oauth: browser open=\(opened)\n".data(using: .utf8)!) }
+        guard opened else { throw Failure.badResponse("the browser could not be opened") }
 
         let code = try await waiter.awaitCode()
         return try await post([

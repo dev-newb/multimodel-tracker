@@ -8,6 +8,8 @@ struct FetchedUsage {
     /// against the previous refresh — parsing it back out of a label would
     /// break the moment the wording changed.
     var bankedResets: Int?
+    /// Whose account the provider says this is, when it says.
+    var accountEmail: String?
 
     init(plan: String?, limits: [UsageLimit], bankedResets: Int? = nil) {
         self.plan = plan; self.limits = limits; self.bankedResets = bankedResets
@@ -109,13 +111,32 @@ struct AnthropicAdapter: UsageAdapter {
             live = try await refreshed(creds, account: account.id)
         }
         do {
-            return try await fetchOnce(live.accessToken)
+            return await withEmail(try await fetchOnce(live.accessToken), token: live.accessToken, account: account)
         } catch AdapterError.notSignedIn {
             // The token died early (revocation, clock skew) — one refresh,
             // one retry, then give up to the "Sign in" button.
             let renewed = try await refreshed(live, account: account.id)
-            return try await fetchOnce(renewed.accessToken)
+            return await withEmail(try await fetchOnce(renewed.accessToken), token: renewed.accessToken, account: account)
         }
+    }
+
+    /// Adds the token owner's email while the row still shows a placeholder
+    /// (a Claude Code import says "Claude Code"; a fresh browser sign-in may
+    /// not have returned one). One extra request, only until the label sticks.
+    private func withEmail(_ usage: FetchedUsage, token: String, account: Account) async -> FetchedUsage {
+        guard !account.label.contains("@") else { return usage }
+        var out = usage
+        var req = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/profile")!)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue(AnthropicOAuth.betaHeader, forHTTPHeaderField: "anthropic-beta")
+        if let (data, resp) = try? await URLSession.shared.data(for: req),
+           (resp as? HTTPURLResponse)?.statusCode == 200,
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let acct = obj["account"] as? [String: Any]
+            out.accountEmail = (acct?["email_address"] as? String) ?? (acct?["email"] as? String)
+                ?? (obj["email"] as? String)
+        }
+        return out
     }
 
     private func refreshed(_ creds: Keychain.AnthropicCreds,

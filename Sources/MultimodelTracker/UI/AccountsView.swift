@@ -209,33 +209,7 @@ struct AccountsView: View {
     /// Google has no sign-in at all — its "login" is importing the Antigravity
     /// or gemini-cli credentials already on this Mac.
     private func beginSignIn(_ account: Account) {
-        guard account.provider != .google else { return }
-        Task {
-            do {
-                let email: String?
-                switch account.provider {
-                case .openai:
-                    let t = try await OpenAIOAuth.signIn()
-                    Keychain.storeOpenAI(accessToken: t.accessToken, accountId: t.accountID,
-                                         refreshToken: t.refreshToken, for: account.id)
-                    email = t.email
-                case .anthropic:
-                    let t = try await AnthropicOAuth.signIn()
-                    Keychain.storeAnthropic(accessToken: t.accessToken,
-                                            refreshToken: t.refreshToken,
-                                            expiresAt: t.expiresAt, for: account.id)
-                    email = t.email
-                case .google:
-                    return
-                }
-                // The flow learns the email; put it on the row so the account
-                // is recognisable, like the Codex import does.
-                if let email { store.setLabel(email, for: account.id) }
-                await store.refresh(account)
-            } catch {
-                store.setError(error.localizedDescription, for: account.id)
-            }
-        }
+        Task { await store.signIn(account) }
     }
 }
 
@@ -275,6 +249,12 @@ struct AccountRow: View {
                     }
                 Text(account.subtitle ?? account.label)
                     .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+                // A sign-in that fails must say so HERE, where the button is —
+                // it used to be written only to the popover card, so a dead
+                // Sign in button looked like nothing had happened.
+                if let err = account.error {
+                    Text(err).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
+                }
             }
             Spacer()
             if account.provider != .google {

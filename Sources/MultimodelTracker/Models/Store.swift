@@ -289,6 +289,38 @@ final class Store: ObservableObject {
         return a
     }
 
+    /// The browser sign-in for a row — shared by the Sign in button and the
+    /// --add-anthropic debug flag. A failure lands on the row's error text
+    /// (shown in Config as well as the popover), never silently.
+    func signIn(_ account: Account) async {
+        guard account.provider != .google else { return }
+        setError(nil, for: account.id)
+        do {
+            let email: String?
+            switch account.provider {
+            case .openai:
+                let t = try await OpenAIOAuth.signIn()
+                Keychain.storeOpenAI(accessToken: t.accessToken, accountId: t.accountID,
+                                     refreshToken: t.refreshToken, for: account.id)
+                email = t.email
+            case .anthropic:
+                let t = try await AnthropicOAuth.signIn()
+                Keychain.storeAnthropic(accessToken: t.accessToken,
+                                        refreshToken: t.refreshToken,
+                                        expiresAt: t.expiresAt, for: account.id)
+                email = t.email
+            case .google:
+                return
+            }
+            // The flow learns the email; put it on the row so the account is
+            // recognisable, like the Codex import does.
+            if let email { setLabel(email, for: account.id) }
+            await refresh(account)
+        } catch {
+            setError(error.localizedDescription, for: account.id)
+        }
+    }
+
     /// The Anthropic sibling of importCodexCLI: adopt Claude Code's login as
     /// the first Claude account, no browser round trip. The stored creds
     /// carry NO refresh token on purpose — see ClaudeCodeImport; when the
@@ -400,6 +432,7 @@ final class Store: ObservableObject {
         guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
         accounts[i].limits = fetched.limits
         accounts[i].plan = fetched.plan
+        if fetched.label.contains("@") { accounts[i].label = fetched.label }
         accounts[i].error = fetched.error
         accounts[i].lastRefreshed = fetched.lastRefreshed
         save()
@@ -464,6 +497,9 @@ final class Store: ObservableObject {
             noteAlertTriggers(fetched: fetched, accountID: a.id)
             a.limits = markBurning(fetched: fetched.limits, accountID: a.id)
             a.plan = fetched.plan
+            // Providers report whose account this is; a row still wearing a
+            // placeholder ("OpenAI account 2", "Claude Code") takes the email.
+            if let email = fetched.accountEmail, !a.label.contains("@") { a.label = email }
             a.error = nil; a.lastRefreshed = Date()
         } catch {
             a.error = String(describing: error)

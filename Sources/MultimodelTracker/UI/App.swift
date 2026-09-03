@@ -527,6 +527,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             DispatchQueue.main.asyncAfter(deadline: .now() + 7) { exit(0) }
         }
 
+        // `--add-anthropic` adds a Claude row and runs the REAL browser sign-in
+        // for it, logging each step under MMT_DEBUG — the way to find where a
+        // sign-in that "does nothing" actually stops.
+        if CommandLine.arguments.contains("--add-anthropic") {
+            Task { @MainActor in
+                let n = store.accounts(for: .anthropic).count + 1
+                guard let a = store.add(.anthropic, label: "Anthropic account \(n)") else {
+                    FileHandle.standardError.write("add-anthropic: no free slot\n".data(using: .utf8)!); return
+                }
+                FileHandle.standardError.write("add-anthropic: row added, starting sign-in\n".data(using: .utf8)!)
+                await store.signIn(a)
+                let row = store.accounts.first { $0.id == a.id }
+                FileHandle.standardError.write(
+                    "add-anthropic: finished label=\(row?.label ?? "?") error=\(row?.error ?? "none")\n".data(using: .utf8)!)
+            }
+        }
+
         // `--accounts` does the same for the Accounts window, which otherwise
         // is only reachable through a click inside the popover.
         if CommandLine.arguments.contains("--accounts") {
