@@ -2,7 +2,8 @@ import SwiftUI
 import AppKit
 import WebKit
 
-/// Menu-bar-only app: no Dock icon, no main window. The status item shows one
+/// Menu-bar app: the Accounts window also appears when opened from Finder.
+/// The status item shows one
 /// badge per provider carrying that vendor's worst account, which is the bit
 /// of the reference design worth keeping — you read the numbers without
 /// opening anything.
@@ -53,6 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.action = #selector(togglePopover)
         statusItem.button?.target = self
+        statusItem.button?.image = NSImage(systemSymbolName: "gauge.medium", accessibilityDescription: "Multimodel Tracker")
+        statusItem.button?.imagePosition = .imageLeading
+        statusItem.button?.toolTip = "Multimodel Tracker — click to view usage"
+        statusItem.button?.setAccessibilityLabel("Multimodel Tracker")
         flash = FlashController(statusItem: statusItem)
 
         NotificationCenter.default.addObserver(forName: .mmtFlashAlert, object: nil,
@@ -546,11 +551,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
         // `--accounts` does the same for the Accounts window, which otherwise
         // is only reachable through a click inside the popover.
-        if CommandLine.arguments.contains("--accounts") {
+        // A normal Finder/Spotlight launch must be useful even if macOS hides
+        // the status item behind a crowded menu bar or the display notch.
+        // Keep --background available for explicitly silent startup.
+        if CommandLine.arguments.contains("--accounts") || !CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--") }) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                self?.openSettings()
+                self?.openFromApplication()
             }
         }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openFromApplication()
+        return false
+    }
+
+    private func openFromApplication() {
+        // Expose a Dock entry while the user is accessing Accounts; closing
+        // the panel restores the usual menu-bar-only behavior.
+        openSettings()
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// Compact per-provider badges: "A 66  O 17". Colour tracks severity, so a
@@ -637,6 +658,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         accountsContainer = nil
         accountsWindow = nil
         store.setUIVisible(popover.isShown)
+        NSApp.setActivationPolicy(.accessory)
     }
 
     func popoverDidClose(_ notification: Notification) {
@@ -868,6 +890,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let w = AccountsPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 720),
                               styleMask: [.borderless, .nonactivatingPanel],
                               backing: .buffered, defer: false)
+        w.title = "Multimodel Tracker — Accounts"
         // Draggable by its background: it has no title bar to grab, and a
         // sign-in window can land underneath it.
         w.isMovable = true

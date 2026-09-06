@@ -13,6 +13,13 @@ are readable without opening anything. Click it for the full breakdown:
 provider → account → pools, each pool with its percentage, bar and reset
 time.
 
+The menu-bar control has a gauge icon and a **Multimodel Tracker** tooltip,
+including before any account has usage data. If the menu bar is crowded or
+the icon is hidden by the display notch, open **Multimodel Tracker** from
+Applications or Spotlight to bring up Accounts. It appears in the Dock while
+that window is open; closing it returns to the menu bar. Use `--background`
+for a silent launch without opening Accounts.
+
 ## Install / build
 
 Requires macOS 14+ and Xcode command-line tools.
