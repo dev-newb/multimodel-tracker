@@ -25,9 +25,10 @@ final class Store: ObservableObject {
 
     init() {
         load()
-        // Seed ONLY when nothing has ever been stored. Seeding because a
-        // decode failed is how real accounts got overwritten by demo ones.
-        if accounts.isEmpty, UserDefaults.standard.data(forKey: defaultsKey) == nil { seedDemo() }
+        // No demo seed. A fresh install starts EMPTY: the badge shows the
+        // gauge and the popover offers each vendor's first action. The old
+        // seed ("personal@…" at 66%) predated the adapters and greeted every
+        // new user with plausible numbers for accounts that didn't exist.
         maxedStyle = Self.style(forViewing: UserDefaults.standard.integer(forKey: maxedViewsKey))
         burnCycleStyle = BurnStyle(rawValue:
             ((max(UserDefaults.standard.integer(forKey: "mmt.burnViews"), 1) - 1) / 3)
@@ -319,6 +320,17 @@ final class Store: ObservableObject {
         } catch {
             setError(error.localizedDescription, for: account.id)
         }
+    }
+
+    /// "Sign in with browser" from anywhere — the popover's first-run rows or
+    /// Config's Add: a new row for the provider, then its browser flow.
+    @discardableResult
+    func addAndSignIn(_ provider: Provider) -> Account? {
+        guard provider != .google else { return nil }
+        let n = accounts(for: provider).count + 1
+        guard let a = add(provider, label: "\(provider.displayName) account \(n)") else { return nil }
+        Task { await signIn(a) }
+        return a
     }
 
     /// The Anthropic sibling of importCodexCLI: adopt Claude Code's login as
@@ -709,18 +721,4 @@ final class Store: ObservableObject {
         }
     }
 
-    /// Until the adapters are wired, show the shape of the thing.
-    private func seedDemo() {
-        accounts = [
-            Account(provider: .anthropic, label: "personal@…", plan: "Max", limits: [
-                .init(key: "5h",     label: "5-hour limit",       percent: 11, resetsAt: Date().addingTimeInterval(720)),
-                .init(key: "weekly", label: "Weekly · all models", percent: 49, resetsAt: Date().addingTimeInterval(86_400)),
-                .init(key: "fable",  label: "Weekly · Fable",      percent: 66, resetsAt: Date().addingTimeInterval(86_400))
-            ], lastRefreshed: Date()),
-            Account(provider: .openai, label: "work@…", plan: "Pro", limits: [
-                .init(key: "codex",  label: "Codex · weekly", percent: 17, resetsAt: Date().addingTimeInterval(540_000)),
-                .init(key: "spark",  label: "Spark · weekly", percent: 0,  resetsAt: Date().addingTimeInterval(600_000))
-            ], lastRefreshed: Date())
-        ]
-    }
 }

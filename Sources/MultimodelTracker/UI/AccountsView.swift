@@ -198,9 +198,7 @@ struct AccountsView: View {
     }
 
     private func addAccount(_ p: Provider) {
-        let n = store.accounts(for: p).count + 1
-        guard let account = store.add(p, label: "\(p.displayName) account \(n)") else { return }
-        if p != .google { beginSignIn(account) }
+        store.addAndSignIn(p)
     }
 
     /// Both vendors sign in through the real browser: passkeys cannot work in

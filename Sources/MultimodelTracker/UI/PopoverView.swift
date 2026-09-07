@@ -19,6 +19,9 @@ struct PopoverView: View {
             // screen.
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    // First run: this is where a new user lands, so each
+                    // vendor's first action lives here, not behind Config.
+                    if store.accounts.isEmpty { FirstRunView(store: store) }
                     ForEach(Provider.allCases) { provider in
                         let accts = store.accounts(for: provider)
                         if !accts.isEmpty { section(provider, accts) }
@@ -108,7 +111,8 @@ struct PopoverView: View {
                             maxedOffset: store.maxedVaried ? maxedOffsets[account.id] ?? 0 : -1,
                             burnBase: store.effectiveBurnStyle,
                             burnOffset: store.burnVaried ? burningOffsets[account.id] ?? 0 : -1,
-                            animating: store.uiVisible)
+                            animating: store.uiVisible,
+                            onSignIn: { Task { await store.signIn(account) } })
                     .padding(.horizontal, 12)
             }
         }
@@ -145,6 +149,9 @@ struct AccountCard: View {
     /// -1 = consistent; otherwise this account's first burning bar's ordinal.
     var burnOffset: Int = -1
     var animating = true
+    /// Fix-it-where-you-see-it: an account whose sign-in lapsed gets its
+    /// Sign in button on the card that shows the error.
+    var onSignIn: (() -> Void)? = nil
 
     /// Style for the Nth dead bar in this card under the variety setting.
     /// Index arithmetic, not rawValue — the raw values have a hole where
@@ -221,7 +228,14 @@ struct AccountCard: View {
                     }
                 }
                 if let err = account.error {
-                    Text(err).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
+                    HStack(spacing: 8) {
+                        Text(err).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
+                        if let onSignIn, account.provider != .google,
+                           err.localizedCaseInsensitiveContains("sign") {
+                            Button("Sign in", action: onSignIn)
+                                .font(.system(size: 10)).controlSize(.small)
+                        }
+                    }
                 } else if account.limits.isEmpty {
                     Text("No data yet").font(.system(size: 10)).foregroundStyle(.tertiary)
                 } else {
@@ -338,4 +352,59 @@ struct LimitRow: View {
     }
 
     private var isMaxed: Bool { (limit.percent ?? 0) >= 100 }
+}
+
+
+/// The popover's empty state: no accounts yet. One row per vendor, each with
+/// its REAL first action — an import of a login already on this Mac where
+/// one exists, or the browser sign-in — because a lone "Sign in" button is
+/// ambiguous in a three-vendor app. Import failures say so right here.
+struct FirstRunView: View {
+    @ObservedObject var store: Store
+    @State private var note: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Add your first account")
+                .font(.system(size: 13, weight: .semibold))
+            Text("Usage limits show here and in the menu bar once an account is signed in — up to \(Provider.maxAccountsPerProvider) per vendor.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            ForEach(Provider.allCases) { p in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Circle().fill(p.accent).frame(width: 8, height: 8)
+                        Text(p.displayName).font(.system(size: 12, weight: .semibold))
+                    }
+                    HStack(spacing: 8) {
+                        switch p {
+                        case .anthropic:
+                            Button("Import Claude Code") {
+                                report(store.importClaudeCode() == nil
+                                       ? "No Claude Code login found on this Mac." : nil)
+                            }
+                            Button("Sign in with browser") { store.addAndSignIn(.anthropic) }
+                        case .openai:
+                            Button("Import Codex CLI") {
+                                report(store.importCodexCLI() == nil
+                                       ? "No Codex CLI login found on this Mac." : nil)
+                            }
+                            Button("Sign in with browser") { store.addAndSignIn(.openai) }
+                        case .google:
+                            Button("Import Antigravity / gemini-cli") {
+                                report(store.importGoogleCLI() == nil
+                                       ? "No Antigravity or gemini-cli login found on this Mac." : nil)
+                            }
+                        }
+                    }
+                    .font(.system(size: 11))
+                }
+            }
+            if let note {
+                Text(note).font(.system(size: 10)).foregroundStyle(.orange)
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func report(_ message: String?) { note = message }
 }

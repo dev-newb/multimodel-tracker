@@ -213,6 +213,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.terminate(nil)
         }
 
+        // `--render-firstrun <dir>` renders the popover's empty state offscreen.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-firstrun"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            let renderer = ImageRenderer(content:
+                FirstRunView(store: store).padding(.vertical, 12).frame(width: 340)
+                    .background(Color(red: 0.13, green: 0.13, blue: 0.14)))
+            renderer.scale = 2
+            if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+               let rep = NSBitmapImageRep(data: tiff),
+               let png = rep.representation(using: .png, properties: [:]) {
+                try? png.write(to: dir.appendingPathComponent("firstrun.png"))
+            }
+            NSApp.terminate(nil)
+        }
+
         // `--render-settings <dir>` renders the Accounts panel offscreen.
         // Screenshotting it competes with whatever Rich is doing on screen.
         if let i = CommandLine.arguments.firstIndex(of: "--render-settings"),
@@ -551,18 +567,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // `--accounts` does the same for the Accounts window, which otherwise
         // is only reachable through a click inside the popover.
         //
-        // The very FIRST launch also opens it, so a new user sees where
-        // accounts are added instead of an anonymous menu-bar item (from #1
-        // by @esmaesx, narrowed to first launch: a login-item start, or any
-        // later `open`, must stay silent). "First" = nothing ever stored and
-        // the flag unset, so existing installs never see it.
+        if CommandLine.arguments.contains("--accounts") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.openSettings()
+            }
+        }
+
+        // The very FIRST launch opens the POPOVER, whose empty state offers
+        // each vendor's first action — softer than the Config panel, same
+        // discoverability (idea from #1 by @esmaesx, narrowed to first launch:
+        // a login-item start, or any later `open`, stays silent). "First" =
+        // nothing ever stored and the flag unset, so existing installs never
+        // see it.
         let firstLaunch = UserDefaults.standard.data(forKey: "mmt.accounts.v1") == nil
             && !UserDefaults.standard.bool(forKey: "mmt.launchedBefore")
         UserDefaults.standard.set(true, forKey: "mmt.launchedBefore")
         let debugRun = CommandLine.arguments.dropFirst().contains { $0.hasPrefix("--") }
-        if CommandLine.arguments.contains("--accounts") || (firstLaunch && !debugRun) {
+        if firstLaunch && !debugRun {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                self?.openSettings()
+                self?.togglePopover()
             }
         }
     }
