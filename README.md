@@ -13,6 +13,13 @@ are readable without opening anything. Click it for the full breakdown:
 provider → account → pools, each pool with its percentage, bar and reset
 time.
 
+Until the first numbers arrive the item shows a small gauge icon, so a fresh
+install is identifiable; hovering it names the app either way. On the very
+first launch the Config panel opens by itself so you can add accounts, and
+at any later time — say the menu bar is crowded and macOS has hidden the
+item — opening **Multimodel Tracker** from Applications or Spotlight brings
+Config up again.
+
 ## Install / build
 
 Requires macOS 14+ and Xcode command-line tools.

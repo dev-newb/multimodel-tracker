@@ -53,6 +53,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.action = #selector(togglePopover)
         statusItem.button?.target = self
+        // Hovering names the app, and so does VoiceOver — the bare numbers
+        // (or the pre-data dash) never did. From #1 by @esmaesx.
+        statusItem.button?.toolTip = "Multimodel Tracker — click to view usage"
+        statusItem.button?.setAccessibilityLabel("Multimodel Tracker")
         flash = FlashController(statusItem: statusItem)
 
         NotificationCenter.default.addObserver(forName: .mmtFlashAlert, object: nil,
@@ -546,11 +550,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
         // `--accounts` does the same for the Accounts window, which otherwise
         // is only reachable through a click inside the popover.
-        if CommandLine.arguments.contains("--accounts") {
+        //
+        // The very FIRST launch also opens it, so a new user sees where
+        // accounts are added instead of an anonymous menu-bar item (from #1
+        // by @esmaesx, narrowed to first launch: a login-item start, or any
+        // later `open`, must stay silent). "First" = nothing ever stored and
+        // the flag unset, so existing installs never see it.
+        let firstLaunch = UserDefaults.standard.data(forKey: "mmt.accounts.v1") == nil
+            && !UserDefaults.standard.bool(forKey: "mmt.launchedBefore")
+        UserDefaults.standard.set(true, forKey: "mmt.launchedBefore")
+        let debugRun = CommandLine.arguments.dropFirst().contains { $0.hasPrefix("--") }
+        if CommandLine.arguments.contains("--accounts") || (firstLaunch && !debugRun) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 self?.openSettings()
             }
         }
+    }
+
+    /// Reopening from Finder, Spotlight or the Dock while already running
+    /// brings up Config — the recovery path when a crowded menu bar (or the
+    /// notch) hides the status item. From #1 by @esmaesx, kept accessory-only:
+    /// the panel shows without activating the app, and activating it is what
+    /// once made the panel hop Spaces and steal keystrokes.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openSettings()
+        return false
     }
 
     /// Compact per-provider badges: "A 66  O 17". Colour tracks severity, so a
@@ -573,10 +597,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             if i > 0 { joined.append(NSAttributedString(string: " ", attributes: attrs(.labelColor))) }
             joined.append(NSAttributedString(string: seg.text, attributes: attrs(seg.colour)))
         }
+        guard let button = statusItem.button else { return }
         if joined.length == 0 {
-            joined.append(NSAttributedString(string: "—"))
+            // Nothing to show yet: an anonymous "—" told a new user nothing.
+            // A gauge glyph identifies the item until the first numbers land
+            // (idea from #1 by @esmaesx). Deliberately NOT shown once there
+            // are numbers: the badge stays the compact text it was designed
+            // as, and it can never collide with the flash frames, which only
+            // play while there IS data.
+            button.image = NSImage(systemSymbolName: "gauge.medium",
+                                   accessibilityDescription: "Multimodel Tracker")
+            button.imagePosition = .imageOnly
+            button.attributedTitle = NSAttributedString(string: "")
+        } else {
+            // A refresh can land mid-flash; the flash owns the image then.
+            if flash?.isRunning != true {
+                button.image = nil
+                button.imagePosition = .noImage
+            }
+            button.attributedTitle = joined
         }
-        statusItem.button?.attributedTitle = joined
     }
 
     /// The badge's segments — one per provider with data. Amber at 75 and
@@ -868,6 +908,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let w = AccountsPanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 720),
                               styleMask: [.borderless, .nonactivatingPanel],
                               backing: .buffered, defer: false)
+        w.title = "Multimodel Tracker — Config"   // accessibility / Window menu
         // Draggable by its background: it has no title bar to grab, and a
         // sign-in window can land underneath it.
         w.isMovable = true
