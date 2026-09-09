@@ -215,6 +215,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.terminate(nil)
         }
 
+        // `--render-card <dir>` renders one account card offscreen, with the
+        // corner ✕ in both its resting and armed states.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-card"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            let acct = Account(provider: .anthropic, label: "sample@example.com", nickname: "Sample",
+                               plan: "Max", limits: [
+                .init(key: "5h", label: "5-hour limit", percent: 8, resetsAt: Date().addingTimeInterval(14_400)),
+                .init(key: "7d", label: "Weekly · all models", percent: 36, resetsAt: Date().addingTimeInterval(259_200)),
+            ], lastRefreshed: Date())
+            let renderer = ImageRenderer(content:
+                AccountCard(account: acct, accent: Provider.anthropic.accent, maxedStyle: .glitch,
+                            animating: false, onSignIn: {}, onRemove: {})
+                    .padding(12).frame(width: 340)
+                    .background(Color(red: 0.13, green: 0.13, blue: 0.14)))
+            renderer.scale = 2
+            if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+               let rep = NSBitmapImageRep(data: tiff),
+               let png = rep.representation(using: .png, properties: [:]) {
+                try? png.write(to: dir.appendingPathComponent("card.png"))
+            }
+            NSApp.terminate(nil)
+        }
+
         // `--render-firstrun <dir>` renders the popover's empty state offscreen.
         if let i = CommandLine.arguments.firstIndex(of: "--render-firstrun"),
            CommandLine.arguments.indices.contains(i + 1) {

@@ -133,7 +133,8 @@ struct PopoverView: View {
                             burnBase: store.effectiveBurnStyle,
                             burnOffset: store.burnVaried ? burningOffsets[account.id] ?? 0 : -1,
                             animating: store.uiVisible,
-                            onSignIn: { Task { await store.signIn(account) } })
+                            onSignIn: { Task { await store.signIn(account) } },
+                            onRemove: { store.remove(account.id) })
                     .padding(.horizontal, 12)
             }
         }
@@ -171,6 +172,48 @@ struct AccountCard: View {
     /// Fix-it-where-you-see-it: an account whose sign-in lapsed gets its
     /// Sign in button on the card that shows the error.
     var onSignIn: (() -> Void)? = nil
+    /// Remove the account from here, without a trip to Config.
+    var onRemove: (() -> Void)? = nil
+    @State private var confirmingRemove = false
+
+    /// A small ✕ in the card's corner. One click ARMS it — it becomes a red
+    /// "Remove" for three seconds — and a second click removes. Removal also
+    /// deletes the account's stored credentials (deliberately, so --recover
+    /// can't resurrect a deleted account), so a stray click in a popover you
+    /// open all day must not be enough on its own.
+    @ViewBuilder
+    private func removeControl(_ onRemove: @escaping () -> Void) -> some View {
+        if confirmingRemove {
+            Button {
+                onRemove()
+            } label: {
+                Text("Remove")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.red.opacity(0.14), in: Capsule())
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Click again to remove this account")
+            .task {
+                try? await Task.sleep(for: .seconds(3))
+                confirmingRemove = false
+            }
+        } else {
+            Button {
+                confirmingRemove = true
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Remove this account")
+        }
+    }
 
     /// Style for the Nth dead bar in this card under the variety setting.
     /// Index arithmetic, not rawValue — the raw values have a hole where
@@ -245,6 +288,7 @@ struct AccountCard: View {
                             .padding(.horizontal, 4).padding(.vertical, 1)
                             .background(Color.orange.opacity(0.14), in: Capsule())
                     }
+                    if let onRemove { removeControl(onRemove) }
                 }
                 if let err = account.error {
                     HStack(spacing: 8) {
