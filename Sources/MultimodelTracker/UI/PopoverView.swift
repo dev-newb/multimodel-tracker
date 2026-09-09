@@ -175,6 +175,7 @@ struct AccountCard: View {
     /// Remove the account from here, without a trip to Config.
     var onRemove: (() -> Void)? = nil
     @State private var confirmingRemove = false
+    @State private var hoveringRemove = false
 
     /// A small ✕ in the card's corner. One click ARMS it — it becomes a red
     /// "Remove" for three seconds — and a second click removes. Removal also
@@ -212,13 +213,18 @@ struct AccountCard: View {
                 Button {
                     withAnimation(Self.armCurve) { confirmingRemove = true }
                 } label: {
+                    // Rests quiet; under the pointer it brightens and gains a
+                    // faint disc, so it reads as live without shouting.
                     Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.primary.opacity(hoveringRemove ? 0.85 : 0.35))
                         .frame(width: 16, height: 16)
+                        .background(Color.primary.opacity(hoveringRemove ? 0.10 : 0), in: Circle())
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PressSquashStyle())
+                .onHover { hoveringRemove = $0 }
+                .animation(.easeOut(duration: 0.12), value: hoveringRemove)
                 .help("Remove this account")
                 .transition(.scale(scale: 0.5).combined(with: .opacity))
             }
