@@ -183,37 +183,50 @@ struct AccountCard: View {
     /// open all day must not be enough on its own.
     @ViewBuilder
     private func removeControl(_ onRemove: @escaping () -> Void) -> some View {
-        if confirmingRemove {
-            Button {
-                onRemove()
-            } label: {
-                Text("Remove")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Color.red.opacity(0.14), in: Capsule())
-                    .contentShape(Rectangle())
+        // Both states share one trailing-anchored ZStack so the hand-off is a
+        // crossfade in place: the ✕ squashes on press and dissolves while the
+        // pill grows out of the same corner. Render-layer animation only —
+        // opacity and scale — which is the kind that stays smooth here.
+        ZStack(alignment: .trailing) {
+            if confirmingRemove {
+                Button {
+                    onRemove()
+                } label: {
+                    Text("Remove")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.red.opacity(0.14), in: Capsule())
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressSquashStyle())
+                .help("Click again to remove this account")
+                .transition(.asymmetric(
+                    insertion: .scale(scale: 0.6, anchor: .trailing).combined(with: .opacity),
+                    removal: .scale(scale: 0.8, anchor: .trailing).combined(with: .opacity)))
+                .task {
+                    try? await Task.sleep(for: .seconds(3))
+                    withAnimation(Self.armCurve) { confirmingRemove = false }
+                }
+            } else {
+                Button {
+                    withAnimation(Self.armCurve) { confirmingRemove = true }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressSquashStyle())
+                .help("Remove this account")
+                .transition(.scale(scale: 0.5).combined(with: .opacity))
             }
-            .buttonStyle(.plain)
-            .help("Click again to remove this account")
-            .task {
-                try? await Task.sleep(for: .seconds(3))
-                confirmingRemove = false
-            }
-        } else {
-            Button {
-                confirmingRemove = true
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 16, height: 16)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Remove this account")
         }
+        .frame(height: 18)
     }
+
+    private static let armCurve: Animation = .spring(response: 0.28, dampingFraction: 0.78)
 
     /// Style for the Nth dead bar in this card under the variety setting.
     /// Index arithmetic, not rawValue — the raw values have a hole where
@@ -470,4 +483,17 @@ struct FirstRunView: View {
     }
 
     private func report(_ message: String?) { note = message }
+}
+
+
+/// Press feedback for tiny controls: the label squashes while the mouse is
+/// down and springs back on release, so the click is acknowledged before
+/// anything else happens.
+struct PressSquashStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.78 : 1)
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .animation(.spring(response: 0.18, dampingFraction: 0.6), value: configuration.isPressed)
+    }
 }
