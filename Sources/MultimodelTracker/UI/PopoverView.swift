@@ -81,9 +81,30 @@ struct PopoverView: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text("Multimodel Tracker").font(.system(size: 14, weight: .semibold))
+            // Refresh lives up here as an icon, beside the name it refreshes.
+            Button {
+                Task { await store.refreshAll() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(store.isRefreshing)
+            .help("Refresh now")
             Spacer()
             if store.isRefreshing {
                 ProgressView().controlSize(.small)
+            } else if store.offline {
+                // One calm note for an outage, not an NSURLError on every
+                // card — the cards keep their last numbers underneath.
+                Text("Offline — retrying")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 5).padding(.vertical, 1.5)
+                    .background(Color.orange.opacity(0.14), in: Capsule())
             } else {
                 Text(store.lastRefresh.map(Self.ago) ?? "never")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -120,8 +141,6 @@ struct PopoverView: View {
 
     private var footer: some View {
         HStack(spacing: 14) {
-            Button("Refresh") { Task { await store.refreshAll() } }
-                .buttonStyle(.plain).font(.system(size: 12, weight: .medium))
             Button("Config…") { NSApp.sendAction(#selector(AppDelegate.openSettings), to: nil, from: nil) }
                 .buttonStyle(.plain).font(.system(size: 12))
             Spacer()

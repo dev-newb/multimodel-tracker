@@ -15,7 +15,16 @@ final class Store: ObservableObject {
     @Published private(set) var uiVisible = false
     func setUIVisible(_ v: Bool) { if uiVisible != v { uiVisible = v } }
     @Published private(set) var isRefreshing = false
+    /// When data last actually ARRIVED. An outage leaves it standing — the
+    /// stale chip counts from it — rather than stamping "just now" on a pass
+    /// that fetched nothing.
     @Published private(set) var lastRefresh: Date?
+    /// The last pass reached no provider at all for network reasons. Shown
+    /// once, in the popover header, instead of a verbose NSURLError on every
+    /// card — and the cards keep their last numbers.
+    @Published private(set) var offline = false
+    private var passSuccesses = 0
+    private var passConnectivityFailures = 0
 
     private let defaultsKey = "mmt.accounts.v1"
     private let maxedViewsKey = "mmt.maxedViews"
@@ -457,8 +466,16 @@ final class Store: ObservableObject {
         guard !isRefreshing else { return }
         isRefreshing = true
         pendingEarlyReset = false; pendingBanked = false; pendingLimitReached = false
+        passSuccesses = 0; passConnectivityFailures = 0
         defer {
-            isRefreshing = false; lastRefresh = Date()
+            isRefreshing = false
+            if passSuccesses > 0 { lastRefresh = Date() }
+            offline = passSuccesses == 0 && passConnectivityFailures > 0
+            if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+                FileHandle.standardError.write(
+                    "pass: ok=\(passSuccesses) network-failures=\(passConnectivityFailures) offline=\(offline)\n"
+                        .data(using: .utf8)!)
+            }
             fireAlertSounds()
         }
         pruneBurnHistory()
@@ -513,10 +530,41 @@ final class Store: ObservableObject {
             // placeholder ("OpenAI account 2", "Claude Code") takes the email.
             if let email = fetched.accountEmail, !a.label.contains("@") { a.label = email }
             a.error = nil; a.lastRefreshed = Date()
+            passSuccesses += 1
         } catch {
-            a.error = String(describing: error)
+            if Self.isConnectivity(error) {
+                // Not this account's fault. Keep its last numbers (the stale
+                // chip dates them) and let refreshAll report the outage once.
+                passConnectivityFailures += 1
+            } else {
+                a.error = Self.friendlyMessage(for: error)
+            }
         }
         applyFetched(a, to: account.id)
+    }
+
+    /// "The network is down", as opposed to "this account is broken": the
+    /// NSURLError codes for no route / no DNS / lost connection / timeout,
+    /// plus what the legacy WebKit path says when its in-page fetch fails.
+    static func isConnectivity(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain,
+           [NSURLErrorNotConnectedToInternet, NSURLErrorTimedOut, NSURLErrorCannotFindHost,
+            NSURLErrorCannotConnectToHost, NSURLErrorNetworkConnectionLost,
+            NSURLErrorDNSLookupFailed, NSURLErrorInternationalRoamingOff,
+            NSURLErrorDataNotAllowed].contains(ns.code) {
+            return true
+        }
+        let text = String(describing: error)
+        return text.contains("Load failed") || text.contains("offline")
+            || text.contains("no response")
+    }
+
+    /// What a row shows for a real failure — never a raw NSError dump.
+    static func friendlyMessage(for error: Error) -> String {
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain { return ns.localizedDescription }
+        return String(describing: error)
     }
 
     /// An early clear is a pool that fell from full-ish to empty while the

@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WebKit
+import Network
 
 /// Menu-bar-only app: no Dock icon, no main window. The status item shows one
 /// badge per provider carrying that vendor's worst account, which is the bit
@@ -101,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             }
         }
         Task { @MainActor in await store.refreshAll(); renderBadges() }
+        startConnectivityWatch()
 
         if CommandLine.arguments.contains("--bridge-test") {
             Task { @MainActor in
@@ -598,6 +600,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         openSettings()
         return false
+    }
+
+    // MARK: connectivity-driven refresh
+    private var pathMonitor: NWPathMonitor?
+    private var pathWasSatisfied = true
+    private var nudgeTimer: Timer?
+
+    /// The 3-minute timer is the wrong clock for waking up. macOS fires the
+    /// missed tick the instant the lid opens — before Wi-Fi is back — so
+    /// every fetch fails offline and the next real attempt is three minutes
+    /// away. Instead: refresh the moment the network path becomes usable
+    /// (wake, Wi-Fi rejoin, VPN up), plus a belt-and-braces wake hook, and
+    /// keep nudging every 20s while a pass still comes back offline (the
+    /// path can report "satisfied" before DNS and routes actually work).
+    private func startConnectivityWatch() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let ok = path.status == .satisfied
+            Task { @MainActor in
+                guard let self else { return }
+                let was = self.pathWasSatisfied
+                self.pathWasSatisfied = ok
+                if ok && !was { self.refreshSoon(after: 1.5) }
+            }
+        }
+        monitor.start(queue: DispatchQueue(label: "com.devnewb.multimodeltracker.path"))
+        pathMonitor = monitor
+
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.refreshSoon(after: 3) }
+        }
+    }
+
+    private func refreshSoon(after seconds: TimeInterval) {
+        nudgeTimer?.invalidate()
+        nudgeTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                await self.store.refreshAll()
+                self.renderBadges()
+                if self.store.offline { self.refreshSoon(after: 20) }
+            }
+        }
     }
 
     /// Compact per-provider badges: "A 66  O 17". Colour tracks severity, so a

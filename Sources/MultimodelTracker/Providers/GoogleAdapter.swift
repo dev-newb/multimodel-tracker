@@ -184,10 +184,17 @@ struct GoogleAdapterImpl: UsageAdapter {
         var access: String?
         if let refresh = blob.refreshToken {
             for client in GeminiOAuthClient.candidates() {
-                if let t = try? await exchange(refresh: refresh, client: client) {
+                do {
+                    access = try await exchange(refresh: refresh, client: client)
                     GeminiOAuthClient.winner = client
-                    access = t
                     break
+                } catch AdapterError.notSignedIn {
+                    continue      // wrong client for this token — try the next
+                } catch {
+                    // A network failure is NOT a sign-in problem. Swallowing it
+                    // here (the old `try?`) is what showed "Not signed in" on
+                    // the Google row every time the Mac woke before Wi-Fi.
+                    throw error
                 }
             }
         }
@@ -210,8 +217,12 @@ struct GoogleAdapterImpl: UsageAdapter {
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         req.httpBody = ("client_id=\(client.id)&client_secret=\(client.secret)"
                         + "&refresh_token=\(refresh)&grant_type=refresh_token").data(using: .utf8)
+        // URLSession errors (offline, DNS, timeout) propagate as themselves.
         let (d, r) = try await URLSession.shared.data(for: req)
-        guard (r as? HTTPURLResponse)?.statusCode == 200,
+        guard let http = r as? HTTPURLResponse else { throw AdapterError.transport("no response") }
+        // Anything but 200 here means this client id can't redeem the token
+        // (or the grant is dead) — the caller moves to the next candidate.
+        guard http.statusCode == 200,
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
               let t = o["access_token"] as? String else { throw AdapterError.notSignedIn }
         return t
