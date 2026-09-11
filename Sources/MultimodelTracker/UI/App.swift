@@ -216,6 +216,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.terminate(nil)
         }
 
+        // `--render-rollup <dir>` renders a 3-account vendor section offscreen:
+        // one card expanded (the worst), two rolled up — the roll-up rows look.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-rollup"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            func acct(_ n: String, _ e: String, _ p: [Double]) -> Account {
+                Account(provider: .anthropic, label: e, nickname: n, plan: "Max", limits: [
+                    .init(key: "5h", label: "5-hour limit", percent: p[0], resetsAt: Date().addingTimeInterval(14_400)),
+                    .init(key: "7d", label: "Weekly · all models", percent: p[1], resetsAt: Date().addingTimeInterval(259_200)),
+                    .init(key: "fable", label: "Weekly · Fable", percent: p[2], resetsAt: Date().addingTimeInterval(259_200)),
+                ], lastRefreshed: Date())
+            }
+            let rows: [(Account, Bool)] = [
+                (acct("Rich's Claude", "rmcquail@gmail.com", [8, 5, 9]), false),
+                (acct("Work", "rich@company.com", [91, 74, 40]), true),
+                (acct("Lab", "lab@lumina-x.dev", [12, 22, 18]), false),
+            ]
+            let view = VStack(alignment: .leading, spacing: 8) {
+                ForEach(rows.indices, id: \.self) { i in
+                    AccountCard(account: rows[i].0, accent: Provider.anthropic.accent, maxedStyle: .glitch,
+                                animating: false, onSignIn: {}, onRemove: {},
+                                collapsible: true, expanded: rows[i].1, onToggle: {})
+                }
+            }
+            .padding(12).frame(width: 340)
+            .background(Color(red: 0.13, green: 0.13, blue: 0.14))
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 2
+            if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+               let rep = NSBitmapImageRep(data: tiff),
+               let png = rep.representation(using: .png, properties: [:]) {
+                try? png.write(to: dir.appendingPathComponent("rollup.png"))
+            }
+            NSApp.terminate(nil)
+        }
+
         // `--render-card <dir>` renders one account card offscreen, with the
         // corner ✕ in both its resting and armed states.
         if let i = CommandLine.arguments.firstIndex(of: "--render-card"),

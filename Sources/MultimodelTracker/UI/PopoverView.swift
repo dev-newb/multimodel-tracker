@@ -6,7 +6,18 @@ import SwiftUI
 /// doing the work its section headers can't at this density.
 struct PopoverView: View {
     @ObservedObject var store: Store
-    @State private var expanded: Set<UUID> = []
+    /// Roll-up rows: for a vendor with 2+ accounts, each account is a
+    /// one-line summary that expands in place to the full card. Explicit
+    /// choices live here for the app's lifetime; anything unchosen follows
+    /// the default (the vendor's worst account open, the rest rolled up).
+    @State private var expandChoice: [UUID: Bool] = [:]
+
+    private func isExpanded(_ account: Account, in accounts: [Account]) -> Bool {
+        if accounts.count < 2 { return true }          // a lone card never rolls up
+        if let c = expandChoice[account.id] { return c }
+        let worst = accounts.max { ($0.worstPercent ?? -1) < ($1.worstPercent ?? -1) }
+        return worst?.id == account.id
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -138,14 +149,22 @@ struct PopoverView: View {
             .padding(.horizontal, 16)
 
             ForEach(accounts) { account in
+                let open = isExpanded(account, in: accounts)
                 AccountCard(account: account, accent: p.accent,
                             maxedStyle: store.effectiveMaxedStyle,
                             maxedOffset: store.maxedVaried ? maxedOffsets[account.id] ?? 0 : -1,
                             burnBase: store.effectiveBurnStyle,
                             burnOffset: store.burnVaried ? burningOffsets[account.id] ?? 0 : -1,
-                            animating: store.uiVisible,
+                            animating: store.uiVisible && open,
                             onSignIn: { Task { await store.signIn(account) } },
-                            onRemove: { store.remove(account.id) })
+                            onRemove: { store.remove(account.id) },
+                            collapsible: accounts.count >= 2,
+                            expanded: open,
+                            onToggle: {
+                                withAnimation(.easeOut(duration: 0.16)) {
+                                    expandChoice[account.id] = !open
+                                }
+                            })
                     .padding(.horizontal, 12)
             }
         }
@@ -187,6 +206,21 @@ struct AccountCard: View {
     var onRemove: (() -> Void)? = nil
     @State private var confirmingRemove = false
     @State private var hoveringRemove = false
+    /// Roll-up rows (vendors with 2+ accounts): the header row IS the
+    /// summary. Collapsed, it carries the worst pool's % and a mini bar and
+    /// hides the pools; expanded, it is exactly the card as it always was.
+    /// One element that changes shape — never a summary stacked on a card.
+    var collapsible = false
+    var expanded = true
+    var onToggle: (() -> Void)? = nil
+    @State private var hoveringRow = false
+
+    private var worstColor: Color {
+        guard let p = account.worstPercent else { return .secondary }
+        if p >= 90 { return .red }
+        if p >= 75 { return .orange }
+        return accent
+    }
 
     /// A small ✕ in the card's corner. One click ARMS it — it becomes a red
     /// "Remove" for three seconds — and a second click removes. Removal also
@@ -296,11 +330,15 @@ struct AccountCard: View {
                 HStack(spacing: 6) {
                     // displayName, NOT label: the whole point of nicknames is
                     // that they show here.
+                    // Collapsed, the name gets the room: email and plan chip
+                    // are detail, and they return the moment the row opens.
+                    let rolled = collapsible && !expanded
                     Text(account.displayName).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    if let sub = account.subtitle {
+                        .layoutPriority(rolled ? 1 : 0)
+                    if let sub = account.subtitle, !rolled {
                         Text(sub).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
                     }
-                    if let plan = account.plan {
+                    if let plan = account.plan, !rolled {
                         Text(plan.uppercased())
                             .font(.system(size: 8, weight: .bold)).tracking(0.5)
                             .padding(.horizontal, 5).padding(.vertical, 1.5)
@@ -318,8 +356,38 @@ struct AccountCard: View {
                             .padding(.horizontal, 4).padding(.vertical, 1)
                             .background(Color.orange.opacity(0.14), in: Capsule())
                     }
+                    if collapsible && !expanded {
+                        // The badge's own logic, per row: the worst pool.
+                        if let w = account.worstPercent {
+                            Text("\(Int(w))%")
+                                .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                                .foregroundStyle(worstColor)
+                            Capsule().fill(Color.primary.opacity(0.10))
+                                .frame(width: 44, height: 4)
+                                .overlay(alignment: .leading) {
+                                    Capsule().fill(worstColor)
+                                        .frame(width: max(2, 44 * min(max(w / 100, 0), 1)))
+                                }
+                        } else if account.error != nil {
+                            Text("!").font(.system(size: 11, weight: .bold)).foregroundStyle(.orange)
+                        }
+                    }
                     if let onRemove { removeControl(onRemove) }
+                    if collapsible {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.tertiary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .frame(width: 12)
+                    }
                 }
+                // The header row is the click target for roll-up: an explicit
+                // tap gesture there, not on the whole card, so the pools' own
+                // hover tooltips and the ✕ keep working normally.
+                .contentShape(Rectangle())
+                .onTapGesture { if collapsible { onToggle?() } }
+                .onHover { hoveringRow = $0 }
+                if !collapsible || expanded {
                 if let err = account.error {
                     HStack(spacing: 8) {
                         Text(err).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
@@ -339,11 +407,14 @@ struct AccountCard: View {
                                  animating: animating)
                     }
                 }
+                }   // expanded
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 9).padding(.horizontal, 10)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.vertical, collapsible && !expanded ? 7 : 9).padding(.horizontal, 10)
+        .background(Color.primary.opacity(collapsible && !expanded && hoveringRow ? 0.08 : 0.045),
+                    in: RoundedRectangle(cornerRadius: 8))
+        .clipped()
     }
 }
 
