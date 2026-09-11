@@ -80,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let host = NSHostingController(rootView: PopoverView(store: store))
         host.sizingOptions = [.preferredContentSize]
         popover.contentViewController = host
+        popoverHost = host
 
         NotificationCenter.default.addObserver(forName: .mmtBadgeStyleChanged, object: nil,
                                                queue: .main) { [weak self] _ in
@@ -739,11 +740,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
     }
 
+    private var popoverHost: NSHostingController<PopoverView>?
+
     @objc private func togglePopover() {
         guard let button = statusItem.button else { return }
         if popover.isShown { popover.performClose(nil); store.setUIVisible(false) }
         else {
             store.setUIVisible(true)
+            // Size the list for the screen the status item is on — re-read
+            // on every open, since the item can move between displays.
+            popoverHost?.rootView.anchorScreen = button.window?.screen
             startCursorGovernor()
             store.noteMaxedViewing()
             store.noteBurnViewing()

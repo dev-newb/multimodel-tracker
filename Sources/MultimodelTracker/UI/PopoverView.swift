@@ -73,9 +73,20 @@ struct PopoverView: View {
 
     /// Leave room for the header, footer and the menu bar itself; below that
     /// the popover simply grows.
+    /// The screen the popover is anchored on, handed in by the delegate from
+    /// the status item's own window. NSScreen.main is the KEY window's screen
+    /// — a menu-bar app often has none, and it goes stale (the same trap that
+    /// once sent windows to the wrong Space) — so on two monitors the ceiling
+    /// could be sized for the other display.
+    var anchorScreen: NSScreen? = nil
+
     private var maxListHeight: CGFloat {
-        let screen = NSScreen.main?.visibleFrame.height ?? 800
-        return max(240, screen - 160)
+        let mouse = NSEvent.mouseLocation
+        let screen = anchorScreen
+            ?? NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+            ?? NSScreen.main
+        let visible = screen?.visibleFrame.height ?? 800
+        return max(240, visible - 160)
     }
 
     private var header: some View {
