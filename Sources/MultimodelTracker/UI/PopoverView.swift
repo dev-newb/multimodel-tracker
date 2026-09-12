@@ -4,6 +4,81 @@ import SwiftUI
 /// single-vendor list. This has to carry up to twelve accounts, so the
 /// hierarchy is provider → account → pools, with a coloured provider rail
 /// doing the work its section headers can't at this density.
+/// The alternative presentations for a vendor with several accounts, used
+/// once the popover would outgrow the screen (chosen in Config → Layout).
+enum OverflowLayout: Int, CaseIterable, Identifiable {
+    case grid = 0, pager = 1, tabs = 2
+    var id: Int { rawValue }
+    var displayName: String {
+        switch self {
+        case .grid:  return "Two-up grid"
+        case .pager: return "Vendor pager"
+        case .tabs:  return "Account tabs"
+        }
+    }
+    var blurb: String {
+        switch self {
+        case .grid:  return "The popover widens and a vendor's accounts sit two abreast — everything visible, half the height."
+        case .pager: return "One account per vendor at a time; arrows and dots in the vendor header flip between them."
+        case .tabs:  return "A tab per account under each vendor header, each showing its worst pool; click to switch."
+        }
+    }
+    /// The popover's width under this layout.
+    var popoverWidth: CGFloat { self == .grid ? 520 : 340 }
+}
+
+enum OverflowMode: Int, CaseIterable, Identifiable {
+    case automatic = 0, always = 1, never = 2
+    var id: Int { rawValue }
+    var displayName: String {
+        switch self {
+        case .automatic: return "Only when it won't fit"
+        case .always:    return "Always"
+        case .never:     return "Never (scroll instead)"
+        }
+    }
+}
+
+/// Measured card heights (--measure-card), the constants the overflow
+/// estimate is built from: a card is base + pools × row; an error card and
+/// a rolled-up row are fixed. If the card design changes, re-measure.
+enum PopoverMetrics {
+    static let cardBase: CGFloat = 33
+    static let poolRow: CGFloat = 29
+    static let errorCard: CGFloat = 60
+    static let sectionHeader: CGFloat = 20
+    static let cardGap: CGFloat = 8
+    static let sectionGap: CGFloat = 14
+    static let listPadding: CGFloat = 24
+    /// Header + divider + footer + the menu bar itself, kept clear of the
+    /// list — the same allowance maxListHeight uses.
+    static let chrome: CGFloat = 160
+
+    static func cardHeight(_ a: Account) -> CGFloat {
+        if a.error != nil { return errorCard }
+        return cardBase + poolRow * CGFloat(max(a.limits.count, 1))
+    }
+
+    /// The list's height with EVERY card expanded — the honest worst case,
+    /// and a pure function of the accounts, so the decision can't flip-flop
+    /// as the user opens and closes rows.
+    @MainActor
+    static func fullyExpandedHeight(_ store: Store) -> CGFloat {
+        var total = listPadding
+        var sections = 0
+        for p in Provider.allCases {
+            let accts = store.accounts(for: p)
+            guard !accts.isEmpty else { continue }
+            sections += 1
+            total += sectionHeader
+            total += accts.map(cardHeight).reduce(0, +)
+            total += cardGap * CGFloat(max(accts.count - 1, 0))
+        }
+        total += sectionGap * CGFloat(max(sections - 1, 0))
+        return total
+    }
+}
+
 struct PopoverView: View {
     @ObservedObject var store: Store
     /// Roll-up rows: for a vendor with 2+ accounts, each account is a
@@ -11,6 +86,26 @@ struct PopoverView: View {
     /// choices live here for the app's lifetime; anything unchosen follows
     /// the default (the vendor's worst account open, the rest rolled up).
     @State private var expandChoice: [UUID: Bool] = [:]
+
+    /// Pager / tabs selection per vendor, for the app's lifetime.
+    @State private var pageIndex: [Provider: Int] = [:]
+
+    /// Whether the chosen overflow layout is in force right now. Automatic
+    /// mode asks one question of the accounts and THIS screen: would the
+    /// popover fit with every card expanded? Counting accounts would be the
+    /// wrong unit — a Google account is one pool, an Anthropic one is three.
+    private var overflowActive: Bool {
+        switch store.overflowMode {
+        case .always: return true
+        case .never:  return false
+        case .automatic:
+            return PopoverMetrics.fullyExpandedHeight(store) > maxListHeight
+        }
+    }
+
+    private var popoverWidth: CGFloat {
+        overflowActive ? store.overflowLayout.popoverWidth : 340
+    }
 
     private func isExpanded(_ account: Account, in accounts: [Account]) -> Bool {
         if accounts.count < 2 { return true }          // a lone card never rolls up
@@ -35,7 +130,11 @@ struct PopoverView: View {
                     if store.accounts.isEmpty { FirstRunView(store: store) }
                     ForEach(Provider.allCases) { provider in
                         let accts = store.accounts(for: provider)
-                        if !accts.isEmpty { section(provider, accts) }
+                        if accts.count >= 2 && overflowActive {
+                            overflowSection(provider, accts)
+                        } else if !accts.isEmpty {
+                            section(provider, accts)
+                        }
                     }
                 }
                 .padding(.vertical, 12)
@@ -48,10 +147,100 @@ struct PopoverView: View {
             Divider().opacity(0.35)
             footer
         }
-        .frame(width: 340)
+        .frame(width: popoverWidth)
         // Without this the popover is see-through: NSPopover supplies no
         // material when its content is a plain SwiftUI hierarchy.
         .background(.regularMaterial)
+    }
+
+    // MARK: overflow layouts — A grid, B pager, D tabs
+
+    private func card(_ account: Account, _ p: Provider, compact: Bool = false) -> some View {
+        AccountCard(account: account, accent: p.accent,
+                    maxedStyle: store.effectiveMaxedStyle,
+                    maxedOffset: store.maxedVaried ? maxedOffsets[account.id] ?? 0 : -1,
+                    burnBase: store.effectiveBurnStyle,
+                    burnOffset: store.burnVaried ? burningOffsets[account.id] ?? 0 : -1,
+                    animating: store.uiVisible,
+                    onSignIn: { Task { await store.signIn(account) } },
+                    onRemove: { store.remove(account.id) },
+                    compact: compact)
+    }
+
+    @ViewBuilder
+    private func overflowSection(_ p: Provider, _ accounts: [Account]) -> some View {
+        let idx = min(pageIndex[p] ?? 0, accounts.count - 1)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(p.displayName.uppercased())
+                    .font(.system(size: 10, weight: .bold)).tracking(0.8)
+                    .foregroundStyle(p.accent)
+                Text("\(accounts.count)/\(Provider.maxAccountsPerProvider)")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                if store.overflowLayout == .pager {
+                    // ‹ dots › — a dot goes red when the page it stands for
+                    // is in trouble, so a hidden problem still shows.
+                    HStack(spacing: 5) {
+                        Button { pageIndex[p] = (idx - 1 + accounts.count) % accounts.count } label: {
+                            Image(systemName: "chevron.left").font(.system(size: 9, weight: .bold))
+                        }.buttonStyle(.plain).foregroundStyle(.secondary)
+                        ForEach(accounts.indices, id: \.self) { i in
+                            Circle()
+                                .fill(i == idx ? Color.primary
+                                      : ((accounts[i].worstPercent ?? 0) >= 90 ? Color.red : Color.primary.opacity(0.25)))
+                                .frame(width: 5, height: 5)
+                        }
+                        Button { pageIndex[p] = (idx + 1) % accounts.count } label: {
+                            Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
+                        }.buttonStyle(.plain).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+
+            switch store.overflowLayout {
+            case .grid:
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                          alignment: .leading, spacing: 8) {
+                    ForEach(accounts) { a in card(a, p, compact: true) }
+                }
+                .padding(.horizontal, 12)
+            case .pager:
+                card(accounts[idx], p)
+                    .id(accounts[idx].id)
+                    .padding(.horizontal, 12)
+            case .tabs:
+                HStack(spacing: 3) {
+                    ForEach(accounts.indices, id: \.self) { i in
+                        let a = accounts[i]
+                        let hot = (a.worstPercent ?? 0) >= 90
+                        Button { pageIndex[p] = i } label: {
+                            HStack(spacing: 4) {
+                                Text(a.displayName).lineLimit(1)
+                                if let w = a.worstPercent {
+                                    Text("\(Int(w))%").fontWeight(.bold)
+                                        .foregroundStyle(hot ? Color.red : (i == idx ? Color.primary : Color.secondary))
+                                }
+                            }
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(i == idx ? Color.primary : Color.secondary)
+                            .padding(.vertical, 4).padding(.horizontal, 6)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.primary.opacity(i == idx ? 0.12 : 0.05),
+                                        in: RoundedRectangle(cornerRadius: 6))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 12)
+                card(accounts[idx], p)
+                    .id(accounts[idx].id)
+                    .padding(.horizontal, 12)
+            }
+        }
     }
 
     /// For "all different at once": each account's first dead bar starts this
@@ -213,6 +402,9 @@ struct AccountCard: View {
     var collapsible = false
     var expanded = true
     var onToggle: (() -> Void)? = nil
+    /// Grid cells are half-width: the email steps aside and the plan chip
+    /// shrinks so the name and the numbers keep their room.
+    var compact = false
     @State private var hoveringRow = false
 
     private var worstColor: Color {
@@ -334,8 +526,8 @@ struct AccountCard: View {
                     // are detail, and they return the moment the row opens.
                     let rolled = collapsible && !expanded
                     Text(account.displayName).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                        .layoutPriority(rolled ? 1 : 0)
-                    if let sub = account.subtitle, !rolled {
+                        .layoutPriority(rolled || compact ? 1 : 0)
+                    if let sub = account.subtitle, !rolled, !compact {
                         Text(sub).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
                     }
                     if let plan = account.plan, !rolled {

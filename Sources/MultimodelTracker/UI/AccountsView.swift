@@ -123,6 +123,7 @@ struct AccountsView: View {
         let font = NSFont.systemFont(ofSize: 12)
         let titles = distributionOptions.map(\.1) + deadOptions.map(\.1) + burnOptions.map(\.1)
             + ["Cycle each flash"] + FlashEvent.allCases.flatMap(\.styleNames)
+            + OverflowLayout.allCases.map(\.displayName) + OverflowMode.allCases.map(\.displayName)
         let widest = titles
             .map { ($0 as NSString).size(withAttributes: [.font: font]).width }
             .max() ?? 150
@@ -283,11 +284,12 @@ private struct AccountsHeightKey: PreferenceKey {
 
 /// The settings sections reachable from the Config hub.
 enum ConfigTab: String, CaseIterable, Identifiable {
-    case menuBar, effects, flashes, sounds
+    case menuBar, layout, effects, flashes, sounds
     var id: String { rawValue }
     var title: String {
         switch self {
         case .menuBar: return "Menu Bar"
+        case .layout:  return "Layout"
         case .effects: return "Bar Effects"
         case .flashes: return "Flashes"
         case .sounds:  return "Sounds"
@@ -296,6 +298,7 @@ enum ConfigTab: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .menuBar: return "menubar.rectangle"
+        case .layout:  return "rectangle.split.2x1"
         case .effects: return "chart.bar.fill"
         case .flashes: return "bolt.fill"
         case .sounds:  return "speaker.wave.2.fill"
@@ -304,6 +307,7 @@ enum ConfigTab: String, CaseIterable, Identifiable {
     var tint: Color {
         switch self {
         case .menuBar: return Color(red: 0.24, green: 0.44, blue: 0.85)
+        case .layout:  return Color(red: 0.36, green: 0.60, blue: 0.62)
         case .effects: return Color(red: 0.56, green: 0.37, blue: 0.85)
         case .flashes: return Color(red: 0.85, green: 0.58, blue: 0.24)
         case .sounds:  return Color(red: 0.29, green: 0.62, blue: 0.42)

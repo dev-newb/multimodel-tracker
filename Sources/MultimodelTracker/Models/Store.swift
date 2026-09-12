@@ -145,6 +145,23 @@ final class Store: ObservableObject {
         burnCycleStyle = BurnStyle(rawValue: ((max(n, 1) - 1) / 3) % BurnStyle.allCases.count) ?? .firestorm
     }
 
+    // MARK: popover overflow layout
+    /// How a vendor with several accounts is shown once the popover would
+    /// outgrow the screen (or always / never, per overflowMode).
+    @Published private(set) var overflowLayout: OverflowLayout =
+        OverflowLayout(rawValue: UserDefaults.standard.integer(forKey: "mmt.overflowLayout")) ?? .grid
+    @Published private(set) var overflowMode: OverflowMode =
+        OverflowMode(rawValue: UserDefaults.standard.integer(forKey: "mmt.overflowMode")) ?? .automatic
+
+    func setOverflowLayout(_ l: OverflowLayout) {
+        overflowLayout = l
+        UserDefaults.standard.set(l.rawValue, forKey: "mmt.overflowLayout")
+    }
+    func setOverflowMode(_ m: OverflowMode) {
+        overflowMode = m
+        UserDefaults.standard.set(m.rawValue, forKey: "mmt.overflowMode")
+    }
+
     // MARK: alert flashes
     /// Per event: -1 = cycle each flash (the default); otherwise a pinned
     /// style index into FlashEvent.styleNames.

@@ -305,11 +305,42 @@ struct SectionPageView: View {
             .padding(.horizontal, 16).padding(.top, 12)
             switch section {
             case .menuBar: badgeSection
+            case .layout:  layoutSection
             case .effects: deadBarSection
             case .flashes: flashSection
             case .sounds:  soundSection
             }
         }
+    }
+
+    /// How the popover copes with many accounts: which alternative layout
+    /// to use, and when. Previewed at half scale with the user's OWN
+    /// accounts, so the choice is made on their data, not a mock.
+    private var layoutSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Accounts roll up to one-line summaries by default. When the popover would outgrow your screen even so, a vendor's accounts switch to this layout.")
+                .font(.system(size: 10)).foregroundStyle(.tertiary)
+            HStack(spacing: 8) {
+                Text("Overflow layout").font(.system(size: 12))
+                Spacer()
+                OptionPicker(width: AccountsView.pickerWidth,
+                             options: OverflowLayout.allCases.map { ($0.rawValue, $0.displayName) },
+                             selection: Binding(get: { store.overflowLayout.rawValue },
+                                                set: { store.setOverflowLayout(OverflowLayout(rawValue: $0) ?? .grid) }))
+            }
+            Text(store.overflowLayout.blurb)
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text("Use it").font(.system(size: 12))
+                Spacer()
+                OptionPicker(width: AccountsView.pickerWidth,
+                             options: OverflowMode.allCases.map { ($0.rawValue, $0.displayName) },
+                             selection: Binding(get: { store.overflowMode.rawValue },
+                                                set: { store.setOverflowMode(OverflowMode(rawValue: $0) ?? .automatic) }))
+            }
+            LayoutPreview(store: store, layout: store.overflowLayout)
+        }
+        .padding(16)
     }
 
     /// Menu-bar appearance. Only the healthy colour is offered: amber at 75%
@@ -416,5 +447,158 @@ struct SectionPageView: View {
             }
         }
         .padding(16)
+    }
+}
+
+
+/// A half-scale snapshot of the popover as it would look under `layout`
+/// with the user's real accounts (padded to two per vendor with sample
+/// accounts where they have fewer, so the layout has something to show).
+/// A snapshot rather than a live view: exact, cheap, and re-taken only when
+/// the accounts or the pick change.
+struct LayoutPreview: View {
+    @ObservedObject var store: Store
+    let layout: OverflowLayout
+    @State private var image: NSImage?
+
+    private static let scale: CGFloat = 0.5
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("PREVIEW · your accounts at 50%")
+                .font(.system(size: 9, weight: .bold)).tracking(0.6)
+                .foregroundStyle(.tertiary)
+            HStack {
+                Spacer(minLength: 0)
+                Group {
+                    if let image {
+                        Image(nsImage: image)
+                            .resizable()
+                            .interpolation(.high)
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: image.size.width * Self.scale)
+                    } else {
+                        Color.primary.opacity(0.05).frame(width: 170, height: 120)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+                Spacer(minLength: 0)
+            }
+        }
+        .task(id: "\(layout.rawValue)|\(store.accounts.count)") { render() }
+    }
+
+    private func render() {
+        // The popover's own dark panel tone, so the snapshot reads as the
+        // popover rather than a page of the panel.
+        let renderer = ImageRenderer(content:
+            PreviewList(store: store, layout: layout)
+                .background(Color(red: 0.16, green: 0.155, blue: 0.17)))
+        renderer.scale = 2
+        image = renderer.nsImage
+    }
+}
+
+/// The popover's list rendered under a forced overflow layout — the same
+/// section views the popover uses, with sample accounts filling any vendor
+/// below two so every layout has a pair to show.
+private struct PreviewList: View {
+    @ObservedObject var store: Store
+    let layout: OverflowLayout
+
+    var body: some View {
+        let width = layout.popoverWidth
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(Provider.allCases) { p in
+                let real = store.accounts(for: p)
+                let accts = real.count >= 2 ? real : real + Self.samples(p, upTo: 2 - real.count)
+                if !accts.isEmpty {
+                    PreviewSection(store: store, provider: p, accounts: accts, layout: layout)
+                }
+            }
+        }
+        .padding(.vertical, 12)
+        .frame(width: width)
+    }
+
+    static func samples(_ p: Provider, upTo n: Int) -> [Account] {
+        guard n > 0 else { return [] }
+        let names = ["Work", "Lab", "Team", "Second"]
+        return (0..<n).map { i in
+            Account(provider: p, label: "\(names[i].lowercased())@example.com", nickname: names[i],
+                    plan: p == .openai ? "Pro" : (p == .anthropic ? "Max" : nil),
+                    limits: p == .google
+                        ? [.init(key: "g", label: "Gemini · 20 models", percent: 12, resetsAt: Date().addingTimeInterval(14_400))]
+                        : [.init(key: "5h", label: "5-hour limit", percent: [18, 91][i % 2], resetsAt: Date().addingTimeInterval(14_400)),
+                           .init(key: "7d", label: "Weekly · all models", percent: [40, 74][i % 2], resetsAt: Date().addingTimeInterval(259_200))],
+                    lastRefreshed: Date())
+        }
+    }
+}
+
+/// One vendor section under a forced overflow layout, for the preview.
+/// Mirrors PopoverView.overflowSection; kept separate so the preview has
+/// no dependency on the popover's live state.
+private struct PreviewSection: View {
+    @ObservedObject var store: Store
+    let provider: Provider
+    let accounts: [Account]
+    let layout: OverflowLayout
+
+    private func card(_ a: Account, compact: Bool = false) -> some View {
+        AccountCard(account: a, accent: provider.accent, maxedStyle: store.effectiveMaxedStyle,
+                    animating: false, compact: compact)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text(provider.displayName.uppercased())
+                    .font(.system(size: 10, weight: .bold)).tracking(0.8)
+                    .foregroundStyle(provider.accent)
+                Text("\(accounts.count)/\(Provider.maxAccountsPerProvider)")
+                    .font(.system(size: 9, weight: .medium)).foregroundStyle(.tertiary)
+                Spacer()
+                if layout == .pager {
+                    HStack(spacing: 5) {
+                        Image(systemName: "chevron.left").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+                        ForEach(accounts.indices, id: \.self) { i in
+                            Circle().fill(i == 0 ? Color.primary : Color.primary.opacity(0.25)).frame(width: 5, height: 5)
+                        }
+                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            switch layout {
+            case .grid:
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                          alignment: .leading, spacing: 8) {
+                    ForEach(accounts) { a in card(a, compact: true) }
+                }
+                .padding(.horizontal, 12)
+            case .pager:
+                card(accounts[0]).padding(.horizontal, 12)
+            case .tabs:
+                HStack(spacing: 3) {
+                    ForEach(accounts.indices, id: \.self) { i in
+                        let a = accounts[i]
+                        HStack(spacing: 4) {
+                            Text(a.displayName).lineLimit(1)
+                            if let w = a.worstPercent { Text("\(Int(w))%").fontWeight(.bold) }
+                        }
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(i == 0 ? Color.primary : Color.secondary)
+                        .padding(.vertical, 4).padding(.horizontal, 6)
+                        .frame(maxWidth: .infinity)
+                        .background(Color.primary.opacity(i == 0 ? 0.12 : 0.05), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+                .padding(.horizontal, 12)
+                card(accounts[0]).padding(.horizontal, 12)
+            }
+        }
     }
 }

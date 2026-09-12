@@ -216,6 +216,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.terminate(nil)
         }
 
+        // `--render-overflow <dir>` renders the Layout config page (with its
+        // half-scale preview) for each overflow layout, offscreen.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-overflow"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            Task { @MainActor in
+                for layout in OverflowLayout.allCases {
+                    store.setOverflowLayout(layout)
+                    let view = SectionPageView(section: .layout, store: store, nav: ConfigNav())
+                        .frame(width: 480)
+                        .background(Color(red: 0.13, green: 0.13, blue: 0.14))
+                    // LayoutPreview renders its snapshot in .task — give it a beat.
+                    let host = NSHostingView(rootView: view)
+                    host.frame = NSRect(x: 0, y: 0, width: 480, height: 10)
+                    host.layoutSubtreeIfNeeded()
+                    try? await Task.sleep(for: .milliseconds(400))
+                    let renderer = ImageRenderer(content: view)
+                    renderer.scale = 2
+                    if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
+                       let rep = NSBitmapImageRep(data: tiff),
+                       let png = rep.representation(using: .png, properties: [:]) {
+                        try? png.write(to: dir.appendingPathComponent("layout-\(layout.rawValue).png"))
+                    }
+                }
+                exit(0)
+            }
+        }
+
+        // `--measure-card` prints the laid-out height of an AccountCard with
+        // 1..4 pools, an error card, and a rolled-up row — the constants the
+        // overflow estimate is built from, measured rather than guessed.
+        if CommandLine.arguments.contains("--measure-card") {
+            func h<V: View>(_ v: V) -> CGFloat {
+                let r = ImageRenderer(content: v.frame(width: 316)); r.scale = 1
+                return r.nsImage?.size.height ?? -1
+            }
+            for n in 1...4 {
+                let a = Account(provider: .anthropic, label: "x@y.z", nickname: "N", limits:
+                    (0..<n).map { .init(key: "k\($0)", label: "Pool \($0)", percent: 10, resetsAt: Date()) })
+                FileHandle.standardError.write("card pools=\(n): \(h(AccountCard(account: a, accent: .red, maxedStyle: .glitch, animating: false)))\n".data(using: .utf8)!)
+            }
+            let e = Account(provider: .anthropic, label: "x@y.z", error: "Not signed in")
+            FileHandle.standardError.write("card error: \(h(AccountCard(account: e, accent: .red, maxedStyle: .glitch, animating: false, onSignIn: {})))\n".data(using: .utf8)!)
+            let r = Account(provider: .anthropic, label: "x@y.z", nickname: "N", limits: [.init(key: "k", label: "P", percent: 10, resetsAt: Date())])
+            FileHandle.standardError.write("row rolled: \(h(AccountCard(account: r, accent: .red, maxedStyle: .glitch, animating: false, collapsible: true, expanded: false)))\n".data(using: .utf8)!)
+            exit(0)
+        }
+
         // `--render-rollup <dir>` renders a 3-account vendor section offscreen:
         // one card expanded (the worst), two rolled up — the roll-up rows look.
         if let i = CommandLine.arguments.firstIndex(of: "--render-rollup"),
