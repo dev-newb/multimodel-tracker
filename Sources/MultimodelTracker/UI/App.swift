@@ -246,6 +246,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             }
         }
 
+        // `--render-appicon <dir>` writes the full AppIcon.iconset (16→1024,
+        // @1x/@2x) from AppIconView, so the .icns is generated from code.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-appicon"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            let sizes: [(String, CGFloat)] = [
+                ("icon_16x16", 16), ("icon_16x16@2x", 32),
+                ("icon_32x32", 32), ("icon_32x32@2x", 64),
+                ("icon_128x128", 128), ("icon_128x128@2x", 256),
+                ("icon_256x256", 256), ("icon_256x256@2x", 512),
+                ("icon_512x512", 512), ("icon_512x512@2x", 1024),
+            ]
+            for (name, px) in sizes {
+                let r = ImageRenderer(content: AppIconView().frame(width: 1024, height: 1024))
+                r.scale = px / 1024
+                if let img = r.nsImage, let tiff = img.tiffRepresentation,
+                   let rep = NSBitmapImageRep(data: tiff),
+                   let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: dir.appendingPathComponent(name + ".png"))
+                }
+            }
+            FileHandle.standardError.write("render-appicon: wrote \(sizes.count) pngs\n".data(using: .utf8)!)
+            NSApp.terminate(nil)
+        }
+
         // `--status-probe` reports whether macOS is actually showing the
         // menu-bar item (window, frame, on which screen) — the check behind
         // the hotkey/reopen fallback — then exits.
