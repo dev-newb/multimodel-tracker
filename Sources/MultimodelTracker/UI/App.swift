@@ -747,14 +747,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         guard let button = statusItem?.button, let w = button.window else { return true }
         guard w.isVisible, w.frame.width > 1 else { return true }
         guard let screen = NSScreen.screens.first(where: { $0.frame.intersects(w.frame) }) else { return true }
-        // Notched displays: macOS can also park a squeezed-out item BEHIND
-        // the notch with a perfectly valid frame (probe-verified: x=975 on a
-        // 1920-wide 14"). Only the two areas flanking the notch can show an
-        // item, so visible means "fully inside one of them".
-        if screen.safeAreaInsets.top > 0 {
-            let inLeft = screen.auxiliaryTopLeftArea.map { $0.contains(w.frame) } ?? false
-            let inRight = screen.auxiliaryTopRightArea.map { $0.contains(w.frame) } ?? false
-            return !(inLeft || inRight)
+        // Only genuinely hidden if macOS has parked the item BEHIND the notch
+        // (probe-verified: x=975, a valid frame with nowhere to draw). Judge
+        // by the item's CENTRE, not full containment: a visible item can sit
+        // flush against the notch or Control Center and fail a strict
+        // `contains`, which wrongly sent it to the fallback panel.
+        if screen.safeAreaInsets.top > 0,
+           let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
+            let cx = w.frame.midX
+            return cx > left.maxX && cx < right.minX     // in the notch gap
         }
         return false
     }
@@ -800,11 +801,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             // it somewhere visible. A hidden item keeps a frame parked behind
             // the notch (~centre), which is what put the panel mid-screen.
             if let f = statusItem.button?.window?.frame, f.width > 1, !statusItemHidden { return f }
-            // Hidden: drop it where an overflow menu-bar item lives — the slot
-            // just left of Control Center, right of the notch.
+            // Hidden behind the notch: centre it just RIGHT of the notch,
+            // where an overflow menu-bar item would live — never the far
+            // corner.
             let screen = statusItem.button?.window?.screen ?? NSScreen.main ?? NSScreen.screens.first
             if let s = screen, let right = s.auxiliaryTopRightArea {
-                return NSRect(x: max(right.minX + 20, right.maxX - 80), y: right.minY, width: 60, height: right.height)
+                return NSRect(x: right.minX + 24, y: right.minY, width: 60, height: right.height)
             }
             return nil
         }()
