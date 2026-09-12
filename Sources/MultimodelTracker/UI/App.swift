@@ -790,7 +790,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         host.view.layer?.cornerRadius = 12
         host.view.layer?.masksToBounds = true
         w.setContentSize(host.view.fittingSize)
-        w.placeNearMenuBar(anchor: nil)
+        // Where the popover would be: under the status item. macOS keeps a
+        // frame for the item even when it hides it, so that's usually the
+        // exact spot; with no frame at all, the run just right of the notch
+        // is where such items live. Never the mouse — that put the panel
+        // mid-screen.
+        let anchor: NSRect? = {
+            // Use the item's own frame only when macOS is actually SHOWING
+            // it somewhere visible. A hidden item keeps a frame parked behind
+            // the notch (~centre), which is what put the panel mid-screen.
+            if let f = statusItem.button?.window?.frame, f.width > 1, !statusItemHidden { return f }
+            // Hidden: drop it where an overflow menu-bar item lives — the slot
+            // just left of Control Center, right of the notch.
+            let screen = statusItem.button?.window?.screen ?? NSScreen.main ?? NSScreen.screens.first
+            if let s = screen, let right = s.auxiliaryTopRightArea {
+                return NSRect(x: max(right.minX + 20, right.maxX - 80), y: right.minY, width: 60, height: right.height)
+            }
+            return nil
+        }()
+        w.placeNearMenuBar(anchor: anchor)
         w.makeKeyAndOrderFront(nil)
         w.delegate = self
         usagePanel = w

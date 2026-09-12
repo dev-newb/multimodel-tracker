@@ -317,28 +317,34 @@ struct SectionPageView: View {
     /// to use, and when. Previewed at half scale with the user's OWN
     /// accounts, so the choice is made on their data, not a mock.
     private var layoutSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Accounts roll up to one-line summaries by default. When the popover would outgrow your screen even so, a vendor's accounts switch to this layout.")
-                .font(.system(size: 10)).foregroundStyle(.tertiary)
-            HStack(spacing: 8) {
-                Text("Overflow layout").font(.system(size: 12))
-                Spacer()
-                OptionPicker(width: AccountsView.pickerWidth,
-                             options: OverflowLayout.allCases.map { ($0.rawValue, $0.displayName) },
-                             selection: Binding(get: { store.overflowLayout.rawValue },
-                                                set: { store.setOverflowLayout(OverflowLayout(rawValue: $0) ?? .grid) }))
+        // Two columns: the controls stacked on the left, the preview on the
+        // right margin — side by side rather than one above the other, so
+        // the page is as tall as the preview and no taller.
+        HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Accounts roll up to one-line summaries by default. When the popover would outgrow your screen even so, a vendor's accounts switch to this layout.")
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Overflow layout").font(.system(size: 12))
+                    OptionPicker(width: AccountsView.pickerWidth,
+                                 options: OverflowLayout.allCases.map { ($0.rawValue, $0.displayName) },
+                                 selection: Binding(get: { store.overflowLayout.rawValue },
+                                                    set: { store.setOverflowLayout(OverflowLayout(rawValue: $0) ?? .grid) }))
+                }
+                Text(store.overflowLayout.blurb)
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Use it").font(.system(size: 12))
+                    OptionPicker(width: AccountsView.pickerWidth,
+                                 options: OverflowMode.allCases.map { ($0.rawValue, $0.displayName) },
+                                 selection: Binding(get: { store.overflowMode.rawValue },
+                                                    set: { store.setOverflowMode(OverflowMode(rawValue: $0) ?? .automatic) }))
+                }
             }
-            Text(store.overflowLayout.blurb)
-                .font(.system(size: 10)).foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                Text("Use it").font(.system(size: 12))
-                Spacer()
-                OptionPicker(width: AccountsView.pickerWidth,
-                             options: OverflowMode.allCases.map { ($0.rawValue, $0.displayName) },
-                             selection: Binding(get: { store.overflowMode.rawValue },
-                                                set: { store.setOverflowMode(OverflowMode(rawValue: $0) ?? .automatic) }))
-            }
-            LayoutPreview(store: store, layout: store.overflowLayout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            LayoutPreview(store: store, layout: store.overflowLayout, width: 210)
         }
         .padding(16)
     }
@@ -459,34 +465,31 @@ struct SectionPageView: View {
 struct LayoutPreview: View {
     @ObservedObject var store: Store
     let layout: OverflowLayout
+    /// The column the preview fits into; the snapshot scales to it.
+    var width: CGFloat = 210
     @State private var image: NSImage?
-
-    private static let scale: CGFloat = 0.5
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("PREVIEW · your accounts at 50%")
+            Text("PREVIEW · your accounts")
                 .font(.system(size: 9, weight: .bold)).tracking(0.6)
                 .foregroundStyle(.tertiary)
-            HStack {
-                Spacer(minLength: 0)
-                Group {
-                    if let image {
-                        Image(nsImage: image)
-                            .resizable()
-                            .interpolation(.high)
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: image.size.width * Self.scale)
-                    } else {
-                        Color.primary.opacity(0.05).frame(width: 170, height: 120)
-                    }
+            Group {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: width)
+                } else {
+                    Color.primary.opacity(0.05).frame(width: width, height: 120)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5))
-                .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
-                Spacer(minLength: 0)
             }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5))
+            .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
         }
+        .frame(width: width)
         .task(id: "\(layout.rawValue)|\(store.accounts.count)") { render() }
     }
 
