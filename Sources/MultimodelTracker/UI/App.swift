@@ -826,17 +826,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var hotKeyRef: EventHotKeyRef?
 
     private func registerHotKey() {
+        // The event DISPATCHER target, not the application target: that is
+        // where hot-key events are delivered for a background (.accessory)
+        // app — the pattern MASShortcut and HotKey use. The first version
+        // registered against the application target, and the key did
+        // nothing. Both results are logged so a silent failure can't recur.
+        let debug = ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                  eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
+        let installed = InstallEventHandler(GetEventDispatcherTarget(), { _, _, userData in
             guard let userData else { return noErr }
             let me = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
+            if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+                FileHandle.standardError.write("hotkey: pressed\n".data(using: .utf8)!)
+            }
             Task { @MainActor in me.toggleTracker() }
             return noErr
         }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
         let id = EventHotKeyID(signature: OSType(0x4D4D_5452), id: 1)   // 'MMTR'
-        RegisterEventHotKey(UInt32(kVK_ANSI_U), UInt32(controlKey | optionKey), id,
-                            GetApplicationEventTarget(), 0, &hotKeyRef)
+        let registered = RegisterEventHotKey(UInt32(kVK_ANSI_U), UInt32(controlKey | optionKey), id,
+                                             GetEventDispatcherTarget(), 0, &hotKeyRef)
+        if debug {
+            FileHandle.standardError.write(
+                "hotkey: install=\(installed) register=\(registered) (0 = ok; -9878 = taken by another app)\n"
+                    .data(using: .utf8)!)
+        }
     }
 
     // MARK: connectivity-driven refresh
