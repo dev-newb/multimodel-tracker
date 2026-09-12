@@ -13,6 +13,14 @@ are readable without opening anything. Click it for the full breakdown:
 provider → account → pools, each pool with its percentage, bar and reset
 time.
 
+**If the menu bar is full** — on a notched MacBook, macOS hides third-party
+items once the run between the notch and Control Center is used up — the
+tracker is still one keystroke away: **⌃⌥U** opens it from anywhere (the
+popover when the item is showing, a floating panel when it isn't), and
+opening **Multimodel Tracker** from Spotlight or Applications shows your
+usage the same way. Freeing space (System Settings → Control Center, hide a
+few items) brings the badge back by itself.
+
 Until the first numbers arrive the item shows a small gauge icon, so a fresh
 install is identifiable; hovering it names the app either way. On the very
 first launch the Config panel opens by itself so you can add accounts, and

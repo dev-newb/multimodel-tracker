@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import WebKit
 import Network
+import Carbon.HIToolbox
 
 /// Menu-bar-only app: no Dock icon, no main window. The status item shows one
 /// badge per provider carrying that vendor's worst account, which is the bit
@@ -96,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
 
         renderBadges()
+        registerHotKey()
         timer = Timer.scheduledTimer(withTimeInterval: Store.pollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.store.refreshAll()
@@ -240,6 +242,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                         try? png.write(to: dir.appendingPathComponent("layout-\(layout.rawValue).png"))
                     }
                 }
+                exit(0)
+            }
+        }
+
+        // `--status-probe` reports whether macOS is actually showing the
+        // menu-bar item (window, frame, on which screen) — the check behind
+        // the hotkey/reopen fallback — then exits.
+        if CommandLine.arguments.contains("--status-probe") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self else { exit(1) }
+                let w = self.statusItem.button?.window
+                let f = w?.frame ?? .zero
+                let screens = NSScreen.screens.map { s -> String in
+                    let l = s.auxiliaryTopLeftArea.map { "\(Int($0.minX))-\(Int($0.maxX))" } ?? "-"
+                    let r = s.auxiliaryTopRightArea.map { "\(Int($0.minX))-\(Int($0.maxX))" } ?? "-"
+                    return "\(Int(s.frame.width))x\(Int(s.frame.height)) notch=\(s.safeAreaInsets.top > 0) left=\(l) right=\(r)"
+                }
+                FileHandle.standardError.write(
+                    ("status-probe: window=\(w == nil ? "nil" : "yes") visible=\(w?.isVisible ?? false)"
+                     + " frame=\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))"
+                     + " screens=\(screens) hidden=\(self.statusItemHidden)\n").data(using: .utf8)!)
                 exit(0)
             }
         }
@@ -707,8 +730,113 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     /// the panel shows without activating the app, and activating it is what
     /// once made the panel hop Spaces and steal keystrokes.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        openSettings()
+        // When macOS has squeezed the menu-bar item out (a crowded bar on a
+        // notched display), what the user can't reach is their USAGE — show
+        // that. With the item visible, reopen keeps opening Config.
+        if statusItemHidden { showUsagePanel() } else { openSettings() }
         return false
+    }
+
+    // MARK: the menu-bar item can be hidden by macOS
+
+    /// True when macOS is not showing the status item. On a notched display
+    /// only the run between the notch and Control Center is available to
+    /// third-party items; when it's full, macOS hides them outright — the
+    /// item's window is then absent or parked off every screen.
+    private var statusItemHidden: Bool {
+        guard let button = statusItem?.button, let w = button.window else { return true }
+        guard w.isVisible, w.frame.width > 1 else { return true }
+        guard let screen = NSScreen.screens.first(where: { $0.frame.intersects(w.frame) }) else { return true }
+        // Notched displays: macOS can also park a squeezed-out item BEHIND
+        // the notch with a perfectly valid frame (probe-verified: x=975 on a
+        // 1920-wide 14"). Only the two areas flanking the notch can show an
+        // item, so visible means "fully inside one of them".
+        if screen.safeAreaInsets.top > 0 {
+            let inLeft = screen.auxiliaryTopLeftArea.map { $0.contains(w.frame) } ?? false
+            let inRight = screen.auxiliaryTopRightArea.map { $0.contains(w.frame) } ?? false
+            return !(inLeft || inRight)
+        }
+        return false
+    }
+
+    /// The tracker without its menu-bar item: the popover's own view in a
+    /// floating panel under the menu bar — the same non-activating,
+    /// click-outside-to-dismiss panel Config uses, so it behaves like the
+    /// popover it stands in for.
+    private var usagePanel: NSWindow?
+    private var usagePanelMonitors: [Any] = []
+
+    private func showUsagePanel() {
+        if popover.isShown { popover.performClose(nil) }
+        usagePanel?.close()
+        var root = PopoverView(store: store)
+        root.anchorScreen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
+        let host = NSHostingController(rootView: root)
+        host.sizingOptions = [.preferredContentSize]
+        let w = AccountsPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 400),
+                              styleMask: [.borderless, .nonactivatingPanel],
+                              backing: .buffered, defer: false)
+        w.isMovable = true
+        w.isMovableByWindowBackground = true
+        w.isOpaque = false
+        w.backgroundColor = .clear
+        w.hasShadow = true
+        w.collectionBehavior = [.fullScreenAuxiliary]
+        w.level = .floating
+        w.hidesOnDeactivate = false
+        w.isReleasedWhenClosed = false
+        w.contentViewController = host
+        host.view.wantsLayer = true
+        host.view.layer?.cornerRadius = 12
+        host.view.layer?.masksToBounds = true
+        w.setContentSize(host.view.fittingSize)
+        w.placeNearMenuBar(anchor: nil)
+        w.makeKeyAndOrderFront(nil)
+        w.delegate = self
+        usagePanel = w
+        store.setUIVisible(true)
+        store.noteMaxedViewing()
+        store.noteBurnViewing()
+        // Click anywhere else — in this app or another — dismisses it.
+        let global = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor in self?.usagePanel?.close() }
+        }
+        let local = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            Task { @MainActor in
+                guard let self, let p = self.usagePanel, event.window !== p else { return }
+                p.close()
+            }
+            return event
+        }
+        usagePanelMonitors = [global, local].compactMap { $0 }
+    }
+
+    private func toggleUsagePanel() {
+        if let p = usagePanel, p.isVisible { p.close() } else { showUsagePanel() }
+    }
+
+    /// Opens the tracker from anywhere: the popover when the menu-bar item
+    /// is on screen, the floating panel when macOS has hidden it.
+    private func toggleTracker() {
+        if statusItemHidden { toggleUsagePanel() } else { togglePopover() }
+    }
+
+    // MARK: global hotkey ⌃⌥U — Carbon, so it needs no Accessibility grant
+
+    private var hotKeyRef: EventHotKeyRef?
+
+    private func registerHotKey() {
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                 eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
+            guard let userData else { return noErr }
+            let me = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
+            Task { @MainActor in me.toggleTracker() }
+            return noErr
+        }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
+        let id = EventHotKeyID(signature: OSType(0x4D4D_5452), id: 1)   // 'MMTR'
+        RegisterEventHotKey(UInt32(kVK_ANSI_U), UInt32(controlKey | optionKey), id,
+                            GetApplicationEventTarget(), 0, &hotKeyRef)
     }
 
     // MARK: connectivity-driven refresh
@@ -849,6 +977,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     func windowWillClose(_ notification: Notification) {
+        if (notification.object as? NSWindow) === usagePanel {
+            for m in usagePanelMonitors { NSEvent.removeMonitor(m) }
+            usagePanelMonitors = []
+            usagePanel = nil
+            store.setUIVisible(accountsWindow?.isVisible == true || popover.isShown)
+            return
+        }
         guard (notification.object as? NSWindow) === accountsWindow else { return }
         // A text field pushes the I-beam via a tracking area. Destroying the
         // panel while the pointer is inside one tears that area down without
