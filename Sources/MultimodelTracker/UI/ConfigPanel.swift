@@ -491,11 +491,15 @@ struct LayoutPreview: View {
     }
 
     private func render() {
-        // The popover's own dark panel tone, so the snapshot reads as the
-        // popover rather than a page of the panel.
+        // ImageRenderer has no window and so no appearance: left alone, every
+        // semantic colour (.primary names and percentages, .secondary
+        // labels) resolves for LIGHT mode — black text on the dark panel
+        // tone painted below. Pin the scheme so the snapshot resolves the
+        // way the real popover does.
         let renderer = ImageRenderer(content:
             PreviewList(store: store, layout: layout)
-                .background(Color(red: 0.16, green: 0.155, blue: 0.17)))
+                .background(Color(red: 0.16, green: 0.155, blue: 0.17))
+                .environment(\.colorScheme, .dark))
         renderer.scale = 2
         image = renderer.nsImage
     }
