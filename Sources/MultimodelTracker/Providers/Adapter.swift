@@ -10,6 +10,8 @@ struct FetchedUsage {
     var bankedResets: Int?
     /// Whose account the provider says this is, when it says.
     var accountEmail: String?
+    /// How these credentials were obtained, re-derived on every refresh.
+    var authSource: AuthSource?
 
     init(plan: String?, limits: [UsageLimit], bankedResets: Int? = nil) {
         self.plan = plan; self.limits = limits; self.bankedResets = bankedResets
@@ -53,7 +55,12 @@ struct OpenAIAdapter: UsageAdapter {
             throw AdapterError.notSignedIn
         }
         do {
-            return try await fetchOnce(creds)
+            var out = try await fetchOnce(creds)
+            // A Codex CLI import holds no refresh token by design; a browser
+            // sign-in always has one. That is the honest signal for where
+            // these credentials came from.
+            out.authSource = creds.refreshToken == nil ? .codexCLI : .browser
+            return out
         } catch AdapterError.notSignedIn {
             // Renew, cheapest route first. A refresh token (browser OAuth)
             // needs no browser and no cookies; the cookie-jar re-mint is the
@@ -71,7 +78,9 @@ struct OpenAIAdapter: UsageAdapter {
             Keychain.storeOpenAI(accessToken: session.accessToken,
                                  accountId: session.accountId, for: account.id)
             let renewed = try await Keychain.openAICredentialsAsync(for: account.id)
-            return try await fetchOnce(renewed)
+            var out = try await fetchOnce(renewed)
+            out.authSource = renewed.refreshToken == nil ? .codexCLI : .browser
+            return out
         }
     }
 
@@ -102,8 +111,15 @@ struct AnthropicAdapter: UsageAdapter {
 
     func fetch(account: Account) async throws -> FetchedUsage {
         guard let creds = try? await Keychain.anthropicCredentialsAsync(for: account.id) else {
-            return try await WebSessionPool.shared.fetchUsage(for: account)
+            // No stored token at all: this is a legacy cookie-jar login.
+            var out = try await WebSessionPool.shared.fetchUsage(for: account)
+            out.authSource = .legacyCookies
+            return out
         }
+        // The Claude Code import deliberately never takes a refresh token
+        // (consuming the CLI's rotating one could end its session), so its
+        // absence is what marks an account as read from the CLI.
+        let source: AuthSource = creds.refreshToken == nil ? .claudeCode : .browser
         // Refresh ahead of a known expiry rather than spending a doomed
         // round trip; the expiry is stored precisely so this test is local.
         var live = creds
@@ -111,12 +127,16 @@ struct AnthropicAdapter: UsageAdapter {
             live = try await refreshed(creds, account: account.id)
         }
         do {
-            return await withEmail(try await fetchOnce(live.accessToken), token: live.accessToken, account: account)
+            var out = await withEmail(try await fetchOnce(live.accessToken), token: live.accessToken, account: account)
+            out.authSource = source
+            return out
         } catch AdapterError.notSignedIn {
             // The token died early (revocation, clock skew) — one refresh,
             // one retry, then give up to the "Sign in" button.
             let renewed = try await refreshed(live, account: account.id)
-            return await withEmail(try await fetchOnce(renewed.accessToken), token: renewed.accessToken, account: account)
+            var out = await withEmail(try await fetchOnce(renewed.accessToken), token: renewed.accessToken, account: account)
+            out.authSource = source
+            return out
         }
     }
 

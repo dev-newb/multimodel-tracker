@@ -277,6 +277,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.terminate(nil)
         }
 
+        // `--google-raw` prints loadCodeAssist verbatim — where the Code
+        // Assist tier lives.
+        if CommandLine.arguments.contains("--google-raw") {
+            Task { @MainActor in
+                do {
+                    let root = try await GoogleAdapterImpl().rawLoadCodeAssist()
+                    let d = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
+                    FileHandle.standardError.write(d); FileHandle.standardError.write("\n".data(using: .utf8)!)
+                } catch {
+                    FileHandle.standardError.write("google-raw failed: \(error)\n".data(using: .utf8)!)
+                }
+                exit(0)
+            }
+        }
+
         // `--status-probe` reports whether macOS is actually showing the
         // menu-bar item (window, frame, on which screen) — the check behind
         // the hotkey/reopen fallback — then exits.

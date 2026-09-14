@@ -165,8 +165,8 @@ final class Store: ObservableObject {
 
     private static func mockAccounts() -> [Account] {
         func a(_ p: Provider, _ nick: String, _ email: String, _ plan: String?,
-               _ pools: [(String, String, Double?)]) -> Account {
-            Account(provider: p, label: email, nickname: nick, plan: plan,
+               _ pools: [(String, String, Double?)], _ via: AuthSource = .browser) -> Account {
+            var out = Account(provider: p, label: email, nickname: nick, plan: plan,
                     limits: pools.map { pool in
                         // A banked-resets row is a count, with no reset clock.
                         let hasClock = pool.2 != nil
@@ -174,6 +174,8 @@ final class Store: ObservableObject {
                                      resetsAt: hasClock ? Date().addingTimeInterval(Double.random(in: 3600...432_000)) : nil)
                     },
                     lastRefreshed: Date())
+            out.authSource = via
+            return out
         }
         let cl: [(String, String, Double?)] = [("5h", "5-hour limit", 0), ("7d", "Weekly · all models", 0), ("fable", "Weekly · Fable", 0)]
         func claude(_ a5: Double, _ aw: Double, _ af: Double) -> [(String, String, Double?)] {
@@ -186,16 +188,16 @@ final class Store: ObservableObject {
         return [
             a(.anthropic, "Personal", "personal@example.com", "Max", claude(98, 71, 98)),
             a(.anthropic, "Work", "work@example.com", "Max", claude(0, 58, 22)),
-            a(.anthropic, "Side project", "side@example.com", "Max", claude(44, 31, 12)),
+            a(.anthropic, "Side project", "side@example.com", "Max", claude(44, 31, 12), .claudeCode),
             a(.anthropic, "Research", "research@example.com", "Max", claude(12, 91, 67)),
             a(.openai, "Personal", "personal@example.com", "Pro", codex(100, 0, 0, 1)),
-            a(.openai, "Work", "work@example.com", "Pro", codex(26, 10, 4, 0)),
+            a(.openai, "Work", "work@example.com", "Pro", codex(26, 10, 4, 0), .codexCLI),
             a(.openai, "Agency", "agency@example.com", "Pro", codex(63, 0, 0, 2)),
             a(.openai, "Prototyping", "proto@example.com", "Pro", codex(88, 35, 52, 0)),
-            a(.google, "Personal", "personal@example.com", "Antigravity", [("g", "Gemini · 20 models", 0)]),
-            a(.google, "Work", "work@example.com", "Antigravity", [("g", "Gemini · 20 models", 12)]),
-            a(.google, "Studio", "studio@example.com", "Antigravity", [("g", "Gemini · 20 models", 47)]),
-            a(.google, "Team", "team@example.com", "Antigravity", [("g", "Gemini · 20 models", 79)]),
+            a(.google, "Personal", "personal@example.com", "Free", [("g", "Gemini · 20 models", 0)], .antigravity),
+            a(.google, "Work", "work@example.com", "Pro", [("g", "Gemini · 20 models", 12)], .antigravity),
+            a(.google, "Studio", "studio@example.com", "Ultra", [("g", "Gemini · 20 models", 47)], .antigravity),
+            a(.google, "Team", "team@example.com", "Pro", [("g", "Gemini · 20 models", 79)], .geminiCLI),
         ]
     }
 
@@ -524,6 +526,7 @@ final class Store: ObservableObject {
         guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
         accounts[i].limits = fetched.limits
         accounts[i].plan = fetched.plan
+        accounts[i].authSource = fetched.authSource
         if fetched.label.contains("@") { accounts[i].label = fetched.label }
         accounts[i].error = fetched.error
         accounts[i].lastRefreshed = fetched.lastRefreshed
@@ -599,6 +602,7 @@ final class Store: ObservableObject {
             noteAlertTriggers(fetched: fetched, accountID: a.id)
             a.limits = markBurning(fetched: fetched.limits, accountID: a.id)
             a.plan = fetched.plan
+            if let src = fetched.authSource { a.authSource = src }
             // Providers report whose account this is; a row still wearing a
             // placeholder ("OpenAI account 2", "Claude Code") takes the email.
             if let email = fetched.accountEmail, !a.label.contains("@") { a.label = email }

@@ -64,6 +64,12 @@ enum GoogleCredentialSource {
         let accessToken: String?
         let refreshToken: String?
         let expiry: Date?
+        /// The OIDC id token, whose claims would name the Google account.
+        /// VERIFIED LIVE: Antigravity's current keychain payload does not
+        /// include one, so this is nil there and the row keeps its imported
+        /// label; the plumbing stays because gemini-cli's file may carry one
+        /// and Antigravity may start to.
+        let idToken: String?
     }
 
     private static func parse(_ root: [String: Any]) -> TokenBlob {
@@ -79,7 +85,8 @@ enum GoogleCredentialSource {
         return TokenBlob(
             accessToken: pick(tok, ["access_token", "accessToken"]),
             refreshToken: pick(tok, ["refresh_token", "refreshToken", "RefreshToken"]),
-            expiry: expiryString.flatMap { iso.date(from: $0) ?? plain.date(from: $0) })
+            expiry: expiryString.flatMap { iso.date(from: $0) ?? plain.date(from: $0) },
+            idToken: pick(root, ["id_token", "idToken"]) ?? pick(tok, ["id_token", "idToken"]))
     }
 
     /// gemini-cli writes a plain JSON file.
@@ -142,7 +149,7 @@ enum GoogleCredentialSource {
         let body = raw.range(of: "go-keyring-base64:").map { String(raw[$0.upperBound...]) } ?? raw
         guard let decoded = Data(base64Encoded: body),
               let root = try? JSONSerialization.jsonObject(with: decoded) as? [String: Any]
-        else { return raw.hasPrefix("1//") ? TokenBlob(accessToken: nil, refreshToken: raw, expiry: nil) : nil }
+        else { return raw.hasPrefix("1//") ? TokenBlob(accessToken: nil, refreshToken: raw, expiry: nil, idToken: nil) : nil }
         return parse(root)
     }
 }
@@ -169,15 +176,56 @@ struct GoogleAdapterImpl: UsageAdapter {
     /// The project id comes from loadCodeAssist and rarely changes; holding it
     /// avoids a second round trip on every poll.
     private static var cachedProject: String?
+    /// The account's Code Assist tier, from loadCodeAssist's
+    /// `currentTier.id`. The tier's `name` is useless for this — Google
+    /// returns "Antigravity" for BOTH the free and standard tiers — so the
+    /// id is what carries the meaning. Verified live against the real
+    /// endpoint: ids are `free-tier` / `standard-tier`, and the response's
+    /// `paidTier` names "Google AI Pro" with its upgrade text naming
+    /// "Google AI Ultra" — so the ladder is Free → Pro → Ultra.
+    private static var cachedTier: String?
+
+    static func tierLabel(_ id: String) -> String {
+        switch id {
+        case "free-tier":       return "Free"
+        case "legacy-tier":     return "Legacy"
+        case "standard-tier":   return "Standard"
+        case "enterprise-tier": return "Enterprise"
+        case "g1-pro-tier":     return "Pro"
+        case "g1-ultra-tier":   return "Ultra"
+        default:
+            let s = id.lowercased()
+            if s.contains("ultra") { return "Ultra" }
+            if s.contains("pro")   { return "Pro" }
+            if s.contains("free")  { return "Free" }
+            return id.replacingOccurrences(of: "-tier", with: "").capitalized
+        }
+    }
+
+    /// The `email` claim of an OIDC id token, so a Google row names its
+    /// account like every other row does.
+    static func emailFromJWT(_ token: String) -> String? {
+        let parts = token.split(separator: ".")
+        guard parts.count > 1 else { return nil }
+        var b64 = String(parts[1]).replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        while b64.count % 4 != 0 { b64 += "=" }
+        guard let d = Data(base64Encoded: b64),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
+        return o["email"] as? String
+    }
     /// Last good per-model read, held so a transient 403 shows the previous
     /// numbers (with the popover's "stale" chip) instead of an error row.
     private static var lastGood: (at: Date, usage: FetchedUsage)?
 
     func fetch(account: Account) async throws -> FetchedUsage {
-        guard let blob = await GoogleCredentialSource.antigravityTokenBlob()
-                ?? GoogleCredentialSource.geminiCLITokenBlob() else {
+        // Which local tool the credentials came from — reported to the card
+        // as the ROUTE IN, kept well away from the subscription tier.
+        let antigravity = await GoogleCredentialSource.antigravityTokenBlob()
+        guard let blob = antigravity ?? GoogleCredentialSource.geminiCLITokenBlob() else {
             throw AdapterError.notSignedIn
         }
+        let source: AuthSource = antigravity != nil ? .antigravity : .geminiCLI
         // Always mint a fresh access token. The stored one expires roughly
         // hourly and an idle agy does not rotate it, so trusting it is the
         // main cause of spurious 401s.
@@ -206,8 +254,8 @@ struct GoogleAdapterImpl: UsageAdapter {
         guard let access else { throw AdapterError.notSignedIn }
 
         switch mode {
-        case .codeAssist:  return try await loadLegacyQuota(token: access)
-        case .antigravity: return try await loadModelQuota(token: access)
+        case .codeAssist:  return try await loadLegacyQuota(token: access, source: source, idToken: blob.idToken)
+        case .antigravity: return try await loadModelQuota(token: access, source: source, idToken: blob.idToken)
         }
     }
 
@@ -226,6 +274,26 @@ struct GoogleAdapterImpl: UsageAdapter {
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
               let t = o["access_token"] as? String else { throw AdapterError.notSignedIn }
         return t
+    }
+
+    /// Diagnostic (`--google-raw`): the whole loadCodeAssist response, which
+    /// is where the account's Code Assist TIER lives — the thing the card's
+    /// chip should show, rather than the route the credentials came from.
+    func rawLoadCodeAssist() async throws -> [String: Any] {
+        guard let blob = await GoogleCredentialSource.antigravityTokenBlob()
+                ?? GoogleCredentialSource.geminiCLITokenBlob() else { throw AdapterError.notSignedIn }
+        var access: String?
+        if let refresh = blob.refreshToken {
+            for client in GeminiOAuthClient.candidates() {
+                if let t = try? await exchange(refresh: refresh, client: client) {
+                    access = t; GeminiOAuthClient.winner = client; break
+                }
+            }
+        }
+        if access == nil, let t = blob.accessToken { access = t }
+        guard let access else { throw AdapterError.notSignedIn }
+        return try await call("loadCodeAssist", body: ["metadata": Self.metadata],
+                              token: access, agent: "antigravity")
     }
 
     private static let metadata: [String: String] = [
@@ -261,21 +329,26 @@ struct GoogleAdapterImpl: UsageAdapter {
     /// **project id in the BODY** — that, not any header, is what separates a
     /// 200 from a 403; a bare call fails no matter what metadata is attached.
     /// The project comes from loadCodeAssist's `cloudaicompanionProject`.
-    private func loadModelQuota(token: String) async throws -> FetchedUsage {
+    private func loadModelQuota(token: String, source: AuthSource, idToken: String?) async throws -> FetchedUsage {
         do {
-            if Self.cachedProject == nil {
+            if Self.cachedProject == nil || Self.cachedTier == nil {
                 let lca = try await call("loadCodeAssist", body: ["metadata": Self.metadata],
                                         token: token, agent: "antigravity")
                 if let s = lca["cloudaicompanionProject"] as? String { Self.cachedProject = s }
                 else if let o = lca["cloudaicompanionProject"] as? [String: Any] {
                     Self.cachedProject = o["id"] as? String
                 }
+                if let tier = lca["currentTier"] as? [String: Any], let id = tier["id"] as? String {
+                    Self.cachedTier = Self.tierLabel(id)
+                }
             }
             var body: [String: Any] = [:]
             if let p = Self.cachedProject { body["project"] = p }
             let root = try await call("fetchAvailableModels", body: body,
                                       token: token, agent: "antigravity")
-            let usage = try Self.parseModels(root)
+            var usage = try Self.parseModels(root)
+            usage.authSource = source
+            usage.accountEmail = idToken.flatMap(Self.emailFromJWT)
             Self.lastGood = (Date(), usage)
             return usage
         } catch {
@@ -370,13 +443,14 @@ struct GoogleAdapterImpl: UsageAdapter {
                                   label: "\(name) · \(g.n) model\(g.n == 1 ? "" : "s")",
                                   percent: g.pct, resetsAt: g.reset)
             }
-        return FetchedUsage(plan: "Antigravity", limits: limits)
+        // The tier, never the route in.
+        return FetchedUsage(plan: cachedTier, limits: limits)
     }
 
     /// The older Code Assist buckets: `retrieveUserQuota` with an empty body,
     /// one bucket per model. Agent usage never touches these, which is why
     /// they read 0% while Antigravity work is in flight.
-    private func loadLegacyQuota(token: String) async throws -> FetchedUsage {
+    private func loadLegacyQuota(token: String, source: AuthSource, idToken: String?) async throws -> FetchedUsage {
         let root = try await call("retrieveUserQuota", body: [:], token: token, agent: nil)
         guard let buckets = root["buckets"] as? [[String: Any]] else {
             throw AdapterError.transport("no quota buckets in response")
@@ -391,6 +465,9 @@ struct GoogleAdapterImpl: UsageAdapter {
                               resetsAt: (b["resetTime"] as? String).flatMap { iso.date(from: $0) })
         }
         guard !limits.isEmpty else { throw AdapterError.transport("quota response had no models") }
-        return FetchedUsage(plan: "Code Assist", limits: limits)
+        var out = FetchedUsage(plan: Self.cachedTier, limits: limits)
+        out.authSource = source
+        out.accountEmail = idToken.flatMap(Self.emailFromJWT)
+        return out
     }
 }

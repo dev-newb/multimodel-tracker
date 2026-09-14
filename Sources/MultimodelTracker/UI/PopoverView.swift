@@ -531,11 +531,31 @@ struct AccountCard: View {
                         Text(sub).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
                     }
                     if let plan = account.plan, !rolled {
+                        // The subscription TIER — filled, in the vendor's
+                        // accent. Nothing else belongs in this slot.
                         Text(plan.uppercased())
                             .font(.system(size: 8, weight: .bold)).tracking(0.5)
                             .padding(.horizontal, 5).padding(.vertical, 1.5)
                             .background(accent.opacity(0.16), in: Capsule())
                             .foregroundStyle(accent)
+                            .fixedSize()
+                            .layoutPriority(1)
+                    }
+                    if let via = account.authSource.chipLabel, !rolled, !compact {
+                        // How the credentials were found — a different kind
+                        // of fact, so deliberately a different kind of chip:
+                        // outlined and grey, never mistakable for a tier.
+                        Text(via)
+                            .font(.system(size: 8, weight: .medium))
+                            .padding(.horizontal, 5).padding(.vertical, 1.5)
+                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .fixedSize()
+                            // The chips are short and load-bearing; the email
+                            // is the long, secondary thing. Let it give way
+                            // first rather than clipping "via Antigravity".
+                            .layoutPriority(1)
                     }
                     Spacer()
                     // A usage tracker that quietly shows old numbers is worse

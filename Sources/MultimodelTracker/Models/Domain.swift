@@ -88,6 +88,25 @@ struct UsageLimit: Identifiable, Codable, Hashable {
     }
 }
 
+/// How an account's credentials were obtained. This is a different KIND of
+/// fact from the plan tier, and must never occupy the tier's place on the
+/// card: "Antigravity" is the route in, not something you subscribe to.
+enum AuthSource: String {
+    case browser, codexCLI, claudeCode, antigravity, geminiCLI, legacyCookies, unknown
+
+    /// What the card says, or nil when there is nothing worth saying — a
+    /// browser sign-in is the ordinary case and needs no badge.
+    var chipLabel: String? {
+        switch self {
+        case .codexCLI:     return "via Codex CLI"
+        case .claudeCode:   return "via Claude Code"
+        case .antigravity:  return "via Antigravity"
+        case .geminiCLI:    return "via gemini-cli"
+        case .browser, .legacyCookies, .unknown: return nil
+        }
+    }
+}
+
 /// A single subscription. Several of these can share a Provider.
 struct Account: Identifiable, Codable {
     let id: UUID
@@ -101,6 +120,16 @@ struct Account: Identifiable, Codable {
     var limits: [UsageLimit]
     var lastRefreshed: Date?
     var error: String?
+    /// Derived on every refresh from how the credentials actually read, and
+    /// DELIBERATELY absent from CodingKeys below. Adding a property to the
+    /// persisted shape is what once wiped the account list: Swift's
+    /// synthesised decoder throws keyNotFound for a missing key rather than
+    /// using the default. Derived state stays out of the stored shape.
+    var authSource: AuthSource = .unknown
+
+    private enum CodingKeys: String, CodingKey {
+        case id, provider, label, nickname, plan, limits, lastRefreshed, error
+    }
 
     init(id: UUID = UUID(), provider: Provider, label: String,
          nickname: String? = nil, plan: String? = nil, limits: [UsageLimit] = [],
