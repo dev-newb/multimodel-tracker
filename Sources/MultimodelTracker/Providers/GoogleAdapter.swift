@@ -253,7 +253,15 @@ struct GoogleAdapterImpl: UsageAdapter {
         var idToken: String?
         if let mine = await Keychain.googleRefreshTokenAsync(for: account.id) {
             refreshToken = mine
+            if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+                FileHandle.standardError.write(
+                    "google \(account.displayName): OWN token\n".data(using: .utf8)!)
+            }
         } else {
+            // Only the imported row may read the machine login. Any other row
+            // without its own token is a sign-in that never finished, and
+            // must say so rather than borrow someone else's numbers.
+            guard await Store.isMachineGoogleRow(account.id) else { throw AdapterError.notSignedIn }
             let antigravity = await GoogleCredentialSource.antigravityTokenBlob()
             guard let blob = antigravity ?? GoogleCredentialSource.geminiCLITokenBlob() else {
                 throw AdapterError.notSignedIn
@@ -331,6 +339,17 @@ struct GoogleAdapterImpl: UsageAdapter {
             }
         }
         if access == nil, let t = blob.accessToken { access = t }
+        guard let access else { throw AdapterError.notSignedIn }
+        return try await call("loadCodeAssist", body: ["metadata": Self.metadata],
+                              token: access, agent: "antigravity")
+    }
+
+    /// loadCodeAssist for a SPECIFIC account's refresh token.
+    func rawLoadCodeAssistUsing(refreshToken: String) async throws -> [String: Any] {
+        var access: String?
+        for client in GeminiOAuthClient.candidates() {
+            if let t = try? await exchange(refresh: refreshToken, client: client) { access = t; break }
+        }
         guard let access else { throw AdapterError.notSignedIn }
         return try await call("loadCodeAssist", body: ["metadata": Self.metadata],
                               token: access, agent: "antigravity")

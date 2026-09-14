@@ -282,6 +282,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if CommandLine.arguments.contains("--google-raw") {
             Task { @MainActor in
                 do {
+                    // Every Google row, with ITS OWN token — the only way to
+                    // compare a paying account against a free one.
+                    for acct in store.accounts(for: .google) {
+                        if let t = await Keychain.googleRefreshTokenAsync(for: acct.id) {
+                            do {
+                                let r = try await GoogleAdapterImpl().rawLoadCodeAssistUsing(refreshToken: t)
+                                let cur = (r["currentTier"] as? [String: Any])?["id"] as? String
+                                let paidN = (r["paidTier"] as? [String: Any])?["name"] as? String
+                                let paidI = (r["paidTier"] as? [String: Any])?["id"] as? String
+                                FileHandle.standardError.write(
+                                    "TIER \(acct.displayName): currentTier=\(cur ?? "-") paidTier=\(paidN ?? "-")/\(paidI ?? "-")\n".data(using: .utf8)!)
+                            } catch {
+                                FileHandle.standardError.write("TIER \(acct.displayName): failed \(error)\n".data(using: .utf8)!)
+                            }
+                        } else {
+                            FileHandle.standardError.write("TIER \(acct.displayName): machine creds row\n".data(using: .utf8)!)
+                        }
+                    }
                     let root = try await GoogleAdapterImpl().rawLoadCodeAssist()
                     let d = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
                     FileHandle.standardError.write(d); FileHandle.standardError.write("\n".data(using: .utf8)!)

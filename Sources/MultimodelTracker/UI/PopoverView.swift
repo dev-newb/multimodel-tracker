@@ -530,6 +530,23 @@ struct AccountCard: View {
                     if let sub = account.subtitle, !rolled, !compact {
                         Text(sub).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
                     }
+                    Spacer()
+                    // The chips sit AFTER the spacer, so they line up down
+                    // the column instead of starting wherever each account's
+                    // name and email happen to end.
+                    if let via = account.authSource.chipLabel, !rolled, !compact {
+                        // How the credentials were found — a different kind
+                        // of fact, so deliberately a different kind of chip:
+                        // outlined and grey, never mistakable for a tier.
+                        // Only an unusual route says anything at all.
+                        Text(via)
+                            .font(.system(size: 8, weight: .medium))
+                            .padding(.horizontal, 5).padding(.vertical, 1.5)
+                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
                     if let plan = account.plan, !rolled {
                         // The subscription TIER — filled, in the vendor's
                         // accent. Nothing else belongs in this slot.
@@ -539,25 +556,7 @@ struct AccountCard: View {
                             .background(accent.opacity(0.16), in: Capsule())
                             .foregroundStyle(accent)
                             .fixedSize()
-                            .layoutPriority(1)
                     }
-                    if let via = account.authSource.chipLabel, !rolled, !compact {
-                        // How the credentials were found — a different kind
-                        // of fact, so deliberately a different kind of chip:
-                        // outlined and grey, never mistakable for a tier.
-                        Text(via)
-                            .font(.system(size: 8, weight: .medium))
-                            .padding(.horizontal, 5).padding(.vertical, 1.5)
-                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .fixedSize()
-                            // The chips are short and load-bearing; the email
-                            // is the long, secondary thing. Let it give way
-                            // first rather than clipping "via Antigravity".
-                            .layoutPriority(1)
-                    }
-                    Spacer()
                     // A usage tracker that quietly shows old numbers is worse
                     // than one that shows nothing: a stalled refresh once left
                     // 33% on screen while the account was actually maxed out.

@@ -100,7 +100,7 @@ enum AuthSource: String {
         switch self {
         case .codexCLI:     return "via Codex CLI"
         case .claudeCode:   return "via Claude Code"
-        case .antigravity:  return "via Antigravity"
+        case .antigravity:  return "via AGY"
         case .geminiCLI:    return "via gemini-cli"
         case .browser, .legacyCookies, .unknown: return nil
         }

@@ -38,6 +38,7 @@ final class Store: ObservableObject {
         // gauge and the popover offers each vendor's first action. The old
         // seed ("personal@…" at 66%) predated the adapters and greeted every
         // new user with plausible numbers for accounts that didn't exist.
+        migrateGoogleMachineRows()
         maxedStyle = Self.style(forViewing: UserDefaults.standard.integer(forKey: maxedViewsKey))
         burnCycleStyle = BurnStyle(rawValue:
             ((max(UserDefaults.standard.integer(forKey: "mmt.burnViews"), 1) - 1) / 3)
@@ -195,9 +196,9 @@ final class Store: ObservableObject {
             a(.openai, "Agency", "agency@example.com", "Pro", codex(63, 0, 0, 2)),
             a(.openai, "Prototyping", "proto@example.com", "Pro", codex(88, 35, 52, 0)),
             a(.google, "Personal", "personal@example.com", "Free", [("g", "Gemini · 20 models", 0)], .antigravity),
-            a(.google, "Work", "work@example.com", "Pro", [("g", "Gemini · 20 models", 12)], .antigravity),
-            a(.google, "Studio", "studio@example.com", "Ultra", [("g", "Gemini · 20 models", 47)], .antigravity),
-            a(.google, "Team", "team@example.com", "Pro", [("g", "Gemini · 20 models", 79)], .geminiCLI),
+            a(.google, "Work", "work@example.com", "Pro", [("g", "Gemini · 20 models", 12)]),
+            a(.google, "Studio", "studio@example.com", "Ultra", [("g", "Gemini · 20 models", 47)]),
+            a(.google, "Team", "team@example.com", "Pro", [("g", "Gemini · 20 models", 79)]),
         ]
     }
 
@@ -327,6 +328,7 @@ final class Store: ObservableObject {
     }
 
     func remove(_ id: UUID) {
+        unmarkMachineGoogleRow(id)
         Keychain.deleteAll(for: id)
         // Leave nothing that --recover would faithfully resurrect: the burn
         // history and the per-account cookie jar both outlive the row.
@@ -436,6 +438,42 @@ final class Store: ObservableObject {
     /// on this Mac. The adapter reads those sources directly at fetch time,
     /// so the account is a named slot rather than a credential holder — which
     /// also means one is enough.
+    /// Rows that read the ONE Antigravity/gemini-cli login on this Mac.
+    /// Kept as its own preference rather than on the account, so the
+    /// persisted account shape never changes (that is what once wiped the
+    /// list). Without this marker, a Google row mid-sign-in would fall back
+    /// to the machine credentials and show ANOTHER account's numbers under
+    /// its name.
+    private static let machineRowsKey = "mmt.googleMachineRows"
+    static func isMachineGoogleRow(_ id: UUID) -> Bool {
+        (UserDefaults.standard.array(forKey: machineRowsKey) as? [String] ?? []).contains(id.uuidString)
+    }
+    private func markMachineGoogleRow(_ id: UUID) {
+        var v = UserDefaults.standard.array(forKey: Self.machineRowsKey) as? [String] ?? []
+        if !v.contains(id.uuidString) { v.append(id.uuidString) }
+        UserDefaults.standard.set(v, forKey: Self.machineRowsKey)
+    }
+    private func unmarkMachineGoogleRow(_ id: UUID) {
+        let v = (UserDefaults.standard.array(forKey: Self.machineRowsKey) as? [String] ?? [])
+            .filter { $0 != id.uuidString }
+        UserDefaults.standard.set(v, forKey: Self.machineRowsKey)
+    }
+
+    /// Google rows created before the marker existed read the machine
+    /// login by definition — they had no other way to. Run once: after
+    /// this, every row is marked at creation.
+    private func migrateGoogleMachineRows() {
+        let done = "mmt.googleMachineRowsMigrated"
+        guard !UserDefaults.standard.bool(forKey: done) else { return }
+        for a in accounts where a.provider == .google {
+            // A missing keychain item answers instantly and never prompts.
+            if Keychain.read(service: Keychain.googleService, account: a.id.uuidString) == nil {
+                markMachineGoogleRow(a.id)
+            }
+        }
+        UserDefaults.standard.set(true, forKey: done)
+    }
+
     @discardableResult
     func importGoogleCLI() -> Account? {
         // Only one row can ride the machine credentials — that login is a
@@ -447,6 +485,7 @@ final class Store: ObservableObject {
         guard viaAntigravity || GoogleCredentialSource.geminiCLITokenBlob() != nil else { return nil }
         var a = Account(provider: .google, label: viaAntigravity ? "Antigravity" : "gemini-cli")
         a.nickname = viaAntigravity ? "Antigravity" : "gemini-cli"
+        markMachineGoogleRow(a.id)
         accounts.append(a); save()
         Task { await refresh(a) }
         return a
