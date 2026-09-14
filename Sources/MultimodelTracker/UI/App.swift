@@ -191,8 +191,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                         let u = try await GoogleAdapterImpl(mode: mode).fetch(account: acct)
                         var out = "\n[\(mode.displayName)] plan=\(u.plan ?? "-") rows=\(u.limits.count)\n"
                         for l in u.limits {
+                            // The ABSOLUTE reset instant, not just the rounded
+                            // "4h": only this can tell a real window counting
+                            // down from a rolling one that never moves.
+                            let exact = l.resetsAt.map { ISO8601DateFormatter().string(from: $0) } ?? "none"
                             out += "   \(l.label): \(l.percent.map { String(format: "%.1f%%", $0) } ?? "-")"
-                                + "  \(l.resetText)\n"
+                                + "  \(l.resetText)  [resetTime \(exact)]\n"
                         }
                         FileHandle.standardError.write(out.data(using: .utf8)!)
                     } catch {
