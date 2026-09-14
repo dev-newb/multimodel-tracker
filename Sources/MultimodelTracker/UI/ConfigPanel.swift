@@ -467,6 +467,10 @@ struct LayoutPreview: View {
     let layout: OverflowLayout
     /// The column the preview fits into; the snapshot scales to it.
     var width: CGFloat = 210
+    /// True when any vendor had to be padded to two accounts for the mock.
+    private var padded: Bool {
+        Provider.allCases.contains { !store.accounts(for: $0).isEmpty && store.accounts(for: $0).count < 2 }
+    }
     @State private var image: NSImage?
 
     var body: some View {
@@ -488,6 +492,14 @@ struct LayoutPreview: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.14), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+            // These layouts only change a vendor with 2+ accounts, so a
+            // vendor with fewer is shown a partner — say so rather than let
+            // an invented name read as one of theirs.
+            if padded {
+                Text("Vendors with one account show an example partner.")
+                    .font(.system(size: 9)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(width: width)
         .task(id: "\(layout.rawValue)|\(store.accounts.count)") { render() }
@@ -532,9 +544,9 @@ private struct PreviewList: View {
 
     static func samples(_ p: Provider, upTo n: Int) -> [Account] {
         guard n > 0 else { return [] }
-        let names = ["Work", "Lab", "Team", "Second"]
+        let names = ["Example", "Example 2", "Example 3", "Example 4"]
         return (0..<n).map { i in
-            Account(provider: p, label: "\(names[i].lowercased())@example.com", nickname: names[i],
+            Account(provider: p, label: "example@\(p.rawValue).test", nickname: names[i],
                     plan: p == .openai ? "Pro" : (p == .anthropic ? "Max" : nil),
                     limits: p == .google
                         ? [.init(key: "g", label: "Gemini · 20 models", percent: 12, resetsAt: Date().addingTimeInterval(14_400))]
