@@ -73,9 +73,12 @@ enum Keychain {
         return creds
     }
 
+    private static var googleCache: [UUID: String] = [:]
+
     static func invalidateCache(for account: UUID) {
         openAICache[account] = nil
         anthropicCache[account] = nil
+        googleCache[account] = nil
     }
 
     /// Every account UUID that still has a stored token for `service`. The
@@ -134,6 +137,11 @@ enum Keychain {
 extension Keychain {
     static let openAIService    = "MultimodelTracker.openai"
     static let anthropicService = "MultimodelTracker.anthropic"
+    /// Google accounts added by browser sign-in keep their own refresh
+    /// token here. The Antigravity keychain item and the gemini-cli file
+    /// each hold ONE login, so per-account storage is what allows more
+    /// than one Google row.
+    static let googleService    = "MultimodelTracker.google"
 
     static func storeOpenAI(accessToken: String, accountId: String?,
                             refreshToken: String? = nil, for account: UUID) {
@@ -155,9 +163,32 @@ extension Keychain {
         store(service: anthropicService, account: account.uuidString, data: d)
     }
 
+    static func storeGoogle(refreshToken: String, for account: UUID) {
+        invalidateCache(for: account)
+        guard let d = try? JSONSerialization.data(withJSONObject: ["refresh_token": refreshToken]) else { return }
+        store(service: googleService, account: account.uuidString, data: d)
+    }
+
+    /// The stored refresh token for a browser-added Google account, or nil
+    /// when this row is the machine-credentials import.
+    @MainActor
+    static func googleRefreshTokenAsync(for account: UUID) async -> String? {
+        if let hit = googleCache[account] { return hit }
+        let raw: Data? = await withCheckedContinuation { cont in
+            keychainQueue.async {
+                cont.resume(returning: read(service: googleService, account: account.uuidString))
+            }
+        }
+        guard let raw,
+              let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: String],
+              let t = obj["refresh_token"] else { return nil }
+        googleCache[account] = t
+        return t
+    }
+
     /// Removing an account must not leave its secrets behind.
     static func deleteAll(for account: UUID) {
-        for svc in [openAIService, anthropicService] {
+        for svc in [openAIService, anthropicService, googleService] {
             delete(service: svc, account: account.uuidString)
         }
     }

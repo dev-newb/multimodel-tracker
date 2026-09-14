@@ -376,7 +376,6 @@ final class Store: ObservableObject {
     /// --add-anthropic debug flag. A failure lands on the row's error text
     /// (shown in Config as well as the popover), never silently.
     func signIn(_ account: Account) async {
-        guard account.provider != .google else { return }
         setError(nil, for: account.id)
         do {
             let email: String?
@@ -393,7 +392,9 @@ final class Store: ObservableObject {
                                         expiresAt: t.expiresAt, for: account.id)
                 email = t.email
             case .google:
-                return
+                let t = try await GoogleOAuth.signIn()
+                Keychain.storeGoogle(refreshToken: t.refreshToken, for: account.id)
+                email = t.email
             }
             // The flow learns the email; put it on the row so the account is
             // recognisable, like the Codex import does.
@@ -408,7 +409,6 @@ final class Store: ObservableObject {
     /// Config's Add: a new row for the provider, then its browser flow.
     @discardableResult
     func addAndSignIn(_ provider: Provider) -> Account? {
-        guard provider != .google else { return nil }
         let n = accounts(for: provider).count + 1
         guard let a = add(provider, label: "\(provider.displayName) account \(n)") else { return nil }
         Task { await signIn(a) }
@@ -438,7 +438,11 @@ final class Store: ObservableObject {
     /// also means one is enough.
     @discardableResult
     func importGoogleCLI() -> Account? {
-        guard canAdd(.google), accounts(for: .google).isEmpty else { return nil }
+        // Only one row can ride the machine credentials — that login is a
+        // property of the Mac, not of the row. Further Google accounts come
+        // in through the browser.
+        guard canAdd(.google),
+              !accounts(for: .google).contains(where: { $0.authSource != .browser }) else { return nil }
         let viaAntigravity = GoogleCredentialSource.antigravityKeychainBlob() != nil
         guard viaAntigravity || GoogleCredentialSource.geminiCLITokenBlob() != nil else { return nil }
         var a = Account(provider: .google, label: viaAntigravity ? "Antigravity" : "gemini-cli")

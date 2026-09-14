@@ -175,7 +175,10 @@ struct GoogleAdapterImpl: UsageAdapter {
 
     /// The project id comes from loadCodeAssist and rarely changes; holding it
     /// avoids a second round trip on every poll.
-    private static var cachedProject: String?
+    /// Per ACCOUNT, not global: several Google accounts have different
+    /// projects, tiers and last-good readings, and one shared slot would
+    /// show one account's numbers under another's name.
+    private static var cachedProject: [UUID: String] = [:]
     /// The account's Code Assist tier, from loadCodeAssist's
     /// `currentTier.id`. The tier's `name` is useless for this — Google
     /// returns "Antigravity" for BOTH the free and standard tiers — so the
@@ -183,7 +186,7 @@ struct GoogleAdapterImpl: UsageAdapter {
     /// endpoint: ids are `free-tier` / `standard-tier`, and the response's
     /// `paidTier` names "Google AI Pro" with its upgrade text naming
     /// "Google AI Ultra" — so the ladder is Free → Pro → Ultra.
-    private static var cachedTier: String?
+    private static var cachedTier: [UUID: String] = [:]
 
     /// Google reports TWO different ladders, and picking the wrong one is
     /// how this card came to read "Free" for a paying subscriber:
@@ -236,21 +239,36 @@ struct GoogleAdapterImpl: UsageAdapter {
     }
     /// Last good per-model read, held so a transient 403 shows the previous
     /// numbers (with the popover's "stale" chip) instead of an error row.
-    private static var lastGood: (at: Date, usage: FetchedUsage)?
+    private static var lastGood: [UUID: (at: Date, usage: FetchedUsage)] = [:]
 
     func fetch(account: Account) async throws -> FetchedUsage {
-        // Which local tool the credentials came from — reported to the card
-        // as the ROUTE IN, kept well away from the subscription tier.
-        let antigravity = await GoogleCredentialSource.antigravityTokenBlob()
-        guard let blob = antigravity ?? GoogleCredentialSource.geminiCLITokenBlob() else {
-            throw AdapterError.notSignedIn
+        // A browser-signed-in account carries its OWN refresh token, which is
+        // what lets several Google accounts coexist; the machine credentials
+        // (one Antigravity login, one gemini-cli file) are the fallback for
+        // the imported row.
+        var source: AuthSource = .browser
+        var refreshToken: String?
+        var storedAccess: String?
+        var storedExpiry: Date?
+        var idToken: String?
+        if let mine = await Keychain.googleRefreshTokenAsync(for: account.id) {
+            refreshToken = mine
+        } else {
+            let antigravity = await GoogleCredentialSource.antigravityTokenBlob()
+            guard let blob = antigravity ?? GoogleCredentialSource.geminiCLITokenBlob() else {
+                throw AdapterError.notSignedIn
+            }
+            source = antigravity != nil ? .antigravity : .geminiCLI
+            refreshToken = blob.refreshToken
+            storedAccess = blob.accessToken
+            storedExpiry = blob.expiry
+            idToken = blob.idToken
         }
-        let source: AuthSource = antigravity != nil ? .antigravity : .geminiCLI
         // Always mint a fresh access token. The stored one expires roughly
         // hourly and an idle agy does not rotate it, so trusting it is the
         // main cause of spurious 401s.
         var access: String?
-        if let refresh = blob.refreshToken {
+        if let refresh = refreshToken {
             for client in GeminiOAuthClient.candidates() {
                 do {
                     access = try await exchange(refresh: refresh, client: client)
@@ -267,15 +285,17 @@ struct GoogleAdapterImpl: UsageAdapter {
             }
         }
         // Only fall back to the stored token if it is genuinely still live.
-        if access == nil, let token = blob.accessToken,
-           blob.expiry.map({ $0 > Date().addingTimeInterval(60) }) ?? false {
+        if access == nil, let token = storedAccess,
+           storedExpiry.map({ $0 > Date().addingTimeInterval(60) }) ?? false {
             access = token
         }
         guard let access else { throw AdapterError.notSignedIn }
 
         switch mode {
-        case .codeAssist:  return try await loadLegacyQuota(token: access, source: source, idToken: blob.idToken)
-        case .antigravity: return try await loadModelQuota(token: access, source: source, idToken: blob.idToken)
+        case .codeAssist:
+            return try await loadLegacyQuota(token: access, source: source, idToken: idToken, id: account.id)
+        case .antigravity:
+            return try await loadModelQuota(token: access, source: source, idToken: idToken, id: account.id)
         }
     }
 
@@ -331,13 +351,12 @@ struct GoogleAdapterImpl: UsageAdapter {
         }
         if access == nil, let t = blob.accessToken { access = t }
         guard let access else { throw AdapterError.notSignedIn }
-        if Self.cachedProject == nil {
-            let lca = try await call("loadCodeAssist", body: ["metadata": Self.metadata], token: access, agent: "antigravity")
-            if let s = lca["cloudaicompanionProject"] as? String { Self.cachedProject = s }
-            else if let o = lca["cloudaicompanionProject"] as? [String: Any] { Self.cachedProject = o["id"] as? String }
-        }
+        var project: String?
+        let lca = try await call("loadCodeAssist", body: ["metadata": Self.metadata], token: access, agent: "antigravity")
+        if let s = lca["cloudaicompanionProject"] as? String { project = s }
+        else if let o = lca["cloudaicompanionProject"] as? [String: Any] { project = o["id"] as? String }
         var body: [String: Any] = [:]
-        if let p = Self.cachedProject { body["project"] = p }
+        if let p = project { body["project"] = p }
         return try await call("fetchAvailableModels", body: body, token: access, agent: "antigravity")
     }
 
@@ -374,38 +393,40 @@ struct GoogleAdapterImpl: UsageAdapter {
     /// **project id in the BODY** — that, not any header, is what separates a
     /// 200 from a 403; a bare call fails no matter what metadata is attached.
     /// The project comes from loadCodeAssist's `cloudaicompanionProject`.
-    private func loadModelQuota(token: String, source: AuthSource, idToken: String?) async throws -> FetchedUsage {
+    private func loadModelQuota(token: String, source: AuthSource, idToken: String?,
+                                id: UUID) async throws -> FetchedUsage {
         do {
-            if Self.cachedProject == nil || Self.cachedTier == nil {
+            if Self.cachedProject[id] == nil || Self.cachedTier[id] == nil {
                 let lca = try await call("loadCodeAssist", body: ["metadata": Self.metadata],
                                         token: token, agent: "antigravity")
-                if let s = lca["cloudaicompanionProject"] as? String { Self.cachedProject = s }
+                if let s = lca["cloudaicompanionProject"] as? String { Self.cachedProject[id] = s }
                 else if let o = lca["cloudaicompanionProject"] as? [String: Any] {
-                    Self.cachedProject = o["id"] as? String
+                    Self.cachedProject[id] = o["id"] as? String
                 }
                 // The paid subscription first; the Code Assist enrolment
                 // only as a fallback for accounts that have no paid plan.
                 if let paid = lca["paidTier"] as? [String: Any],
                    let label = Self.tierLabel(name: paid["name"] as? String, id: paid["id"] as? String) {
-                    Self.cachedTier = label
+                    Self.cachedTier[id] = label
                 } else if let tier = lca["currentTier"] as? [String: Any] {
-                    Self.cachedTier = Self.tierLabel(name: tier["name"] as? String,
-                                                     id: tier["id"] as? String)
+                    Self.cachedTier[id] = Self.tierLabel(name: tier["name"] as? String,
+                                                         id: tier["id"] as? String)
                 }
             }
             var body: [String: Any] = [:]
-            if let p = Self.cachedProject { body["project"] = p }
+            if let p = Self.cachedProject[id] { body["project"] = p }
             let root = try await call("fetchAvailableModels", body: body,
                                       token: token, agent: "antigravity")
             var usage = try Self.parseModels(root)
+            usage.plan = Self.cachedTier[id]
             usage.authSource = source
             usage.accountEmail = idToken.flatMap(Self.emailFromJWT)
-            Self.lastGood = (Date(), usage)
+            Self.lastGood[id] = (Date(), usage)
             return usage
         } catch {
             // A stale project id 403s; drop it so the next poll re-derives one.
-            Self.cachedProject = nil
-            if let held = Self.lastGood, Date().timeIntervalSince(held.at) < 3600 {
+            Self.cachedProject[id] = nil
+            if let held = Self.lastGood[id], Date().timeIntervalSince(held.at) < 3600 {
                 return held.usage
             }
             throw error
@@ -494,14 +515,15 @@ struct GoogleAdapterImpl: UsageAdapter {
                                   label: "\(name) · \(g.n) model\(g.n == 1 ? "" : "s")",
                                   percent: g.pct, resetsAt: g.reset)
             }
-        // The tier, never the route in.
-        return FetchedUsage(plan: cachedTier, limits: limits)
+        // The caller stamps the plan; it knows which account this is.
+        return FetchedUsage(plan: nil, limits: limits)
     }
 
     /// The older Code Assist buckets: `retrieveUserQuota` with an empty body,
     /// one bucket per model. Agent usage never touches these, which is why
     /// they read 0% while Antigravity work is in flight.
-    private func loadLegacyQuota(token: String, source: AuthSource, idToken: String?) async throws -> FetchedUsage {
+    private func loadLegacyQuota(token: String, source: AuthSource, idToken: String?,
+                                 id: UUID) async throws -> FetchedUsage {
         let root = try await call("retrieveUserQuota", body: [:], token: token, agent: nil)
         guard let buckets = root["buckets"] as? [[String: Any]] else {
             throw AdapterError.transport("no quota buckets in response")
@@ -516,7 +538,7 @@ struct GoogleAdapterImpl: UsageAdapter {
                               resetsAt: (b["resetTime"] as? String).flatMap { iso.date(from: $0) })
         }
         guard !limits.isEmpty else { throw AdapterError.transport("quota response had no models") }
-        var out = FetchedUsage(plan: Self.cachedTier, limits: limits)
+        var out = FetchedUsage(plan: Self.cachedTier[id], limits: limits)
         out.authSource = source
         out.accountEmail = idToken.flatMap(Self.emailFromJWT)
         return out

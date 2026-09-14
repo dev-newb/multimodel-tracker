@@ -153,16 +153,17 @@ struct AccountsView: View {
                         .font(.system(size: 11))
                 }
                 if p == .google {
-                    // The adapter reads the Antigravity/gemini-cli login that
-                    // already lives on this Mac — importing IS the sign-in.
-                    Button("Import Antigravity / gemini-cli") { store.importGoogleCLI() }
+                    // Importing adopts the one Antigravity/gemini-cli login on
+                    // this Mac; Add signs a FURTHER Google account in through
+                    // the browser, which is the only way to hold several.
+                    Button("Import Antigravity") { store.importGoogleCLI() }
                         .font(.system(size: 11))
-                        .disabled(!store.accounts(for: .google).isEmpty)
-                } else {
-                    Button("Add") { addAccount(p) }
-                        .font(.system(size: 11))
-                        .disabled(!store.canAdd(p))
+                        .disabled(store.accounts(for: .google).contains { $0.authSource != .browser }
+                                  || !store.canAdd(.google))
                 }
+                Button("Add") { addAccount(p) }
+                    .font(.system(size: 11))
+                    .disabled(!store.canAdd(p))
             }
             if accounts.isEmpty {
                 Text(emptyHint(p)).font(.system(size: 11)).foregroundStyle(.tertiary)
@@ -194,7 +195,7 @@ struct AccountsView: View {
         switch p {
         case .anthropic: return "Import the Claude Code login, or add an account and sign in with your browser."
         case .openai:    return "Import the Codex CLI login, or add an account and sign in with your browser."
-        case .google:    return "Import the Antigravity or gemini-cli login already on this Mac."
+        case .google:    return "Import the Antigravity or gemini-cli login on this Mac, or add an account and sign in with your browser."
         }
     }
 
@@ -256,14 +257,7 @@ struct AccountRow: View {
                 }
             }
             Spacer()
-            if account.provider != .google {
-                Button("Sign in", action: onSignIn).font(.system(size: 11))
-            } else {
-                // Same footprint as "Sign in", invisible: Google rows have no
-                // sign-in, and without the placeholder the nickname field ran
-                // past the margin every other row's field stops at.
-                Button("Sign in") {}.font(.system(size: 11)).hidden()
-            }
+            Button("Sign in", action: onSignIn).font(.system(size: 11))
             Button(role: .destructive, action: onRemove) {
                 Image(systemName: "trash").font(.system(size: 11))
             }.buttonStyle(.borderless)

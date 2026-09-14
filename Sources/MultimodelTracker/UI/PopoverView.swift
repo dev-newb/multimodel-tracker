@@ -766,10 +766,11 @@ struct FirstRunView: View {
                             }
                             Button("Sign in with browser") { store.addAndSignIn(.openai) }
                         case .google:
-                            Button("Import Antigravity / gemini-cli") {
+                            Button("Import Antigravity") {
                                 report(store.importGoogleCLI() == nil
                                        ? "No Antigravity or gemini-cli login found on this Mac." : nil)
                             }
+                            Button("Sign in with browser") { store.addAndSignIn(.google) }
                         }
                     }
                     .font(.system(size: 11))

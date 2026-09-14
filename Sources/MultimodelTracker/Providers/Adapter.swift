@@ -1,7 +1,7 @@
 import Foundation
 
 struct FetchedUsage {
-    let plan: String?
+    var plan: String?
     let limits: [UsageLimit]
     /// OpenAI's banked limit-reset count. Kept as a number as well as in the
     /// row label, because the "banked reset added" alert needs to compare it
