@@ -552,10 +552,14 @@ struct AccountCard: View {
                         // accent. Nothing else belongs in this slot.
                         Text(plan.uppercased())
                             .font(.system(size: 8, weight: .bold)).tracking(0.5)
+                            .lineLimit(1).fixedSize()
                             .padding(.horizontal, 5).padding(.vertical, 1.5)
+                            // One width for every tier, so PRO and FREE start
+                            // at the same x down the column instead of each
+                            // hugging its own text.
+                            .frame(minWidth: 46)
                             .background(accent.opacity(0.16), in: Capsule())
                             .foregroundStyle(accent)
-                            .fixedSize()
                     }
                     // A usage tracker that quietly shows old numbers is worse
                     // than one that shows nothing: a stalled refresh once left

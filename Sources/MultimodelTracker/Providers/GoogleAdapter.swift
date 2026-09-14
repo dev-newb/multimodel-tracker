@@ -225,6 +225,29 @@ struct GoogleAdapterImpl: UsageAdapter {
         }
     }
 
+    /// Who the access token belongs to, asked of Google directly. The
+    /// imported row has no id token to read a name out of (Antigravity's
+    /// keychain payload carries none), but it does have a live access
+    /// token — and if that token carries the email scope, userinfo will
+    /// name the account. Cached per account: one call per launch, and a
+    /// failure is cached too so a token without the scope isn't re-asked
+    /// on every poll.
+    private static var emailCache: [UUID: String?] = [:]
+
+    static func userInfoEmail(accessToken: String, id: UUID) async -> String? {
+        if let hit = emailCache[id] { return hit }
+        var req = URLRequest(url: URL(string: "https://www.googleapis.com/oauth2/v3/userinfo")!)
+        req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        var found: String?
+        if let (d, r) = try? await URLSession.shared.data(for: req),
+           (r as? HTTPURLResponse)?.statusCode == 200,
+           let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+            found = o["email"] as? String
+        }
+        emailCache[id] = found
+        return found
+    }
+
     /// The `email` claim of an OIDC id token, so a Google row names its
     /// account like every other row does.
     static func emailFromJWT(_ token: String) -> String? {
@@ -439,7 +462,14 @@ struct GoogleAdapterImpl: UsageAdapter {
             var usage = try Self.parseModels(root)
             usage.plan = Self.cachedTier[id]
             usage.authSource = source
-            usage.accountEmail = idToken.flatMap(Self.emailFromJWT)
+            var email = idToken.flatMap(Self.emailFromJWT)
+            if email == nil { email = await Self.userInfoEmail(accessToken: token, id: id) }
+            usage.accountEmail = email
+            if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+                FileHandle.standardError.write(
+                    "google email for \(id.uuidString.prefix(8)): \(usage.accountEmail ?? "nil")\n"
+                        .data(using: .utf8)!)
+            }
             Self.lastGood[id] = (Date(), usage)
             return usage
         } catch {
