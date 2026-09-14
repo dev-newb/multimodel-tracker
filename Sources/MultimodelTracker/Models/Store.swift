@@ -101,8 +101,12 @@ final class Store: ObservableObject {
     private var pendingBanked = false
     private var pendingLimitReached = false
 
-    static let earlyResetFrom = 5.0   // was at least this full...
+    static let earlyResetFrom = 20.0  // was at least this full...
     static let earlyResetTo = 1.0     // ...and is now this empty
+    /// ...and the window it was promised was still this far off, so an
+    /// ordinary rollover a few minutes either side of its promise is not
+    /// mistaken for a limit cleared early.
+    static let earlyResetMargin: TimeInterval = 15 * 60
 
     struct BurnSample: Codable { let t: Date; let v: Double }
     private var burnHistory: [String: [BurnSample]] = [:]
@@ -692,14 +696,34 @@ final class Store: ObservableObject {
     /// stay silent because by the time those read empty, the promised time has
     /// already passed.
     private func noteAlertTriggers(fetched: FetchedUsage, accountID: UUID) {
+        let provider = accounts.first { $0.id == accountID }?.provider
         for limit in fetched.limits {
             guard let pct = limit.percent else { continue }
             let key = "\(accountID)/\(limit.key)"
-            if let prev = poolBefore[key],
+            // An EARLY clear is a Codex concept: a banked reset spent to
+            // wipe a limit before its window was due. Three guards, each
+            // added because its absence produced a false alarm:
+            //   • only where the event exists at all. Google's Antigravity
+            //     quota is a ROLLING window whose reset time is always ~4h
+            //     out, so it is permanently "in the future" — every dip and
+            //     refill there rang the choir with nothing having reset.
+            //   • the promise must be MEANINGFULLY early, not a couple of
+            //     minutes' skew around an ordinary rollover.
+            //   • the pool must have been genuinely full-ish; 5% falling to
+            //     0 is noise, not an event.
+            if provider == .openai,
+               let prev = poolBefore[key],
                prev.pct >= Self.earlyResetFrom,
                pct <= Self.earlyResetTo,
-               let promised = prev.resetsAt, promised > Date() {
+               let promised = prev.resetsAt,
+               promised > Date().addingTimeInterval(Self.earlyResetMargin) {
                 pendingEarlyReset = true
+                if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
+                    FileHandle.standardError.write(
+                        ("early-reset: \(limit.label) \(Int(prev.pct))% -> \(Int(pct))%, "
+                         + "was promised in \(Int(promised.timeIntervalSinceNow / 60))m\n")
+                            .data(using: .utf8)!)
+                }
             }
             // Edge trigger only: the wall is hit ONCE, when a pool crosses
             // to full — a pool sitting at 100 across polls stays silent.
