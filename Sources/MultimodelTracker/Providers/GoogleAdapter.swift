@@ -185,6 +185,26 @@ struct GoogleAdapterImpl: UsageAdapter {
     /// "Google AI Ultra" — so the ladder is Free → Pro → Ultra.
     private static var cachedTier: String?
 
+    /// Google reports TWO different ladders, and picking the wrong one is
+    /// how this card came to read "Free" for a paying subscriber:
+    ///   • `currentTier` is the Gemini CODE ASSIST enrolment — free-tier /
+    ///     standard-tier / enterprise-tier. A separate product, free for
+    ///     most people, and NOT what funds Antigravity's quota.
+    ///   • `paidTier` is the consumer GOOGLE AI subscription actually paying
+    ///     for this usage: g1-pro-tier "Google AI Pro", whose own upgrade
+    ///     text offers Ultra as the next step up (verified live).
+    /// The subscription is what a person means by "my plan", so it wins.
+    static func tierLabel(name: String?, id: String?) -> String? {
+        // The consumer plan names are the least ambiguous thing Google
+        // returns — "Google AI Pro" / "Google AI Ultra".
+        if let n = name?.lowercased() {
+            if n.contains("ultra") { return "Ultra" }
+            if n.contains("pro")   { return "Pro" }
+        }
+        guard let id else { return name }
+        return tierLabel(id)
+    }
+
     static func tierLabel(_ id: String) -> String {
         switch id {
         case "free-tier":       return "Free"
@@ -296,6 +316,31 @@ struct GoogleAdapterImpl: UsageAdapter {
                               token: access, agent: "antigravity")
     }
 
+    /// Diagnostic companion to rawLoadCodeAssist: the models call, to see
+    /// whether the real subscription shows up there.
+    func rawFetchModels() async throws -> [String: Any] {
+        guard let blob = await GoogleCredentialSource.antigravityTokenBlob()
+                ?? GoogleCredentialSource.geminiCLITokenBlob() else { throw AdapterError.notSignedIn }
+        var access: String?
+        if let refresh = blob.refreshToken {
+            for client in GeminiOAuthClient.candidates() {
+                if let t = try? await exchange(refresh: refresh, client: client) {
+                    access = t; GeminiOAuthClient.winner = client; break
+                }
+            }
+        }
+        if access == nil, let t = blob.accessToken { access = t }
+        guard let access else { throw AdapterError.notSignedIn }
+        if Self.cachedProject == nil {
+            let lca = try await call("loadCodeAssist", body: ["metadata": Self.metadata], token: access, agent: "antigravity")
+            if let s = lca["cloudaicompanionProject"] as? String { Self.cachedProject = s }
+            else if let o = lca["cloudaicompanionProject"] as? [String: Any] { Self.cachedProject = o["id"] as? String }
+        }
+        var body: [String: Any] = [:]
+        if let p = Self.cachedProject { body["project"] = p }
+        return try await call("fetchAvailableModels", body: body, token: access, agent: "antigravity")
+    }
+
     private static let metadata: [String: String] = [
         "ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"
     ]
@@ -338,8 +383,14 @@ struct GoogleAdapterImpl: UsageAdapter {
                 else if let o = lca["cloudaicompanionProject"] as? [String: Any] {
                     Self.cachedProject = o["id"] as? String
                 }
-                if let tier = lca["currentTier"] as? [String: Any], let id = tier["id"] as? String {
-                    Self.cachedTier = Self.tierLabel(id)
+                // The paid subscription first; the Code Assist enrolment
+                // only as a fallback for accounts that have no paid plan.
+                if let paid = lca["paidTier"] as? [String: Any],
+                   let label = Self.tierLabel(name: paid["name"] as? String, id: paid["id"] as? String) {
+                    Self.cachedTier = label
+                } else if let tier = lca["currentTier"] as? [String: Any] {
+                    Self.cachedTier = Self.tierLabel(name: tier["name"] as? String,
+                                                     id: tier["id"] as? String)
                 }
             }
             var body: [String: Any] = [:]

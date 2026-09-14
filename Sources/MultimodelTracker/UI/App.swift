@@ -285,6 +285,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                     let root = try await GoogleAdapterImpl().rawLoadCodeAssist()
                     let d = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
                     FileHandle.standardError.write(d); FileHandle.standardError.write("\n".data(using: .utf8)!)
+                    // Also the models call — anything subscription-shaped in it?
+                    let models = try await GoogleAdapterImpl().rawFetchModels()
+                    let keys = models.keys.sorted().joined(separator: ", ")
+                    FileHandle.standardError.write("\n=== fetchAvailableModels top-level keys: \(keys)\n".data(using: .utf8)!)
+                    for (k, v) in models where k != "models" {
+                        FileHandle.standardError.write("  \(k) = \(v)\n".data(using: .utf8)!)
+                    }
                 } catch {
                     FileHandle.standardError.write("google-raw failed: \(error)\n".data(using: .utf8)!)
                 }

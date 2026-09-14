@@ -156,6 +156,7 @@ Antigravity's token can never work.
 | `--bridge-test` | probe the claude.ai page bridge |
 | `--cursor-probe` | walk the pointer down the Config panel, report live cursor vs the governor's decision |
 | `--loopback-test` | exercise the OAuth redirect catcher without a browser |
+| `--google-raw` | dump Google's `loadCodeAssist` and `fetchAvailableModels` responses verbatim |
 | `--mock` | fill the app with 12 fabricated accounts (4 per vendor) for UI work — saves nothing, fetches nothing |
 | `MMT_DEBUG=1` | log refreshes and window metrics to stderr |
 
