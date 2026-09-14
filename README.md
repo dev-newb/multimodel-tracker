@@ -28,6 +28,34 @@ at any later time — say the menu bar is crowded and macOS has hidden the
 item — opening **Multimodel Tracker** from Applications or Spotlight brings
 Config up again.
 
+## What it looks like
+
+A full house — twelve accounts, four per vendor — under each of the popover's
+layouts. Every name, address and number below is fabricated demo data
+(`--mock`), not anyone's real usage.
+
+<p align="center">
+  <img src="docs/screenshots/mmt-rollup.png" width="290" alt="Roll-up rows: each account a one-line summary, the busiest expanded">
+  <img src="docs/screenshots/mmt-grid.png" width="430" alt="Two-up grid: a vendor's accounts side by side">
+</p>
+
+**Roll-up rows** (left, the default) collapse each account to its nickname,
+worst pool and a mini bar; click one to expand the full card, and the busiest
+account per vendor starts open. **Two-up grid** (right) widens the popover and
+lays a vendor's accounts side by side — one of three overflow layouts that
+engage automatically when the popover would otherwise outgrow your screen.
+
+<p align="center">
+  <img src="docs/screenshots/mmt-pager.png" width="290" alt="Vendor pager: one account per vendor with arrows and dots in the header">
+  <img src="docs/screenshots/mmt-tabs.png" width="290" alt="Account tabs: a tab per account showing its worst pool">
+</p>
+
+**Vendor pager** (left) shows one account per vendor at full size, with arrows
+and dots in the header — a dot turns red when an account you can't see is past
+90%. **Account tabs** (right) puts every account's worst pool in a tab strip.
+Choose between them in **Config → Layout**, which previews each one against
+your own accounts.
+
 ## Install / build
 
 Requires macOS 14+ and Xcode command-line tools.
@@ -128,6 +156,7 @@ Antigravity's token can never work.
 | `--bridge-test` | probe the claude.ai page bridge |
 | `--cursor-probe` | walk the pointer down the Config panel, report live cursor vs the governor's decision |
 | `--loopback-test` | exercise the OAuth redirect catcher without a browser |
+| `--mock` | fill the app with 12 fabricated accounts (4 per vendor) for UI work — saves nothing, fetches nothing |
 | `MMT_DEBUG=1` | log refreshes and window metrics to stderr |
 
 ## Layout

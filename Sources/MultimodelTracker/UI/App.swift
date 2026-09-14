@@ -52,6 +52,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.activate(ignoringOtherApps: true)
             return
         }
+        // `--mock` fills the app with 12 fabricated accounts (4 per vendor)
+        // for exercising the popover's overflow layouts. Inert by
+        // construction: no saving, no network. Run it from a clone with its
+        // own bundle id so preferences land in a separate domain too.
+        if CommandLine.arguments.contains("--mock") { store.enableMockMode() }
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.action = #selector(togglePopover)
         statusItem.button?.target = self

@@ -145,6 +145,60 @@ final class Store: ObservableObject {
         burnCycleStyle = BurnStyle(rawValue: ((max(n, 1) - 1) / 3) % BurnStyle.allCases.count) ?? .firestorm
     }
 
+    // MARK: --mock, for UI work only
+    /// A full house of FABRICATED accounts (4 per vendor) for exercising the
+    /// layouts and for screenshots. Every name and address here is invented
+    /// and uses the reserved example.com domain — no real account of anyone's
+    /// appears in mock runs or in any image made from them.
+    /// popover's layouts. Deliberately inert: with mockMode on, save() and
+    /// every refresh are no-ops, so a mock run can never write over real
+    /// accounts — the data-loss trap this project has been bitten by before.
+    /// Meant to run from a clone with its own bundle id, so even preferences
+    /// land in a separate domain.
+    private(set) var mockMode = false
+
+    func enableMockMode() {
+        mockMode = true
+        accounts = Self.mockAccounts()
+        lastRefresh = Date()        // the header reads "just now", not "never"
+    }
+
+    private static func mockAccounts() -> [Account] {
+        func a(_ p: Provider, _ nick: String, _ email: String, _ plan: String?,
+               _ pools: [(String, String, Double?)]) -> Account {
+            Account(provider: p, label: email, nickname: nick, plan: plan,
+                    limits: pools.map { pool in
+                        // A banked-resets row is a count, with no reset clock.
+                        let hasClock = pool.2 != nil
+                        return .init(key: pool.0, label: pool.1, percent: pool.2,
+                                     resetsAt: hasClock ? Date().addingTimeInterval(Double.random(in: 3600...432_000)) : nil)
+                    },
+                    lastRefreshed: Date())
+        }
+        let cl: [(String, String, Double?)] = [("5h", "5-hour limit", 0), ("7d", "Weekly · all models", 0), ("fable", "Weekly · Fable", 0)]
+        func claude(_ a5: Double, _ aw: Double, _ af: Double) -> [(String, String, Double?)] {
+            [(cl[0].0, cl[0].1, a5), (cl[1].0, cl[1].1, aw), (cl[2].0, cl[2].1, af)]
+        }
+        func codex(_ w: Double, _ sw: Double, _ s5: Double, _ banked: Int) -> [(String, String, Double?)] {
+            [("codex_7d", "Codex · weekly", w), ("spark_7d", "GPT-5.3-Codex-Spark · weekly", sw),
+             ("spark_5h", "GPT-5.3-Codex-Spark · 5h", s5), ("resets", "Banked resets · \(banked)", nil)]
+        }
+        return [
+            a(.anthropic, "Personal", "personal@example.com", "Max", claude(98, 71, 98)),
+            a(.anthropic, "Work", "work@example.com", "Max", claude(0, 58, 22)),
+            a(.anthropic, "Side project", "side@example.com", "Max", claude(44, 31, 12)),
+            a(.anthropic, "Research", "research@example.com", "Max", claude(12, 91, 67)),
+            a(.openai, "Personal", "personal@example.com", "Pro", codex(100, 0, 0, 1)),
+            a(.openai, "Work", "work@example.com", "Pro", codex(26, 10, 4, 0)),
+            a(.openai, "Agency", "agency@example.com", "Pro", codex(63, 0, 0, 2)),
+            a(.openai, "Prototyping", "proto@example.com", "Pro", codex(88, 35, 52, 0)),
+            a(.google, "Personal", "personal@example.com", "Antigravity", [("g", "Gemini · 20 models", 0)]),
+            a(.google, "Work", "work@example.com", "Antigravity", [("g", "Gemini · 20 models", 12)]),
+            a(.google, "Studio", "studio@example.com", "Antigravity", [("g", "Gemini · 20 models", 47)]),
+            a(.google, "Team", "team@example.com", "Antigravity", [("g", "Gemini · 20 models", 79)]),
+        ]
+    }
+
     // MARK: popover overflow layout
     /// How a vendor with several accounts is shown once the popover would
     /// outgrow the screen (or always / never, per overflowMode).
@@ -480,6 +534,7 @@ final class Store: ObservableObject {
     /// accounts hitting one vendor at the same instant is exactly what gets a
     /// client rate-limited or fingerprinted.
     func refreshAll() async {
+        guard !mockMode else { return }      // --mock never touches the network
         guard !isRefreshing else { return }
         isRefreshing = true
         pendingEarlyReset = false; pendingBanked = false; pendingLimitReached = false
@@ -507,6 +562,7 @@ final class Store: ObservableObject {
     }
 
     func refresh(_ account: Account) async {
+        guard !mockMode else { return }
         var a = account
         // The imported Codex account can lose its keychain item when the
         // item's ACL is deliberately reset (signature migration). The source
@@ -767,6 +823,7 @@ final class Store: ObservableObject {
 
     // MARK: persistence (metadata only — never tokens; those live in Keychain)
     private func save() {
+        guard !mockMode else { return }      // never write over real accounts
         if let d = try? JSONEncoder().encode(accounts) {
             UserDefaults.standard.set(d, forKey: defaultsKey)
         }
