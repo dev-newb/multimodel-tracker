@@ -12,7 +12,7 @@ enum SoundKind: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .burn:   return "Burning tokens quickly"
-        case .reset:  return "Limit reset early (Codex)"
+        case .reset:  return "Limit reset"
         case .banked: return "Banked reset added (Codex)"
         case .limit:  return "Usage limit reached"
         }

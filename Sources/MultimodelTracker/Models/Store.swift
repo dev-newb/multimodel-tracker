@@ -101,7 +101,7 @@ final class Store: ObservableObject {
     private var pendingBanked = false
     private var pendingLimitReached = false
 
-    static let earlyResetFrom = 20.0  // was at least this full...
+    static let earlyResetFrom = 5.0    // was at least this full...
     static let earlyResetTo = 1.0     // ...and is now this empty
     /// ...and the window it was promised was still this far off, so an
     /// ordinary rollover a few minutes either side of its promise is not
@@ -700,18 +700,21 @@ final class Store: ObservableObject {
         for limit in fetched.limits {
             guard let pct = limit.percent else { continue }
             let key = "\(accountID)/\(limit.key)"
-            // An EARLY clear is a Codex concept: a banked reset spent to
-            // wipe a limit before its window was due. Three guards, each
-            // added because its absence produced a false alarm:
-            //   • only where the event exists at all. Google's Antigravity
-            //     quota is a ROLLING window whose reset time is always ~4h
-            //     out, so it is permanently "in the future" — every dip and
-            //     refill there rang the choir with nothing having reset.
-            //   • the promise must be MEANINGFULLY early, not a couple of
-            //     minutes' skew around an ordinary rollover.
-            //   • the pool must have been genuinely full-ish; 5% falling to
-            //     0 is noise, not an event.
-            if provider == .openai,
+            // A limit reset is every vendor's event. The one exclusion is
+            // Google, and it is about GOOGLE'S MECHANISM, not about whose
+            // event this is: the Antigravity quota is a ROLLING window whose
+            // resetTime tracks the clock (measured: request + 5h 0m 07s, four
+            // samples, the deadline advancing exactly as fast as time passed).
+            // It never arrives, so "the reset is still ahead" is permanently
+            // true there, and the quota refills continuously rather than
+            // clearing — ordinary Gemini use rang the choir with nothing
+            // having reset. Google has no discrete reset to detect; when it
+            // gains one, drop this clause.
+            //
+            // The margin is what separates EARLY from ordinary: a window
+            // rolling over a few minutes either side of its promised time is
+            // not a limit cleared ahead of schedule.
+            if provider != .google,
                let prev = poolBefore[key],
                prev.pct >= Self.earlyResetFrom,
                pct <= Self.earlyResetTo,

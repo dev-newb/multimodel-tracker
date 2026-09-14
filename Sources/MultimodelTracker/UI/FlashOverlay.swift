@@ -22,10 +22,11 @@ enum FlashEvent: String, CaseIterable, Identifiable {
         case .limit:  return "Usage limit!"
         }
     }
-    /// Matches the sound rows' wording — reset/banked are Codex-only events.
+    /// Matches the sound rows' wording. A limit reset is EVERY vendor's
+    /// event; only the banked reset is Codex's alone.
     var displayName: String {
         switch self {
-        case .reset:  return "Limit reset early (Codex)"
+        case .reset:  return "Limit reset"
         case .banked: return "Banked reset added (Codex)"
         case .burn:   return "Burning tokens"
         case .limit:  return "Usage limit reached"
