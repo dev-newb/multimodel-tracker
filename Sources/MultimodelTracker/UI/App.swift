@@ -207,6 +207,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             }
         }
 
+        // `--usage-raw` fetches every account through the SAME adapter path a
+        // refresh uses and prints each pool with its ABSOLUTE reset instant
+        // and the minutes until it. The card shows a rounded "resets 4h",
+        // which cannot tell a real deadline from a rolling one, nor a right
+        // one from a wrong one -- and both questions have now mattered.
+        if CommandLine.arguments.contains("--usage-raw") {
+            Task { @MainActor in
+                let iso = ISO8601DateFormatter()
+                for acct in store.accounts {
+                    let adapter: UsageAdapter = acct.provider == .google
+                        ? GoogleAdapterImpl(mode: store.googleMode)
+                        : ProviderRegistry.adapter(for: acct.provider)
+                    var out = "\n[\(acct.provider.rawValue)] \(acct.displayName)\n"
+                    do {
+                        let u = try await adapter.fetch(account: acct)
+                        for l in u.limits {
+                            let pct = l.percent.map { String(format: "%5.1f%%", $0) } ?? "    -"
+                            let when = l.resetsAt.map {
+                                "\(iso.string(from: $0))  (in \(Int($0.timeIntervalSinceNow / 60))m)"
+                            } ?? "none"
+                            out += "   \(pct)  \(l.key.padding(toLength: 20, withPad: " ", startingAt: 0))  \(when)\n"
+                        }
+                    } catch {
+                        out += "   FAILED: \(error)\n"
+                    }
+                    FileHandle.standardError.write(out.data(using: .utf8)!)
+                }
+                exit(0)
+            }
+        }
+
         // `--render-tip <dir>` renders a row with the tooltip forced visible,
         // so its size and placement can be checked without a real mouse.
         if let i = CommandLine.arguments.firstIndex(of: "--render-tip"),

@@ -97,16 +97,20 @@ final class Store: ObservableObject {
     private var poolBefore: [String: PoolSnapshot] = [:]
     private var bankedBefore: [UUID: Int] = [:]
     /// Set during a refresh pass, acted on once at the end.
-    private var pendingEarlyReset = false
+    private var pendingReset = false
     private var pendingBanked = false
     private var pendingLimitReached = false
 
-    static let earlyResetFrom = 5.0    // was at least this full...
-    static let earlyResetTo = 1.0     // ...and is now this empty
-    /// ...and the window it was promised was still this far off, so an
-    /// ordinary rollover a few minutes either side of its promise is not
-    /// mistaken for a limit cleared early.
-    static let earlyResetMargin: TimeInterval = 15 * 60
+    /// A reset is worth the choir when the pool was SUBSTANTIALLY into its
+    /// limit and is now clear. Not "cleared early": vendors' promised reset
+    /// times cannot carry that test (Google's never arrives; Anthropic's
+    /// session promise is rounded to the hour while the pool clears at some
+    /// other minute), and early-or-not was never what made a reset worth
+    /// hearing. The line at half is a judgment: a 5-hour pool rolling over
+    /// at 16% is the clock ticking, and Rich called it "nothing reset"; a
+    /// maxed weekly pool coming back is the whole point of an 18s choir.
+    static let resetFrom = 50.0   // was at least this full...
+    static let resetTo = 1.0      // ...and is now this empty
 
     struct BurnSample: Codable { let t: Date; let v: Double }
     private var burnHistory: [String: [BurnSample]] = [:]
@@ -587,7 +591,7 @@ final class Store: ObservableObject {
         guard !mockMode else { return }      // --mock never touches the network
         guard !isRefreshing else { return }
         isRefreshing = true
-        pendingEarlyReset = false; pendingBanked = false; pendingLimitReached = false
+        pendingReset = false; pendingBanked = false; pendingLimitReached = false
         passSuccesses = 0; passConnectivityFailures = 0
         defer {
             isRefreshing = false
@@ -691,52 +695,45 @@ final class Store: ObservableObject {
         return String(describing: error)
     }
 
-    /// An early clear is a pool that fell from full-ish to empty while the
-    /// provider's PROMISED reset was still in the future. Scheduled rollovers
-    /// stay silent because by the time those read empty, the promised time has
-    /// already passed.
+    /// A limit reset is a pool that fell from substantially used to empty
+    /// between two polls -- on schedule or early, it makes no difference.
+    /// The promised reset time is recorded for the log but decides nothing:
+    /// it was tried as the test and failed twice (see resetFrom).
     private func noteAlertTriggers(fetched: FetchedUsage, accountID: UUID) {
-        let provider = accounts.first { $0.id == accountID }?.provider
+        let acct = accounts.first { $0.id == accountID }
+        let provider = acct?.provider
+        let accountLabel = acct.map { "\($0.provider.rawValue)/\($0.displayName)" } ?? accountID.uuidString
         for limit in fetched.limits {
             guard let pct = limit.percent else { continue }
             let key = "\(accountID)/\(limit.key)"
             // A limit reset is every vendor's event. The one exclusion is
-            // Google, and it is about GOOGLE'S MECHANISM, not about whose
-            // event this is: the Antigravity quota is a ROLLING window whose
-            // resetTime tracks the clock (measured: request + 5h 0m 07s, four
-            // samples, the deadline advancing exactly as fast as time passed).
-            // It never arrives, so "the reset is still ahead" is permanently
-            // true there, and the quota refills continuously rather than
-            // clearing — ordinary Gemini use rang the choir with nothing
-            // having reset. Google has no discrete reset to detect; when it
-            // gains one, drop this clause.
-            //
-            // The margin is what separates EARLY from ordinary: a window
-            // rolling over a few minutes either side of its promised time is
-            // not a limit cleared ahead of schedule.
+            // Google, and it is about GOOGLE'S MECHANISM: the Antigravity
+            // quota is a ROLLING window (measured: resetTime = request +
+            // 5h 0m 07s, advancing exactly as fast as time passed) that
+            // refills continuously rather than clearing. There is no
+            // discrete Google reset to detect; when there is, drop this.
             if provider != .google,
                let prev = poolBefore[key],
-               prev.pct >= Self.earlyResetFrom,
-               pct <= Self.earlyResetTo,
-               let promised = prev.resetsAt,
-               promised > Date().addingTimeInterval(Self.earlyResetMargin) {
-                pendingEarlyReset = true
-                if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
-                    FileHandle.standardError.write(
-                        ("early-reset: \(limit.label) \(Int(prev.pct))% -> \(Int(pct))%, "
-                         + "was promised in \(Int(promised.timeIntervalSinceNow / 60))m\n")
-                            .data(using: .utf8)!)
-                }
+               prev.pct >= Self.resetFrom,
+               pct <= Self.resetTo {
+                pendingReset = true
+                AlertLog.write("reset: \(accountLabel) / \(limit.label) "
+                               + "\(Int(prev.pct))% -> \(Int(pct))%"
+                               + (prev.resetsAt.map { ", was promised for \(AlertLog.stamp($0))" } ?? ""))
             }
             // Edge trigger only: the wall is hit ONCE, when a pool crosses
             // to full — a pool sitting at 100 across polls stays silent.
             if let prev = poolBefore[key], prev.pct < 100, pct >= 100 {
                 pendingLimitReached = true
+                AlertLog.write("limit: \(accountLabel) / \(limit.label) \(Int(prev.pct))% -> \(Int(pct))%")
             }
             poolBefore[key] = PoolSnapshot(pct: pct, resetsAt: limit.resetsAt)
         }
         if let bank = fetched.bankedResets {
-            if let prev = bankedBefore[accountID], bank > prev { pendingBanked = true }
+            if let prev = bankedBefore[accountID], bank > prev {
+                pendingBanked = true
+                AlertLog.write("banked: \(accountLabel) \(prev) -> \(bank)")
+            }
             bankedBefore[accountID] = bank
         }
     }
@@ -769,7 +766,7 @@ final class Store: ObservableObject {
     }
 
     /// Decides which alert to play once the whole refresh pass is done.
-    /// Banked outranks an early clear on the same pass — it is the rarer and
+    /// Banked outranks a reset on the same pass — it is the rarer and
     /// more notable event — and only one sound plays per refresh even when
     /// several pools clear at once.
     private func fireAlertSounds() {
@@ -779,7 +776,7 @@ final class Store: ObservableObject {
         defer {
             burningBefore = burningNow
             soundSeeded = true
-            pendingEarlyReset = false; pendingBanked = false; pendingLimitReached = false
+            pendingReset = false; pendingBanked = false; pendingLimitReached = false
         }
         guard soundSeeded else { return }      // never fire on first load
 
@@ -788,7 +785,7 @@ final class Store: ObservableObject {
         let event: FlashEvent?
         if pendingLimitReached { event = .limit }
         else if pendingBanked { event = .banked }
-        else if pendingEarlyReset { event = .reset }
+        else if pendingReset { event = .reset }
         // Edge trigger: something is burning now that was not burning before.
         else if burningNow.contains(where: { !burningBefore.contains($0) }) { event = .burn }
         else { event = nil }
