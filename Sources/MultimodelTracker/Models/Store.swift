@@ -103,21 +103,25 @@ final class Store: ObservableObject {
 
     /// Two ways a reset earns the choir, either is enough:
     ///
-    ///  SUBSTANTIAL -- the pool was at least half used and is now clear, on
-    ///  schedule or not. A maxed weekly pool coming back is the whole point
-    ///  of an 18-second choir, and the promised time decides nothing here.
+    ///  SUBSTANTIAL -- the pool was at the wall, or near enough to feel it,
+    ///  and is now clear. On schedule or not: a maxed weekly pool coming
+    ///  back is the whole point of an 18-second choir. The bar is high on
+    ///  purpose. A window turning over at 55% is not a limit resetting --
+    ///  the limit was never in play -- and Rich reads exactly that as
+    ///  "nothing reset". A limit resets when it was biting.
     ///
-    ///  EARLY -- the pool had any real usage at all and cleared while its
-    ///  promised reset was still meaningfully ahead. Rich wants these heard
-    ///  no matter how little was used: an early clear is a gift, however
-    ///  small. Promises are trustworthy enough for this on OpenAI (to the
-    ///  second) and Anthropic (fixed window -- 3.5h of use never moved it --
-    ///  granular to ~10 min, e.g. 03:40:00Z), so the margin covers that
-    ///  granularity plus the 3-minute poll cadence, with slack.
+    ///  EARLY -- the pool had any real usage and cleared while its promise
+    ///  was still meaningfully ahead. Rich wants these heard however little
+    ///  was used: an early clear is a gift. It needs a promise that can be
+    ///  trusted, which is most of them -- OpenAI's are to the second, and
+    ///  weekly promises land on the minute (today's weekly reset arrived at
+    ///  15:00Z, promised 15:00:00Z) -- but NOT Anthropic's 5-hour pool. That
+    ///  one was caught at 16% with its promise >15 min out, and nothing had
+    ///  been cleared: the number and the promise simply disagree there, so
+    ///  it sits out the early test. Revisit when alerts.log says otherwise.
     ///
-    /// A 5-hour pool rolling over ON SCHEDULE at 16% matches neither, and
-    /// stays silent -- that was the "nothing reset" ring.
-    static let resetFrom = 50.0                    // substantial: at least this full...
+    /// A 5-hour pool rolling over on schedule matches neither and is silent.
+    static let resetFrom = 90.0                    // substantial: the limit was biting...
     static let earlyFrom = 5.0                     // early: any real usage at all...
     static let resetTo = 1.0                       // ...and now this empty
     static let earlyMargin: TimeInterval = 20 * 60 // ...with the promise still this far off
@@ -723,8 +727,11 @@ final class Store: ObservableObject {
             // discrete Google reset to detect; when there is, drop this.
             if provider != .google, let prev = poolBefore[key], pct <= Self.resetTo {
                 let substantial = prev.pct >= Self.resetFrom
+                // Anthropic's 5-hour promise cannot carry the early test -- see earlyFrom.
+                let promiseTrusted = !(provider == .anthropic
+                                       && (limit.key.hasPrefix("session") || limit.key == "five_hour"))
                 let earlyBy = prev.resetsAt.map { $0.timeIntervalSinceNow } ?? 0
-                let early = prev.pct >= Self.earlyFrom && earlyBy > Self.earlyMargin
+                let early = promiseTrusted && prev.pct >= Self.earlyFrom && earlyBy > Self.earlyMargin
                 if substantial || early {
                     pendingReset = true
                     let why = substantial ? "substantial" : "early by \(Int(earlyBy / 60))m"
