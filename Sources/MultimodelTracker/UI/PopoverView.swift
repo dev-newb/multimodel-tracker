@@ -82,10 +82,9 @@ enum PopoverMetrics {
 struct PopoverView: View {
     @ObservedObject var store: Store
     /// Roll-up rows: for a vendor with 2+ accounts, each account is a
-    /// one-line summary that expands in place to the full card. Explicit
-    /// choices live here for the app's lifetime; anything unchosen follows
-    /// the default (the vendor's worst account open, the rest rolled up).
-    @State private var expandChoice: [UUID: Bool] = [:]
+    /// one-line summary that expands in place to the full card. Which are
+    /// open is the STORE's state (persisted, settled once, never derived
+    /// here) -- see Store.expanded for why it cannot live in this view.
 
     /// Pager / tabs selection per vendor, for the app's lifetime.
     @State private var pageIndex: [Provider: Int] = [:]
@@ -109,9 +108,7 @@ struct PopoverView: View {
 
     private func isExpanded(_ account: Account, in accounts: [Account]) -> Bool {
         if accounts.count < 2 { return true }          // a lone card never rolls up
-        if let c = expandChoice[account.id] { return c }
-        let worst = accounts.max { ($0.worstPercent ?? -1) < ($1.worstPercent ?? -1) }
-        return worst?.id == account.id
+        return store.expanded[account.id] ?? true      // unsettled: show, never hide
     }
 
     var body: some View {
@@ -351,7 +348,7 @@ struct PopoverView: View {
                             expanded: open,
                             onToggle: {
                                 withAnimation(.easeOut(duration: 0.16)) {
-                                    expandChoice[account.id] = !open
+                                    store.setExpanded(account.id, !open)
                                 }
                             })
                     .padding(.horizontal, 12)

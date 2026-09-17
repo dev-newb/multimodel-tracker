@@ -6,7 +6,9 @@ import WebKit
 /// Provider.maxAccountsPerProvider.
 @MainActor
 final class Store: ObservableObject {
-    @Published private(set) var accounts: [Account] = []
+    @Published private(set) var accounts: [Account] = [] {
+        didSet { settleExpansion() }
+    }
     /// True only while the popover or Accounts panel is actually on screen.
     /// The animated bars gate on this: NSPopover keeps its view hierarchy
     /// alive after dismissal, so TimelineView(.animation) happily redraws at
@@ -224,6 +226,60 @@ final class Store: ObservableObject {
         ]
     }
 
+    // MARK: roll-up expansion
+    /// Which account cards are open. A card is open because the user opened
+    /// it, or because a default was settled for it ONCE and then left alone
+    /// -- never because of what the numbers say right now. This used to be
+    /// @State on the popover view and re-derived from "the vendor's worst
+    /// account" on every render: the fallback usage panel rebuilds that view
+    /// on every open, so every choice was forgotten, and as usage moved the
+    /// worst account changed and the card Rich was looking at closed on its
+    /// own. The choice is the user's; it lives here and it is persisted.
+    @Published private(set) var expanded: [UUID: Bool] = Store.loadExpanded()
+    private static let expandedKey = "mmt.expanded"
+
+    func setExpanded(_ id: UUID, _ open: Bool) {
+        expanded[id] = open
+        saveExpanded()
+    }
+
+    /// Gives a recorded state to any account in a 2+ vendor that has none
+    /// yet, so the view never has to derive one. The vendor's worst opens
+    /// and the rest roll up -- unless a card in that vendor is already open,
+    /// in which case the newcomer rolls up and the open one is respected.
+    /// Runs on every change to the list, touches only unrecorded accounts,
+    /// and so can never close a card that has a state.
+    private func settleExpansion() {
+        var changed = false
+        for p in Provider.allCases {
+            let group = accounts.filter { $0.provider == p }
+            guard group.count >= 2 else { continue }
+            let unsettled = group.filter { expanded[$0.id] == nil }
+            guard !unsettled.isEmpty else { continue }
+            let anyOpen = group.contains { expanded[$0.id] == true }
+            let worst = group.max { ($0.worstPercent ?? -1) < ($1.worstPercent ?? -1) }
+            for a in unsettled {
+                expanded[a.id] = !anyOpen && a.id == worst?.id
+                changed = true
+            }
+        }
+        if changed { saveExpanded() }
+    }
+
+    private static func loadExpanded() -> [UUID: Bool] {
+        guard let d = UserDefaults.standard.data(forKey: expandedKey),
+              let raw = try? JSONDecoder().decode([String: Bool].self, from: d) else { return [:] }
+        var out: [UUID: Bool] = [:]
+        for (k, v) in raw { if let id = UUID(uuidString: k) { out[id] = v } }
+        return out
+    }
+    private func saveExpanded() {
+        let raw = Dictionary(uniqueKeysWithValues: expanded.map { ($0.key.uuidString, $0.value) })
+        if let d = try? JSONEncoder().encode(raw) {
+            UserDefaults.standard.set(d, forKey: Self.expandedKey)
+        }
+    }
+
     // MARK: popover overflow layout
     /// How a vendor with several accounts is shown once the popover would
     /// outgrow the screen (or always / never, per overflowMode).
@@ -361,6 +417,7 @@ final class Store: ObservableObject {
             WKWebsiteDataStore.remove(forIdentifier: id) { _ in }
         }
         accounts.removeAll { $0.id == id }
+        expanded[id] = nil; saveExpanded()
         save()
     }
 
@@ -922,6 +979,7 @@ final class Store: ObservableObject {
         guard let d = UserDefaults.standard.data(forKey: defaultsKey) else { return }
         do {
             accounts = try JSONDecoder().decode([Account].self, from: d)
+            settleExpansion()   // explicit: observers may not fire inside init
         } catch {
             // Never let a decode failure become data loss: keep a copy of the
             // bytes so a schema mistake can be recovered from, and refuse to
