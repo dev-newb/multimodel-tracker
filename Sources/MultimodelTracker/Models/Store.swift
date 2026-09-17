@@ -101,16 +101,26 @@ final class Store: ObservableObject {
     private var pendingBanked = false
     private var pendingLimitReached = false
 
-    /// A reset is worth the choir when the pool was SUBSTANTIALLY into its
-    /// limit and is now clear. Not "cleared early": vendors' promised reset
-    /// times cannot carry that test (Google's never arrives; Anthropic's
-    /// session promise is rounded to the hour while the pool clears at some
-    /// other minute), and early-or-not was never what made a reset worth
-    /// hearing. The line at half is a judgment: a 5-hour pool rolling over
-    /// at 16% is the clock ticking, and Rich called it "nothing reset"; a
-    /// maxed weekly pool coming back is the whole point of an 18s choir.
-    static let resetFrom = 50.0   // was at least this full...
-    static let resetTo = 1.0      // ...and is now this empty
+    /// Two ways a reset earns the choir, either is enough:
+    ///
+    ///  SUBSTANTIAL -- the pool was at least half used and is now clear, on
+    ///  schedule or not. A maxed weekly pool coming back is the whole point
+    ///  of an 18-second choir, and the promised time decides nothing here.
+    ///
+    ///  EARLY -- the pool had any real usage at all and cleared while its
+    ///  promised reset was still meaningfully ahead. Rich wants these heard
+    ///  no matter how little was used: an early clear is a gift, however
+    ///  small. Promises are trustworthy enough for this on OpenAI (to the
+    ///  second) and Anthropic (fixed window -- 3.5h of use never moved it --
+    ///  granular to ~10 min, e.g. 03:40:00Z), so the margin covers that
+    ///  granularity plus the 3-minute poll cadence, with slack.
+    ///
+    /// A 5-hour pool rolling over ON SCHEDULE at 16% matches neither, and
+    /// stays silent -- that was the "nothing reset" ring.
+    static let resetFrom = 50.0                    // substantial: at least this full...
+    static let earlyFrom = 5.0                     // early: any real usage at all...
+    static let resetTo = 1.0                       // ...and now this empty
+    static let earlyMargin: TimeInterval = 20 * 60 // ...with the promise still this far off
 
     struct BurnSample: Codable { let t: Date; let v: Double }
     private var burnHistory: [String: [BurnSample]] = [:]
@@ -695,10 +705,9 @@ final class Store: ObservableObject {
         return String(describing: error)
     }
 
-    /// A limit reset is a pool that fell from substantially used to empty
-    /// between two polls -- on schedule or early, it makes no difference.
-    /// The promised reset time is recorded for the log but decides nothing:
-    /// it was tried as the test and failed twice (see resetFrom).
+    /// A limit reset is a pool that fell to empty between two polls, either
+    /// from substantial use or well ahead of its promised time -- see
+    /// resetFrom / earlyFrom for the two paths and why both exist.
     private func noteAlertTriggers(fetched: FetchedUsage, accountID: UUID) {
         let acct = accounts.first { $0.id == accountID }
         let provider = acct?.provider
@@ -712,14 +721,17 @@ final class Store: ObservableObject {
             // 5h 0m 07s, advancing exactly as fast as time passed) that
             // refills continuously rather than clearing. There is no
             // discrete Google reset to detect; when there is, drop this.
-            if provider != .google,
-               let prev = poolBefore[key],
-               prev.pct >= Self.resetFrom,
-               pct <= Self.resetTo {
-                pendingReset = true
-                AlertLog.write("reset: \(accountLabel) / \(limit.label) "
-                               + "\(Int(prev.pct))% -> \(Int(pct))%"
-                               + (prev.resetsAt.map { ", was promised for \(AlertLog.stamp($0))" } ?? ""))
+            if provider != .google, let prev = poolBefore[key], pct <= Self.resetTo {
+                let substantial = prev.pct >= Self.resetFrom
+                let earlyBy = prev.resetsAt.map { $0.timeIntervalSinceNow } ?? 0
+                let early = prev.pct >= Self.earlyFrom && earlyBy > Self.earlyMargin
+                if substantial || early {
+                    pendingReset = true
+                    let why = substantial ? "substantial" : "early by \(Int(earlyBy / 60))m"
+                    AlertLog.write("reset (\(why)): \(accountLabel) / \(limit.label) "
+                                   + "\(Int(prev.pct))% -> \(Int(pct))%"
+                                   + (prev.resetsAt.map { ", promised for \(AlertLog.stamp($0))" } ?? ", no promise"))
+                }
             }
             // Edge trigger only: the wall is hit ONCE, when a pool crosses
             // to full — a pool sitting at 100 across polls stays silent.
