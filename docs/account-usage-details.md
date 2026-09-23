@@ -2,11 +2,11 @@
 
 ## Detail controls
 
-The bottom chevron on each account card opens/closes model details vertically using the Config panel's 0.12-second ease-out timing. Reduced Motion disables the transition. Details refresh every minute while mounted. Bars compare model amounts within the selected report; they are not separate quota pools.
+The bottom chevron on each account card opens/closes model details vertically using the Config panel's 0.12-second ease-out timing. Reduced Motion disables the transition. Details refresh every minute while mounted. Historical usage bars compare model amounts within the selected report. Native quota bars use a fixed 0–100% scale and say “quota used.”
 
 ## OpenAI
 
-Read the authenticated `GET /backend-api/wham/usage/daily-token-usage-breakdown` with that row's bearer token and ChatGPT account header. Aggregate `data[].attribution[].value` over seven UTC dates, preserving the response's declared units. Consumer responses tested on this Mac report `percent`; display percentage points, not tokens, money, or remaining allowance. Do not add `models[].credits` to attribution: these are overlapping representations.
+Read the authenticated `GET /backend-api/wham/usage/daily-token-usage-breakdown` with that row's bearer token and ChatGPT account header. Request 30 UTC dates and aggregate `data[].attribution[].value`, falling back to `data[].models[].credits` only when a day has no attribution, preserving the response's declared units. Recent seven-day responses were empty while the 30-day response returned older activity. The UI shows the latest reported activity date; no current usage is invented from older values. Consumer responses tested on this Mac report `percent`; display percentage points, not tokens, money, or remaining allowance. Do not add `models[].credits` to attribution: these are overlapping representations.
 
 The authenticated endpoint returns per-model data. Backend billing behavior when the same conversation is continued under two accounts has not been independently verified. The UI says so. Local Codex logs are not a substitute: the inspected token events have no payer identity.
 
@@ -30,21 +30,22 @@ Source: https://code.claude.com/docs/en/monitoring-usage
 
 ## Claude saved resets
 
-Read-only OAuth probes explicitly request `cedar_ember=1` and `at_wall=1` with `skip_spend=1`. The user's tracker credential returned `ineligible_reason: "surface"` for both, despite the October 22 offer being visible in Claude web. Never interpret that response or a null program as zero saved resets.
+Removed the provisional reset probes, embedded Claude Usage window, web connection controls, and web reset session reads at the user's request. The OAuth offer was surface-restricted; no reliable native inventory was established. No reset was redeemed. Existing hidden legacy sign-in support remains for quota fetching.
 
-Claude's current public frontend confirms its web route is `/api/organizations/{organization}/usage?cedar_ember=1&skip_spend=1`. The optional **Connect Claude web for reset offers** button opens an isolated per-account WebKit login. After login, Refresh details checks `/api/account`, requires an exact account UUID and organization membership match to the OAuth profile, then reads the offer. It never chooses the first organization or redeems a reset. A separate web sign-in is needed; browser cookies are not imported. This authenticated web integration still needs end-to-end verification after that sign-in.
+## Anthropic native quotas
 
-Sources:
-- https://assets-proxy.anthropic.com/claude-ai/v2/assets/v1/shared-0-XAxgp5z9.js
-- https://github.com/can1357/oh-my-pi/issues/12883
-- https://support.claude.com/en/articles/17007452-what-is-a-limit-reset
+The expanded panel shows the account's provider-reported scoped model limits, with reset times and a fixed percentage scale. These reuse the main account reading, avoiding a duplicate OAuth poll from the detail panel; they update when that reading changes. A live 429 during validation motivated removing the extra request. They remain available even when there are no local Claude Code events. Token collection is a separate section; an empty collector is explicitly identified instead of implying that the subscription quota fetch failed. No profile request is needed until local events exist.
 
 ## Google Antigravity
 
 Verified the installed local database schema and protobuf descriptors embedded in `/Applications/Antigravity.app/Contents/Resources/bin/language_server`. `gen_metadata` has model/token data; `trajectory_meta` has conversation IDs, source and type. `CortexStepMetadata`, `CortexTrajectoryMetadata`, `ChatModelMetadata`, `ChatStartMetadata` and `ModelUsageStats` do not expose a per-request account identity. The 36 bounded generation records inspected had custom keys for execution, step, model and trajectory information; response headers only included `sessionID`. None establishes which account paid for a request after switching accounts.
 
-Therefore the Google detail panel explicitly reports account-specific model history unavailable. Account-authenticated quota pools continue working. This finding covers the installed schema and inspected records; it is not a claim that Google has no internal accounting data.
+The Google detail panel now calls `fetchAvailableModels` with the selected account's credentials and project, and renders native individual model quotas, including Claude/GPT models available through Antigravity. Machine credentials are used only for an explicitly imported machine account. These are current quota percentages, not historical token totals; shared pools are called out. Account-authenticated pooled quotas continue working. This finding covers the installed schema and inspected records; it is not a claim that Google has no internal accounting data.
 
 ## Verification
 
 Run `bash Tests/run-usage-tests.sh` (uses the real parsers and ledger; no Xcode/XCTest required), then `swift build --disable-sandbox -c release`. Render the collapsed/expanded design with `MultimodelTracker --render-details /absolute/path/preview.png`.
+
+For a read-only live detail check, launch the installed bundle with `--detail-diagnostics /absolute/path/report.json`. It uses the same native detail service as the UI, after main refresh, and keeps that same process running. The report omits credentials and account identifiers.
+
+Live native service verification on September 23 returned 23 Google model quota rows, five OpenAI model totals (latest activity September 15), and the Anthropic scoped Fable limit at 100%. Claude Code event count remained zero.

@@ -7,7 +7,8 @@ struct UsageAttributionTests {
         try await suite.testAccountSwitchAndRetryDoNotReassignOrDoubleCount()
         try suite.testMissingIdentityAndNonUsageEventsAreExcluded()
         try suite.testOpenAIUsesDeclaredUnitsWithoutDoubleCounting()
-        suite.testResetSurfaceIsUnknownNotZero()
+        try suite.testGoogleModelQuotaDetails()
+        try suite.testOpenAIModelFallbackAndEmptyActivity()
         print("PASS: account switching, organization isolation, retry deduplication, persistence, content exclusion, missing identity, malformed counts, OpenAI units")
     }
     let accountA = "11111111-1111-4111-8111-111111111111"
@@ -45,12 +46,27 @@ struct UsageAttributionTests {
         assertTrue(try ClaudeTelemetryParser.parse(payload(account: accountA, tokens: "-1")).isEmpty)
         assertTrue(try ClaudeTelemetryParser.parse(payload(account: accountA, tokens: "nan")).isEmpty)
     }
-    func testResetSurfaceIsUnknownNotZero() {
-        let restricted: [String: Any] = ["cedar_ember": ["eligible": false, "ineligible_reason": "surface", "grants": []]]
-        assertTrue(ClaudeResetDiscovery.summarize(restricted)?.contains("cannot confirm") == true)
-        assertTrue(ClaudeResetDiscovery.summarize(["cedar_ember": NSNull()]) == nil)
-        let expired: [String: Any] = ["cedar_ember": ["eligible": true, "grants": [["id":"a", "resets_left":1, "ends_at":"2020-01-01T00:00:00.000Z"]]]]
-        assertTrue(ClaudeResetDiscovery.summarize(expired) == nil)
+    func testGoogleModelQuotaDetails() throws {
+        let raw = #"{"models":{"gemini-test":{"displayName":"Gemini Test","quotaInfo":{"remainingFraction":0.25}},"claude-test":{"quotaInfo":{"remainingFraction":0}},"gpt-test":{"quotaInfo":{"remainingFraction":1}},"chat_internal":{"quotaInfo":{"remainingFraction":1}},"unknown":{},"invalid":{"quotaInfo":{"remainingFraction":2}}}}"#
+        let root = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as! [String: Any]
+        let report = try GoogleModelDetails.parse(root)
+        assertEqual(report.unit, "quotaPercent")
+        assertEqual(report.rows.count, 3)
+        assertEqual(report.rows.first { $0.id == "gemini-test" }?.value, 75)
+        assertEqual(report.rows.first { $0.id == "claude-test" }?.value, 100)
+        assertEqual(report.rows.first { $0.id == "gpt-test" }?.value, 0)
+        let array = try GoogleModelDetails.parse(["models": [["modelId": "gemini-test", "quotaInfo": ["remainingFraction": 0.25]]]])
+        assertEqual(array.rows.first?.value, 75)
+    }
+    func testOpenAIModelFallbackAndEmptyActivity() throws {
+        let raw = #"{"units":"percent","data":[{"date":"2026-09-01","attribution":[],"models":[{"model":"m","speed":"fast","credits":3},{"model":"m","speed":"standard","credits":2},{"model":"zero","credits":0},{"model":"bad","credits":-1}]}]}"#
+        let report = try OpenAIModelUsage.parse(Data(raw.utf8))
+        assertEqual(report.rows.count, 1)
+        assertEqual(report.rows.first?.value, 5)
+        assertTrue(report.note.contains("2026-09-01"))
+        let empty = try OpenAIModelUsage.parse(Data(#"{"units":"tokens","data":[]}"#.utf8))
+        assertTrue(empty.rows.isEmpty)
+        assertTrue(empty.emptyMessage.contains("no model activity"))
     }
     func testOpenAIUsesDeclaredUnitsWithoutDoubleCounting() throws {
         let raw = #"{"units":"percent","data":[{"attribution":[{"model":"m","value":12.5}],"models":[{"model":"m","credits":12.5}]},{"attribution":[{"model":"m","value":3}]}]}"#

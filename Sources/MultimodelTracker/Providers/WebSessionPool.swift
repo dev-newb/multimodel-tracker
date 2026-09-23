@@ -162,53 +162,6 @@ final class WebSessionPool {
         return lines.joined(separator: " | ")
     }
 
-    private var resetWindows: [UUID: NSWindow] = [:]
-
-    /// A separate, explicit Claude web login for web-only reset offers. Never imports browser cookies.
-    func connectResetSession(for account: Account) {
-        let v = view(for: account)
-        let window = resetWindows[account.id] ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
-            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.title = "Claude reset offers — \(account.displayName)"
-        window.contentView = v
-        resetWindows[account.id] = window
-        v.load(URLRequest(url: URL(string: "https://claude.ai/settings/usage")!))
-        window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
-        UserDefaults.standard.set(true, forKey: "mmt.claudeWebResets.\(account.id)")
-    }
-
-    func fetchResetOffers(for account: Account, expectedAccount: String, organization: String) async throws -> String {
-        // Validate IDs before putting them into script literals. UUIDs cannot contain script syntax.
-        guard UUID(uuidString: expectedAccount) != nil, UUID(uuidString: organization) != nil else {
-            throw AdapterError.transport("Cannot verify Claude web identity")
-        }
-        let v = view(for: account)
-        if v.url == nil {
-            v.load(URLRequest(url: URL(string: "https://claude.ai/")!))
-            try? await Task.sleep(for: .seconds(3))
-        }
-        guard v.url?.host == "claude.ai" else { throw AdapterError.notSignedIn }
-        let js = """
-        const r = await fetch('/api/account', {credentials:'include'});
-        if (!r.ok) return JSON.stringify({error:'Sign in to Claude web, then refresh details.'});
-        const root = await r.json();
-        const a = root.account;
-        if (!a || a.uuid !== '\(expectedAccount)' || !a.memberships?.some(m => m.organization?.uuid === '\(organization)'))
-          return JSON.stringify({error:'Claude web is signed into a different account or organization.'});
-        const usage = await fetch('/api/organizations/\(organization)/usage?cedar_ember=1&skip_spend=1', {credentials:'include'});
-        if (!usage.ok) return JSON.stringify({error:'Claude web reset inventory unavailable.'});
-        const payload = await usage.json();
-        return JSON.stringify({cedar_ember:payload.cedar_ember,juniper_tide:payload.juniper_tide});
-        """
-        let text = try await callBridge(js, in: v, for: account.id)
-        guard let data = text.data(using: .utf8), let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw AdapterError.transport("Invalid Claude web reset response")
-        }
-        if let error = root["error"] as? String { throw AdapterError.transport(error) }
-        return ClaudeResetDiscovery.summarize(root) ?? "Claude web did not return a readable reset inventory. Availability is unknown."
-    }
-
     func fetchUsage(for account: Account) async throws -> FetchedUsage {
         let v = view(for: account)
         if v.url == nil {

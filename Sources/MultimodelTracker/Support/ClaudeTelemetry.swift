@@ -76,6 +76,8 @@ actor ClaudeUsageLedger {
         try JSONEncoder().encode(Array(events.values)).write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
+    func hasEvents() -> Bool { load(); return !events.isEmpty }
+
     func report(account: String, organization: String) -> UsageDetails {
         load(); var totals: [String: Double] = [:]
         for e in events.values where e.account == account.lowercased() && e.organization == organization.lowercased() && e.time > Date().addingTimeInterval(-7*86400) {

@@ -55,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if let i = CommandLine.arguments.firstIndex(of: "--render-details"), i + 1 < CommandLine.arguments.count {
             let a = Account(provider: .openai, label: "Preview account", plan: "Pro", limits: [
                 .init(key: "five_hour", label: "5-hour limit", percent: 45, resetsAt: Date().addingTimeInterval(3600))])
-            let detail = UsageDetails(title: "Models · last 7 UTC days", rows: [
+            let detail = UsageDetails(title: "Model usage · last 30 UTC days", rows: [
                 .init(model: "Model A", value: 42), .init(model: "Model B", value: 12.5)], unit: "percent",
                 note: "Reported by OpenAI for this login. Bars compare models; they are not remaining quota.")
             let view = VStack(spacing: 14) {
@@ -131,7 +131,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                 self?.renderBadges()
             }
         }
-        Task { @MainActor in await store.refreshAll(); renderBadges() }
+        Task { @MainActor in
+            await store.refreshAll(); renderBadges()
+            if let i = CommandLine.arguments.firstIndex(of: "--detail-diagnostics"), i + 1 < CommandLine.arguments.count {
+                await AccountUsageDetails.diagnose(store.accounts, to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+            }
+        }
         startConnectivityWatch()
 
         if CommandLine.arguments.contains("--bridge-test") {

@@ -234,6 +234,33 @@ struct GoogleAdapterImpl: UsageAdapter {
     private static var lastGood: [UUID: (at: Date, usage: FetchedUsage)] = [:]
 
     func fetch(account: Account) async throws -> FetchedUsage {
+        let (access, source, idToken) = try await credentials(for: account)
+        switch mode {
+        case .codeAssist:
+            return try await loadLegacyQuota(token: access, source: source, idToken: idToken, id: account.id)
+        case .antigravity:
+            return try await loadModelQuota(token: access, source: source, idToken: idToken, id: account.id)
+        }
+    }
+
+    func fetchModelDetails(account: Account) async throws -> UsageDetails {
+        let (access, _, _) = try await credentials(for: account)
+        if Self.cachedProject[account.id] == nil {
+            let root = try await call("loadCodeAssist", body: ["metadata": Self.metadata], token: access, agent: "antigravity")
+            Self.cachedProject[account.id] = (root["cloudaicompanionProject"] as? String)
+                ?? (root["cloudaicompanionProject"] as? [String: Any])?["id"] as? String
+        }
+        var body: [String: Any] = [:]
+        if let project = Self.cachedProject[account.id] { body["project"] = project }
+        do {
+            return try GoogleModelDetails.parse(await call("fetchAvailableModels", body: body, token: access, agent: "antigravity"))
+        } catch {
+            Self.cachedProject[account.id] = nil
+            throw error
+        }
+    }
+
+    private func credentials(for account: Account) async throws -> (String, AuthSource, String?) {
         // A browser-signed-in account carries its OWN refresh token, which is
         // what lets several Google accounts coexist; the machine credentials
         // (one Antigravity login, one gemini-cli file) are the fallback for
@@ -295,12 +322,7 @@ struct GoogleAdapterImpl: UsageAdapter {
         }
         guard let access else { throw AdapterError.notSignedIn }
 
-        switch mode {
-        case .codeAssist:
-            return try await loadLegacyQuota(token: access, source: source, idToken: idToken, id: account.id)
-        case .antigravity:
-            return try await loadModelQuota(token: access, source: source, idToken: idToken, id: account.id)
-        }
+        return (access, source, idToken)
     }
 
     private func exchange(refresh: String, client: GeminiOAuthClient.Client) async throws -> String {
