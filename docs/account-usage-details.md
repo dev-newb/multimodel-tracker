@@ -2,7 +2,7 @@
 
 ## Detail controls
 
-The bottom chevron on each account card opens/closes model details vertically using the Config panel's 0.12-second ease-out timing. Reduced Motion disables the transition. Details refresh every minute while mounted. Historical usage bars compare model amounts within the selected report. Native quota bars use a fixed 0–100% scale and say “quota used.”
+The bottom chevron on each account card opens/closes model details vertically using the Config panel's 0.12-second ease-out timing. Its full-width hit area is 28 points tall. Details scroll within a 240-point viewport, keeping the collapse control outside that scroll area; the outer list reveals the control after expansion if necessary. Reduced Motion disables the transition. Details refresh every minute while expanded; collapsing retains the loaded report. Background refresh does not insert/remove controls around the arrow. Historical usage bars compare model amounts within the selected report. Native quota bars use a fixed 0–100% scale and say “quota used.”
 
 ## OpenAI
 
@@ -49,3 +49,9 @@ Run `bash Tests/run-usage-tests.sh` (uses the real parsers and ledger; no Xcode/
 For a read-only live detail check, launch the installed bundle with `--detail-diagnostics /absolute/path/report.json`. It uses the same native detail service as the UI, after main refresh, and keeps that same process running. The report omits credentials and account identifiers.
 
 Live native service verification on September 23 returned 23 Google model quota rows, five OpenAI model totals (latest activity September 15), and the Anthropic scoped Fable limit at 100%. Claude Code event count remained zero.
+
+## Popover geometry regression
+
+Both scroll viewports use measured document heights with explicit caps. `NSHostingController` automatic preferred-size updates are disabled; bounded geometry updates resize the popover relative to its status item. The fallback panel preserves its top edge and horizontal centre. Neither path uses `fittingSize` (which is zero with automatic hosting sizing disabled).
+
+Run `.build/release/MultimodelTracker --test-popover-layout` after building. The native fixture posts 21 mouse presses to its own window, including the left edge of the arrow's full-width target, changes 23 models to 100, checks bounded height and menu anchor coordinates, and checks fallback panel growth/shrink. No Store, network requests or Keychain reads are initialized by this mode.

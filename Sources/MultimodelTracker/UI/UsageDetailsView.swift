@@ -5,6 +5,7 @@ struct UsageDetailsView: View {
     let account: Account
     let accent: Color
     var preview: UsageDetails? = nil
+    var active = true
     @State private var details: UsageDetails?
     @State private var tokenDetails: UsageDetails?
     @State private var failure: String?
@@ -15,7 +16,7 @@ struct UsageDetailsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Divider()
-            if loading && preview == nil { ProgressView().controlSize(.small) }
+            if loading && preview == nil && details == nil { ProgressView().controlSize(.small) }
             if let report = preview ?? details { reportView(report) }
             if let tokenDetails { reportView(tokenDetails) }
             if let failure { Text(failure).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
@@ -27,12 +28,13 @@ struct UsageDetailsView: View {
                     Button("Stop local collection") { telemetry.disable() }.font(.system(size: 10)).buttonStyle(.plain)
                 }
             }
-            if !loading {
-                Button("Refresh details") { Task { await refresh() } }.font(.system(size: 10)).buttonStyle(.plain).foregroundStyle(accent)
+            if preview == nil {
+                Button("Refresh details") { Task { await refresh() } }
+                    .font(.system(size: 10)).buttonStyle(.plain).foregroundStyle(accent).disabled(loading)
             }
         }
-        .task(id: "\(account.id)-\(account.provider == .anthropic ? account.lastRefreshed?.timeIntervalSince1970 ?? 0 : 0)") {
-            guard preview == nil else { return }
+        .task(id: "\(active)-\(account.id)-\(account.provider == .anthropic ? account.lastRefreshed?.timeIntervalSince1970 ?? 0 : 0)") {
+            guard active, preview == nil else { return }
             repeat {
                 await refresh()
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }

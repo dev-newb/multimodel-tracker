@@ -88,6 +88,7 @@ struct PopoverView: View {
 
     /// Pager / tabs selection per vendor, for the app's lifetime.
     @State private var pageIndex: [Provider: Int] = [:]
+    var onContentSizeChange: ((CGSize) -> Void)? = nil
 
     /// Whether the chosen overflow layout is in force right now. Automatic
     /// mode asks one question of the accounts and THIS screen: would the
@@ -115,36 +116,35 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().opacity(0.35)
-            // No fixed cap: a hard 460 started scrolling the moment Gemini
-            // added rows. fixedSize lets the ScrollView take its content's
-            // ideal height so the popover snaps to whatever is there, and the
-            // ceiling only engages when the content genuinely outgrows the
-            // screen.
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    // Keep each empty vendor's actions in reach until the
-                    // user explicitly dismisses that vendor's setup row.
-                    if !store.providersNeedingSetup.isEmpty { FirstRunView(store: store) }
-                    ForEach(Provider.allCases) { provider in
-                        let accts = store.accounts(for: provider)
-                        if accts.count >= 2 && overflowActive {
-                            overflowSection(provider, accts)
-                        } else if !accts.isEmpty {
-                            section(provider, accts)
+            ScrollViewReader { proxy in
+                BoundedTrackerScroll(maxHeight: maxListHeight) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        // Keep each empty vendor's actions in reach until the
+                        // user explicitly dismisses that vendor's setup row.
+                        if !store.providersNeedingSetup.isEmpty { FirstRunView(store: store) }
+                        ForEach(Provider.allCases) { provider in
+                            let accts = store.accounts(for: provider)
+                            if accts.count >= 2 && overflowActive {
+                                overflowSection(provider, accts)
+                            } else if !accts.isEmpty {
+                                section(provider, accts)
+                            }
                         }
                     }
+                    .padding(.vertical, 12)
                 }
-                .padding(.vertical, 12)
+                .environment(\.revealTrackerDetail) { id in proxy.scrollTo(id) }
             }
-            // Same rubber-banding fix as the Config panel: no bounce while the
-            // list fits, normal scrolling once it doesn't.
-            .scrollBounceBehavior(.basedOnSize)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxHeight: maxListHeight)
             Divider().opacity(0.35)
             footer
         }
         .frame(width: popoverWidth)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(GeometryReader { geometry in
+            Color.clear
+                .onAppear { onContentSizeChange?(geometry.size) }
+                .onChange(of: geometry.size) { _, size in onContentSizeChange?(size) }
+        })
         // Without this the popover is see-through: NSPopover supplies no
         // material when its content is a plain SwiftUI hierarchy.
         .background(.regularMaterial)
@@ -413,8 +413,6 @@ struct AccountCard: View {
     var compact = false
     @State private var hoveringRow = false
     var detailPreview: UsageDetails? = nil
-    @State private var showingDetails = false
-    @Environment(\.accessibilityReduceMotion) private var reduceDetailMotion
 
     private var worstColor: Color {
         guard let p = account.worstPercent else { return .secondary }
@@ -634,25 +632,8 @@ struct AccountCard: View {
                                  animating: animating)
                     }
                 }
-                if showingDetails || detailPreview != nil {
-                    UsageDetailsView(account: account, accent: accent, preview: detailPreview)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-                Button {
-                    withAnimation(reduceDetailMotion ? nil : .easeOut(duration: ConfigPanelContainer.slideDuration)) {
-                        showingDetails.toggle()
-                    }
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .rotationEffect(.degrees(showingDetails || detailPreview != nil ? 180 : 0))
-                        .foregroundStyle(accent.opacity(0.8))
-                        .frame(maxWidth: .infinity).frame(height: 16)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(showingDetails ? "Hide model usage details" : "Show model usage details")
-                .help(showingDetails ? "Hide details" : "Model usage and reset details")
+                ModelUsageDisclosure(account: account, accent: accent, preview: detailPreview,
+                                     initiallyExpanded: detailPreview != nil)
                 }   // expanded
             }
             Spacer(minLength: 0)

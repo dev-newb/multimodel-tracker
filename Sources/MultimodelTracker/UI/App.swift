@@ -13,9 +13,14 @@ struct MultimodelTrackerApp {
     @MainActor
     static func main() {
         let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        if CommandLine.arguments.contains("--test-popover-layout") {
+            Task { @MainActor in exit(await PopoverLayoutSelfTest.run() ? 0 : 1) }
+            app.run()
+            return
+        }
         let delegate = AppDelegate()
         app.delegate = delegate
-        app.setActivationPolicy(.accessory)
         app.run()
     }
 }
@@ -101,9 +106,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         popover.delegate = self
         // Size to the content rather than a fixed height — two accounts must
         // not leave the same empty gulf a fixed 520 produced.
-        let host = NSHostingController(rootView: PopoverView(store: store))
-        host.sizingOptions = [.preferredContentSize]
+        var root = PopoverView(store: store)
+        root.onContentSizeChange = { [weak self] size in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                TrackerPopoverLayout.resize(self.popover, to: size, anchor: self.statusItem.button)
+            }
+        }
+        let host = NSHostingController(rootView: root)
+        host.sizingOptions = []
         popover.contentViewController = host
+        popover.contentSize = NSSize(width: 340, height: 400)
         popoverHost = host
 
         NotificationCenter.default.addObserver(forName: .mmtBadgeStyleChanged, object: nil,
@@ -905,7 +918,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         var root = PopoverView(store: store)
         root.anchorScreen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
         let host = NSHostingController(rootView: root)
-        host.sizingOptions = [.preferredContentSize]
+        host.sizingOptions = []
         let w = AccountsPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 400),
                               styleMask: [.borderless, .nonactivatingPanel],
                               backing: .buffered, defer: false)
@@ -918,11 +931,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         w.level = .floating
         w.hidesOnDeactivate = false
         w.isReleasedWhenClosed = false
+        root.onContentSizeChange = { [weak w] size in
+            DispatchQueue.main.async { [weak w] in
+                guard let w else { return }
+                TrackerPopoverLayout.resizePanel(w, to: size)
+            }
+        }
+        host.rootView = root
         w.contentViewController = host
         host.view.wantsLayer = true
         host.view.layer?.cornerRadius = 12
         host.view.layer?.masksToBounds = true
-        w.setContentSize(host.view.fittingSize)
         // Where the popover would be: under the status item. macOS keeps a
         // frame for the item even when it hides it, so that's usually the
         // exact spot; with no frame at all, the run just right of the notch
@@ -943,6 +962,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             return nil
         }()
         w.placeNearMenuBar(anchor: anchor)
+        root.anchorScreen = w.screen
+        host.rootView = root
         w.makeKeyAndOrderFront(nil)
         w.delegate = self
         usagePanel = w
@@ -1131,6 +1152,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             startCursorGovernor()
             store.noteMaxedViewing()
             store.noteBurnViewing()
+            // Geometry callbacks own the measured size. A hosting controller with
+            // automatic sizing disabled reports a zero fittingSize, not its content.
+            TrackerPopoverLayout.resize(popover, to: popover.contentSize, anchor: button)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
             if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil,
