@@ -459,10 +459,11 @@ final class Store: ObservableObject {
     func importCodexCLI() -> Account? {
         guard canAdd(.openai), let creds = CodexCLIImport.read() else { return nil }
         var a = Account(provider: .openai, label: creds.email ?? "Codex CLI")
-        Keychain.storeOpenAI(accessToken: creds.accessToken, accountId: creds.accountId, for: a.id)
+        do { try Keychain.storeOpenAI(accessToken: creds.accessToken, accountId: creds.accountId, for: a.id) }
+        catch { a.error = String(describing: error) }
         a.nickname = "Codex CLI"
         accounts.append(a); save()
-        Task { await refresh(a) }
+        if a.error == nil { Task { await refresh(a) } }
         return a
     }
 
@@ -476,18 +477,18 @@ final class Store: ObservableObject {
             switch account.provider {
             case .openai:
                 let t = try await OpenAIOAuth.signIn()
-                Keychain.storeOpenAI(accessToken: t.accessToken, accountId: t.accountID,
+                try Keychain.storeOpenAI(accessToken: t.accessToken, accountId: t.accountID,
                                      refreshToken: t.refreshToken, for: account.id)
                 email = t.email
             case .anthropic:
                 let t = try await AnthropicOAuth.signIn()
-                Keychain.storeAnthropic(accessToken: t.accessToken,
+                try Keychain.storeAnthropic(accessToken: t.accessToken,
                                         refreshToken: t.refreshToken,
                                         expiresAt: t.expiresAt, for: account.id)
                 email = t.email
             case .google:
                 let t = try await GoogleOAuth.signIn()
-                Keychain.storeGoogle(refreshToken: t.refreshToken, for: account.id)
+                try Keychain.storeGoogle(refreshToken: t.refreshToken, for: account.id)
                 email = t.email
             }
             // The flow learns the email; put it on the row so the account is
@@ -518,11 +519,12 @@ final class Store: ObservableObject {
     func importClaudeCode() -> Account? {
         guard canAdd(.anthropic), let creds = ClaudeCodeImport.freshCreds() else { return nil }
         var a = Account(provider: .anthropic, label: "Claude Code")
-        Keychain.storeAnthropic(accessToken: creds.accessToken, refreshToken: nil,
-                                expiresAt: creds.expiresAt, for: a.id)
+        do { try Keychain.storeAnthropic(accessToken: creds.accessToken, refreshToken: nil,
+                                        expiresAt: creds.expiresAt, for: a.id) }
+        catch { a.error = String(describing: error) }
         a.nickname = "Claude Code"
         accounts.append(a); save()
-        Task { await refresh(a) }
+        if a.error == nil { Task { await refresh(a) } }
         return a
     }
 
@@ -579,7 +581,7 @@ final class Store: ObservableObject {
         a.nickname = viaAntigravity ? "Antigravity" : "gemini-cli"
         markMachineGoogleRow(a.id)
         accounts.append(a); save()
-        Task { await refresh(a) }
+        if a.error == nil { Task { await refresh(a) } }
         return a
     }
 

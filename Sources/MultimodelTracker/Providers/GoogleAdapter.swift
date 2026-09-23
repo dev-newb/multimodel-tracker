@@ -98,50 +98,15 @@ enum GoogleCredentialSource {
         return parse(o)
     }
 
-    /// Per-launch cache of the raw keychain payload. THIS ITEM BELONGS TO
-    /// ANOTHER APP (Antigravity), so its ACL does not list us and macOS
-    /// prompts on every read until the user grants Always Allow for this code
-    /// identity. Reading it once per poll therefore meant repeated prompts.
-    /// One read per launch, cached — including the failure, so a denied
-    /// prompt doesn't immediately ask again.
-    @MainActor private static var keychainCache: String??
-    @MainActor private static var keychainReadTask: Task<String?, Never>?
-    private static let keychainQueue = DispatchQueue(label: "com.devnewb.multimodeltracker.google")
-
-    /// Off the main actor: SecItemCopyMatching blocks for as long as the
-    /// password panel is up, and Store is @MainActor — reading it inline
-    /// froze the whole UI behind the prompt.
+    /// Shares the same read queue/cache as the other providers, avoiding overlapping dialogs.
     @MainActor static func antigravityKeychainBlobAsync() async -> String? {
-        if let cached = keychainCache { return cached }
-        if keychainReadTask == nil {
-            keychainReadTask = Task {
-                await withCheckedContinuation { cont in
-                    keychainQueue.async {
-                        cont.resume(returning: readAntigravityKeychainBlob())
-                    }
-                }
-            }
+        do {
+            guard let data = try await Keychain.cachedData(service: "gemini", account: "antigravity") else { return nil }
+            return String(data: data, encoding: .utf8)
+        } catch {
+            FileHandle.standardError.write(Data("\(error)\n".utf8))
+            return nil
         }
-        let value = await keychainReadTask!.value
-        keychainCache = value
-        keychainReadTask = nil
-        return value
-    }
-
-    /// Antigravity keeps its login in the login keychain rather than a file —
-    /// the SAME item serves both the IDE and the `agy` CLI, so one read covers
-    /// both. macOS gates this with a consent prompt. Always Allow persists
-    /// for the same stable signing identity; an ad-hoc rebuild may re-prompt.
-    private static func readAntigravityKeychainBlob() -> String? {
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                kSecAttrService as String: "gemini",
-                                kSecAttrAccount as String: "antigravity",
-                                kSecReturnData as String: true,
-                                kSecMatchLimit as String: kSecMatchLimitOne]
-        var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
-              let d = out as? Data else { return nil }
-        return String(data: d, encoding: .utf8)
     }
 
     /// Antigravity stores through Go's go-keyring, which wraps the payload as
@@ -282,7 +247,7 @@ struct GoogleAdapterImpl: UsageAdapter {
         // keychain query entirely: an ad-hoc signed update can otherwise
         // prompt even before we read Antigravity's separate item.
         let machineRow = await Store.isMachineGoogleRow(account.id)
-        if !machineRow, let mine = await Keychain.googleRefreshTokenAsync(for: account.id) {
+        if !machineRow, let mine = try await Keychain.googleRefreshTokenAsync(for: account.id) {
             refreshToken = mine
             if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
                 FileHandle.standardError.write(

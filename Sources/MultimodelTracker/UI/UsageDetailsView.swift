@@ -103,6 +103,7 @@ struct UsageDetailsView: View {
             case .google:
                 failure = "Account-specific model history unavailable. Antigravity’s local generation counters do not have a verified per-request account mapping. The limits above come from the signed-in Google account."
             }
-        } catch { failure = "Details unavailable. Refresh the account or sign in again." }
+        } catch let error as Keychain.AccessError { failure = error.description }
+        catch { failure = "Details unavailable. Refresh the account or sign in again." }
     }
 }

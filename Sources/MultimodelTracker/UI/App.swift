@@ -341,7 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                     // Every Google row, with ITS OWN token — the only way to
                     // compare a paying account against a free one.
                     for acct in store.accounts(for: .google) {
-                        if let t = await Keychain.googleRefreshTokenAsync(for: acct.id) {
+                        if let t = try? await Keychain.googleRefreshTokenAsync(for: acct.id) {
                             do {
                                 let r = try await GoogleAdapterImpl().rawLoadCodeAssistUsing(refreshToken: t)
                                 let cur = (r["currentTier"] as? [String: Any])?["id"] as? String

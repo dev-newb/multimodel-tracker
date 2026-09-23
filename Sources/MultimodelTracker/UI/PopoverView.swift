@@ -161,6 +161,10 @@ struct PopoverView: View {
                     animating: store.uiVisible,
                     onSignIn: { Task { await store.signIn(account) } },
                     onRemove: { store.remove(account.id) },
+                    onRetryKeychain: {
+                        Keychain.invalidateCache(for: account.id)
+                        Task { await store.refresh(account) }
+                    },
                     compact: compact)
     }
 
@@ -344,6 +348,10 @@ struct PopoverView: View {
                             animating: store.uiVisible && open,
                             onSignIn: { Task { await store.signIn(account) } },
                             onRemove: { store.remove(account.id) },
+                    onRetryKeychain: {
+                        Keychain.invalidateCache(for: account.id)
+                        Task { await store.refresh(account) }
+                    },
                             collapsible: accounts.count >= 2,
                             expanded: open,
                             onToggle: {
@@ -390,6 +398,7 @@ struct AccountCard: View {
     var onSignIn: (() -> Void)? = nil
     /// Remove the account from here, without a trip to Config.
     var onRemove: (() -> Void)? = nil
+    var onRetryKeychain: (() -> Void)? = nil
     @State private var confirmingRemove = false
     @State private var hoveringRemove = false
     /// Roll-up rows (vendors with 2+ accounts): the header row IS the
@@ -606,8 +615,11 @@ struct AccountCard: View {
                 if let err = account.error {
                     HStack(spacing: 8) {
                         Text(err).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
+                        if let onRetryKeychain, err.localizedCaseInsensitiveContains("keychain") {
+                            Button("Retry Keychain", action: onRetryKeychain).font(.system(size: 10)).controlSize(.small)
+                        }
                         if let onSignIn, account.provider != .google,
-                           err.localizedCaseInsensitiveContains("sign") {
+                           err.localizedCaseInsensitiveContains("sign"), !err.localizedCaseInsensitiveContains("keychain") {
                             Button("Sign in", action: onSignIn)
                                 .font(.system(size: 10)).controlSize(.small)
                         }
