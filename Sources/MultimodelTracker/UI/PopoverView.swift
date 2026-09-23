@@ -122,9 +122,9 @@ struct PopoverView: View {
             // screen.
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    // First run: this is where a new user lands, so each
-                    // vendor's first action lives here, not behind Config.
-                    if store.accounts.isEmpty { FirstRunView(store: store) }
+                    // Keep each empty vendor's actions in reach until the
+                    // user explicitly dismisses that vendor's setup row.
+                    if !store.providersNeedingSetup.isEmpty { FirstRunView(store: store) }
                     ForEach(Provider.allCases) { provider in
                         let accts = store.accounts(for: provider)
                         if accts.count >= 2 && overflowActive {
@@ -731,7 +731,7 @@ struct LimitRow: View {
 }
 
 
-/// The popover's empty state: no accounts yet. One row per vendor, each with
+/// Setup rows for vendors without accounts. One row per vendor, each with
 /// its REAL first action — an import of a login already on this Mac where
 /// one exists, or the browser sign-in — because a lone "Sign in" button is
 /// ambiguous in a three-vendor app. Import failures say so right here.
@@ -741,15 +741,25 @@ struct FirstRunView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add your first account")
+            Text(store.accounts.isEmpty ? "Add your first account" : "Add another provider")
                 .font(.system(size: 13, weight: .semibold))
-            Text("Usage limits show here and in the menu bar once an account is signed in — up to \(Provider.maxAccountsPerProvider) per vendor.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-            ForEach(Provider.allCases) { p in
+            if store.accounts.isEmpty {
+                Text("Usage limits show here and in the menu bar once an account is signed in — up to \(Provider.maxAccountsPerProvider) per vendor.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            ForEach(store.providersNeedingSetup) { p in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
                         Circle().fill(p.accent).frame(width: 8, height: 8)
                         Text(p.displayName).font(.system(size: 12, weight: .semibold))
+                        Spacer()
+                        Button { store.dismissSetup(for: p) } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Dismiss \(p.displayName) setup")
                     }
                     HStack(spacing: 8) {
                         switch p {
@@ -767,8 +777,10 @@ struct FirstRunView: View {
                             Button("Sign in with browser") { store.addAndSignIn(.openai) }
                         case .google:
                             Button("Import Antigravity") {
-                                report(store.importGoogleCLI() == nil
-                                       ? "No Antigravity or gemini-cli login found on this Mac." : nil)
+                                Task {
+                                    report(await store.importGoogleCLI() == nil
+                                           ? "No Antigravity or gemini-cli login found on this Mac." : nil)
+                                }
                             }
                             Button("Sign in with browser") { store.addAndSignIn(.google) }
                         }

@@ -9,6 +9,19 @@ final class Store: ObservableObject {
     @Published private(set) var accounts: [Account] = [] {
         didSet { settleExpansion() }
     }
+    @Published private(set) var dismissedSetupProviders: Set<Provider> =
+        Set((UserDefaults.standard.stringArray(forKey: "mmt.dismissedSetupProviders") ?? [])
+            .compactMap(Provider.init(rawValue:)))
+    var providersNeedingSetup: [Provider] {
+        Provider.allCases.filter {
+            accounts(for: $0).isEmpty && !dismissedSetupProviders.contains($0)
+        }
+    }
+    func dismissSetup(for provider: Provider) {
+        dismissedSetupProviders.insert(provider)
+        UserDefaults.standard.set(dismissedSetupProviders.map(\.rawValue),
+                                  forKey: "mmt.dismissedSetupProviders")
+    }
     /// True only while the popover or Accounts panel is actually on screen.
     /// The animated bars gate on this: NSPopover keeps its view hierarchy
     /// alive after dismissal, so TimelineView(.animation) happily redraws at
@@ -554,13 +567,13 @@ final class Store: ObservableObject {
     }
 
     @discardableResult
-    func importGoogleCLI() -> Account? {
+    func importGoogleCLI() async -> Account? {
         // Only one row can ride the machine credentials — that login is a
         // property of the Mac, not of the row. Further Google accounts come
         // in through the browser.
         guard canAdd(.google),
               !accounts(for: .google).contains(where: { $0.authSource != .browser }) else { return nil }
-        let viaAntigravity = GoogleCredentialSource.antigravityKeychainBlob() != nil
+        let viaAntigravity = await GoogleCredentialSource.antigravityKeychainBlobAsync() != nil
         guard viaAntigravity || GoogleCredentialSource.geminiCLITokenBlob() != nil else { return nil }
         var a = Account(provider: .google, label: viaAntigravity ? "Antigravity" : "gemini-cli")
         a.nickname = viaAntigravity ? "Antigravity" : "gemini-cli"
@@ -579,7 +592,7 @@ final class Store: ObservableObject {
     /// `WKWebsiteDataStore.allDataStoreIdentifiers` — that API segfaults
     /// inside WebKit's run loop when called during launch (verified: SIGSEGV
     /// in fetchAllDataStoreIdentifiers).
-    func recoverAccounts() -> [String] {
+    func recoverAccounts() async -> [String] {
         var notes: [String] = []
         var known = Set(accounts.map(\.id))
 
@@ -607,7 +620,7 @@ final class Store: ObservableObject {
             notes.append("anthropic \(id.uuidString.prefix(8)) — claude.ai session recovered")
         }
 
-        if accounts(for: .google).isEmpty, importGoogleCLI() != nil {
+        if accounts(for: .google).isEmpty, await importGoogleCLI() != nil {
             notes.append("google — re-imported from Antigravity")
         }
         save()

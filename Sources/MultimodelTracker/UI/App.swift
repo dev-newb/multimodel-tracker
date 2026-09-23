@@ -702,7 +702,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // `--recover` rebuilds accounts from surviving credentials.
         if CommandLine.arguments.contains("--recover") {
             Task { @MainActor in
-                let notes = store.recoverAccounts()
+                let notes = await store.recoverAccounts()
                 await store.refreshAll()
                 let text = notes.isEmpty ? "nothing to recover" : notes.joined(separator: "\n  ")
                 FileHandle.standardError.write("recover:\n  \(text)\n".data(using: .utf8)!)
@@ -731,7 +731,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if CommandLine.arguments.contains("--import-google") {
             Task { @MainActor in
                 let existing = store.accounts(for: .google).count
-                let added = store.importGoogleCLI()
+                let added = await store.importGoogleCLI()
                 let outcome = added != nil ? "added"
                     : (existing > 0 ? "already present (\(existing))" : "no credentials found")
                 FileHandle.standardError.write("import-google: \(outcome)\n".data(using: .utf8)!)

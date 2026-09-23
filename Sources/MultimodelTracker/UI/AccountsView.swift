@@ -156,7 +156,7 @@ struct AccountsView: View {
                     // Importing adopts the one Antigravity/gemini-cli login on
                     // this Mac; Add signs a FURTHER Google account in through
                     // the browser, which is the only way to hold several.
-                    Button("Import Antigravity") { store.importGoogleCLI() }
+                    Button("Import Antigravity") { Task { await store.importGoogleCLI() } }
                         .font(.system(size: 11))
                         .disabled(store.accounts(for: .google).contains { $0.authSource != .browser }
                                   || !store.canAdd(.google))

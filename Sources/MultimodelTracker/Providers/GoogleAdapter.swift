@@ -100,35 +100,39 @@ enum GoogleCredentialSource {
 
     /// Per-launch cache of the raw keychain payload. THIS ITEM BELONGS TO
     /// ANOTHER APP (Antigravity), so its ACL does not list us and macOS
-    /// prompts on every read until the user grants Always Allow. Reading it
-    /// once per poll therefore meant a password prompt every three minutes.
+    /// prompts on every read until the user grants Always Allow for this code
+    /// identity. Reading it once per poll therefore meant repeated prompts.
     /// One read per launch, cached — including the failure, so a denied
     /// prompt doesn't immediately ask again.
-    private static var keychainCache: String??
+    @MainActor private static var keychainCache: String??
+    @MainActor private static var keychainReadTask: Task<String?, Never>?
     private static let keychainQueue = DispatchQueue(label: "com.devnewb.multimodeltracker.google")
 
     /// Off the main actor: SecItemCopyMatching blocks for as long as the
     /// password panel is up, and Store is @MainActor — reading it inline
     /// froze the whole UI behind the prompt.
-    static func antigravityKeychainBlobAsync() async -> String? {
+    @MainActor static func antigravityKeychainBlobAsync() async -> String? {
         if let cached = keychainCache { return cached }
-        let value: String? = await withCheckedContinuation { cont in
-            keychainQueue.async {
-                if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
-                    FileHandle.standardError.write("google keychain READ (cache miss)\n".data(using: .utf8)!)
+        if keychainReadTask == nil {
+            keychainReadTask = Task {
+                await withCheckedContinuation { cont in
+                    keychainQueue.async {
+                        cont.resume(returning: readAntigravityKeychainBlob())
+                    }
                 }
-                cont.resume(returning: antigravityKeychainBlob())
             }
         }
+        let value = await keychainReadTask!.value
         keychainCache = value
+        keychainReadTask = nil
         return value
     }
 
     /// Antigravity keeps its login in the login keychain rather than a file —
     /// the SAME item serves both the IDE and the `agy` CLI, so one read covers
-    /// both. macOS gates this with a consent prompt; Always Allow makes it
-    /// silent from then on.
-    static func antigravityKeychainBlob() -> String? {
+    /// both. macOS gates this with a consent prompt. Always Allow persists
+    /// for the same stable signing identity; an ad-hoc rebuild may re-prompt.
+    private static func readAntigravityKeychainBlob() -> String? {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                 kSecAttrService as String: "gemini",
                                 kSecAttrAccount as String: "antigravity",
@@ -156,7 +160,7 @@ enum GoogleCredentialSource {
 
 /// Which Google surface to read.
 enum GoogleAuthMode: Int, CaseIterable {
-    /// Antigravity's per-model quota — what the IDE and `agy` actually meter.
+    /// Antigravity's grouped quota — the same pools as its View Usage menu.
     case antigravity = 0
     /// The older Code Assist buckets. Kept because gemini-cli users still
     /// have them, and they're the only thing a CLI-only login exposes.
@@ -164,7 +168,7 @@ enum GoogleAuthMode: Int, CaseIterable {
 
     var displayName: String {
         switch self {
-        case .antigravity: return "Antigravity (per-model)"
+        case .antigravity: return "Antigravity (usage limits)"
         case .codeAssist:  return "Gemini Code Assist (legacy)"
         }
     }
@@ -274,7 +278,11 @@ struct GoogleAdapterImpl: UsageAdapter {
         var storedAccess: String?
         var storedExpiry: Date?
         var idToken: String?
-        if let mine = await Keychain.googleRefreshTokenAsync(for: account.id) {
+        // Imported Antigravity rows never have a per-account token. Skip that
+        // keychain query entirely: an ad-hoc signed update can otherwise
+        // prompt even before we read Antigravity's separate item.
+        let machineRow = await Store.isMachineGoogleRow(account.id)
+        if !machineRow, let mine = await Keychain.googleRefreshTokenAsync(for: account.id) {
             refreshToken = mine
             if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
                 FileHandle.standardError.write(
@@ -284,7 +292,7 @@ struct GoogleAdapterImpl: UsageAdapter {
             // Only the imported row may read the machine login. Any other row
             // without its own token is a sign-in that never finished, and
             // must say so rather than borrow someone else's numbers.
-            guard await Store.isMachineGoogleRow(account.id) else { throw AdapterError.notSignedIn }
+            guard machineRow else { throw AdapterError.notSignedIn }
             let antigravity = await GoogleCredentialSource.antigravityTokenBlob()
             guard let blob = antigravity ?? GoogleCredentialSource.geminiCLITokenBlob() else {
                 throw AdapterError.notSignedIn
@@ -457,9 +465,21 @@ struct GoogleAdapterImpl: UsageAdapter {
             }
             var body: [String: Any] = [:]
             if let p = Self.cachedProject[id] { body["project"] = p }
-            let root = try await call("fetchAvailableModels", body: body,
-                                      token: token, agent: "antigravity")
-            var usage = try Self.parseModels(root)
+            // The same grouped quota summary Antigravity's View Usage menu
+            // shows: Gemini and Claude/GPT, each with weekly and five-hour
+            // buckets. The older models call has only per-model quota and
+            // cannot represent all four of those limits.
+            var usage: FetchedUsage
+            do {
+                let summary = try await call("retrieveUserQuotaSummary", body: body,
+                                             token: token, agent: "antigravity")
+                usage = try Self.parseQuotaSummary(summary)
+            } catch {
+                // Older Antigravity accounts may not expose the summary yet.
+                let root = try await call("fetchAvailableModels", body: body,
+                                          token: token, agent: "antigravity")
+                usage = try Self.parseModels(root)
+            }
             usage.plan = Self.cachedTier[id]
             usage.authSource = source
             var email = idToken.flatMap(Self.emailFromJWT)
@@ -480,6 +500,54 @@ struct GoogleAdapterImpl: UsageAdapter {
             }
             throw error
         }
+    }
+
+    /// `RetrieveUserQuotaSummaryResponse` has groups containing buckets.
+    /// Use the server's names and stable bucket ids, so newly added groups
+    /// appear without hardcoding model families or limit windows.
+    static func parseQuotaSummary(_ root: [String: Any]) throws -> FetchedUsage {
+        let isoFrac = ISO8601DateFormatter()
+        isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let iso = ISO8601DateFormatter()
+        func date(_ value: Any?) -> Date? {
+            guard let value = value as? String else { return nil }
+            return isoFrac.date(from: value) ?? iso.date(from: value)
+        }
+        func keyPart(_ text: String) -> String {
+            String(text.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" })
+                .split(separator: "-").joined(separator: "-")
+        }
+        func shortGroup(_ name: String) -> String {
+            switch name.lowercased() {
+            case "gemini models": return "Gemini"
+            case "claude and gpt models": return "Claude/GPT"
+            default: return name
+            }
+        }
+        func shortBucket(_ name: String) -> String {
+            switch name.lowercased() {
+            case "weekly limit remaining": return "weekly"
+            case "five hour limit remaining": return "5-hour"
+            default: return name
+            }
+        }
+        var limits: [UsageLimit] = []
+        let groups = root["groups"] as? [[String: Any]] ?? []
+        for group in groups {
+            let groupName = (group["displayName"] as? String) ?? "Models"
+            for bucket in (group["buckets"] as? [[String: Any]] ?? []) {
+                guard let remaining = bucket["remainingFraction"] as? Double else { continue }
+                let bucketName = (bucket["displayName"] as? String) ?? "Limit"
+                let bucketId = (bucket["bucketId"] as? String) ?? keyPart(bucketName)
+                let key = "google-summary-\(keyPart(groupName))-\(keyPart(bucketId))"
+                limits.append(UsageLimit(key: key,
+                                         label: "\(shortGroup(groupName)) · \(shortBucket(bucketName))",
+                                         percent: min(max((1 - remaining) * 100, 0), 100),
+                                         resetsAt: date(bucket["resetTime"])))
+            }
+        }
+        guard !limits.isEmpty else { throw AdapterError.transport("quota summary had no buckets") }
+        return FetchedUsage(plan: nil, limits: limits)
     }
 
     /// Models that share a pool report the SAME remainingFraction AND reset —
