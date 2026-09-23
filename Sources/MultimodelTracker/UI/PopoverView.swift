@@ -43,7 +43,7 @@ enum OverflowMode: Int, CaseIterable, Identifiable {
 /// estimate is built from: a card is base + pools × row; an error card and
 /// a rolled-up row are fixed. If the card design changes, re-measure.
 enum PopoverMetrics {
-    static let cardBase: CGFloat = 33
+    static let cardBase: CGFloat = 56
     static let poolRow: CGFloat = 29
     static let errorCard: CGFloat = 60
     static let sectionHeader: CGFloat = 20
@@ -403,6 +403,9 @@ struct AccountCard: View {
     /// shrinks so the name and the numbers keep their room.
     var compact = false
     @State private var hoveringRow = false
+    var detailPreview: UsageDetails? = nil
+    @State private var showingDetails = false
+    @Environment(\.accessibilityReduceMotion) private var reduceDetailMotion
 
     private var worstColor: Color {
         guard let p = account.worstPercent else { return .secondary }
@@ -619,6 +622,25 @@ struct AccountCard: View {
                                  animating: animating)
                     }
                 }
+                if showingDetails || detailPreview != nil {
+                    UsageDetailsView(account: account, accent: accent, preview: detailPreview)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                Button {
+                    withAnimation(reduceDetailMotion ? nil : .easeOut(duration: ConfigPanelContainer.slideDuration)) {
+                        showingDetails.toggle()
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .rotationEffect(.degrees(showingDetails || detailPreview != nil ? 180 : 0))
+                        .foregroundStyle(accent.opacity(0.8))
+                        .frame(maxWidth: .infinity).frame(height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(showingDetails ? "Hide model usage details" : "Show model usage details")
+                .help(showingDetails ? "Hide details" : "Model usage and reset details")
                 }   // expanded
             }
             Spacer(minLength: 0)

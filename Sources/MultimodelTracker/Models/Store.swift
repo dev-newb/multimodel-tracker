@@ -702,28 +702,10 @@ final class Store: ObservableObject {
     func refresh(_ account: Account) async {
         guard !mockMode else { return }
         var a = account
-        // The imported Codex account can lose its keychain item when the
-        // item's ACL is deliberately reset (signature migration). The source
-        // of truth — ~/.codex/auth.json — is still there, and re-storing from
-        // it makes THIS build the item's creator, which is exactly the clean
-        // ACL binding wanted. Heal silently instead of erroring.
-        if a.provider == .openai, a.nickname == "Codex CLI",
-           (try? await Keychain.openAICredentialsAsync(for: a.id)) == nil,
-           let creds = CodexCLIImport.read() {
-            Keychain.storeOpenAI(accessToken: creds.accessToken,
-                                 accountId: creds.accountId, for: a.id)
-        }
-        // The Claude Code import holds no refresh token by design; when its
-        // borrowed access token nears expiry, adopt the CLI's current copy —
-        // Claude Code refreshes its own login as it runs.
-        if a.provider == .anthropic, a.nickname == "Claude Code" {
-            let stored = try? await Keychain.anthropicCredentialsAsync(for: a.id)
-            let expiring = stored?.expiresAt.map { $0 <= Date().addingTimeInterval(120) } ?? true
-            if expiring, let cli = ClaudeCodeImport.freshCreds() {
-                Keychain.storeAnthropic(accessToken: cli.accessToken, refreshToken: nil,
-                                        expiresAt: cli.expiresAt, for: a.id)
-            }
-        }
+        // Imported CLI credentials belong to the login imported into THIS row.
+        // Never silently replace them with the CLI's current login: the user may
+        // have switched accounts while continuing the same conversation. Expired
+        // imported tokens require explicit sign-in/import, like other credentials.
         do {
             let adapter: UsageAdapter = a.provider == .google
                 ? GoogleAdapterImpl(mode: googleMode)
