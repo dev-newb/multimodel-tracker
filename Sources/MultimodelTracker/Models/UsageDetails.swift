@@ -13,6 +13,7 @@ struct UsageDetails {
     var unit: String = "tokens"
     var note: String
     var emptyMessage: String = "No model usage reported."
+    var summary: String? = nil
 }
 
 /// Account-scoped server analytics. Never attributes local conversations to the current login.
@@ -53,8 +54,9 @@ enum OpenAIModelUsage {
         }
         return UsageDetails(title: "Model usage · last 30 UTC days",
                             rows: totals.map { .init(model: $0.key, value: $0.value) }.sorted { $0.value == $1.value ? $0.model < $1.model : $0.value > $1.value }, unit: unit,
-                            note: (latest.map { "Latest activity reported: \($0). " } ?? "") + "OpenAI account analytics. Bars compare model usage" + (unit == "percent" ? "; pp = percentage points." : ".") + " May lag live limits. Account-switch billing has not been independently verified.",
-                            emptyMessage: "OpenAI reports no model activity for this period.")
+                            note: (unit == "percent" ? "Daily percentages are added as percentage points (pp); these are not token counts or your current quota. " : "") + "Bars compare model totals. This history may be delayed or incomplete. Account-switch billing has not been independently verified.",
+                            emptyMessage: "OpenAI reports no model activity for this period.",
+                            summary: "OpenAI server · \(unit == "percent" ? "percentage points (pp)" : unit)" + (latest.map { "\nLatest activity reported: \($0)" } ?? ""))
     }
 }
 

@@ -28,19 +28,17 @@ enum AccountUsageDetails {
         case .google:
             return Result(primary: try await GoogleAdapterImpl().fetchModelDetails(account: account))
         case .anthropic:
-            // The main account refresh already obtained these exact limits. Reuse them
-            // so opening/refreshing details cannot double OAuth polling or trigger 429s.
-            let scoped = account.limits.filter { $0.key.hasPrefix("weekly_scoped") || $0.key.hasPrefix("seven_day_") }
-            var result = Result(primary: UsageDetails(title: "Model-specific quota used", rows: scoped.compactMap { limit in
-                guard let percent = limit.percent, percent.isFinite else { return nil }
-                return .init(model: limit.label, value: min(max(percent, 0), 100), identifier: limit.key, caption: limit.resetDetail)
-            }, unit: "quotaPercent", note: "Current limits reported by Anthropic for this account. Per-model token totals require local Claude Code collection.", emptyMessage: "Anthropic reports no separate model limits for this account."))
-            if let error = account.error { result.warning = "Account refresh: \(error). Showing the last reported limits." }
+            // Subscription limits, including scoped weekly limits, already appear
+            // on the account card. This disclosure is only for local model totals.
+            var result = Result(primary: UsageDetails(title: "Claude Code · last 7 days",
+                note: "Only Claude Code activity collected on this Mac is included. Other computers, Desktop chat and past conversations are not included.",
+                emptyMessage: ClaudeTelemetry.shared.enabled ? "No Claude Code usage events received yet." : "Local Claude Code collection is off."))
             if await ClaudeUsageLedger.shared.hasEvents() {
-                do { result.tokens = try await claudeTokens(account) }
-                catch { result.warning = "Claude Code totals: \(String(describing: error))" }
-            } else if ClaudeTelemetry.shared.enabled {
-                result.tokens = UsageDetails(title: "Claude Code · last 7 days", note: "Only new Claude Code activity on this Mac can be collected. Desktop chat and past conversations are not included.", emptyMessage: "No Claude Code usage events received yet.")
+                do { result.primary = try await claudeTokens(account) }
+                catch {
+                    result.primary.emptyMessage = "Claude Code totals unavailable for this account."
+                    result.warning = "Claude Code totals: \(String(describing: error))"
+                }
             }
             return result
         }

@@ -45,6 +45,9 @@ struct UsageDetailsView: View {
     private func reportView(_ report: UsageDetails) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(report.title).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            if let summary = report.summary {
+                Text(summary).font(.system(size: 9)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             ForEach(report.rows) { row in
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {

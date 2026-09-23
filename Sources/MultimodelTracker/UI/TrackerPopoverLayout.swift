@@ -19,6 +19,8 @@ struct BoundedTrackerScroll<Content: View>: View {
                         .onChange(of: geometry.size.height) { _, height in documentHeight = height }
                 })
         }
+        // .hidden still permits macOS to show indicators when a mouse is attached.
+        .scrollIndicators(.never)
         .scrollBounceBehavior(.basedOnSize)
         .frame(height: expanded ? min(max(documentHeight, 1), maxHeight) : 0, alignment: .top)
         .clipped()

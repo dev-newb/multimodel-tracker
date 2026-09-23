@@ -63,7 +63,7 @@ struct UsageAttributionTests {
         let report = try OpenAIModelUsage.parse(Data(raw.utf8))
         assertEqual(report.rows.count, 1)
         assertEqual(report.rows.first?.value, 5)
-        assertTrue(report.note.contains("2026-09-01"))
+        assertTrue(report.summary?.contains("2026-09-01") == true)
         let empty = try OpenAIModelUsage.parse(Data(#"{"units":"tokens","data":[]}"#.utf8))
         assertTrue(empty.rows.isEmpty)
         assertTrue(empty.emptyMessage.contains("no model activity"))
