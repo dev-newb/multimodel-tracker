@@ -2,7 +2,7 @@
 
 ## Detail controls
 
-The bottom chevron on each account card opens/closes model details vertically using the Config panel's 0.12-second ease-out timing. Its full-width hit area is 28 points tall. Details scroll within a 240-point viewport, keeping the collapse control outside that scroll area; the outer list reveals the control after expansion if necessary. Reduced Motion disables the transition. Details refresh every minute while expanded; collapsing retains the loaded report. Background refresh does not insert/remove controls around the arrow. Historical usage bars compare model amounts within the selected report. Native quota bars use a fixed 0–100% scale and say “quota used.”
+The bottom chevron on each account card opens/closes model details vertically using the Config panel's 0.12-second ease-out timing. The arrow retains its original 16-point row and plain styling. Details scroll within a 240-point viewport, keeping the collapse control outside that scroll area; the outer list reveals the control after expansion if necessary. Reduced Motion disables the transition. Details refresh every minute while expanded; collapsing retains the loaded report. Background refresh does not insert/remove controls around the arrow. Historical usage bars compare model amounts within the selected report. Native quota bars use a fixed 0–100% scale and say “quota used.”
 
 ## OpenAI
 
@@ -55,3 +55,9 @@ Live native service verification on September 23 returned 23 Google model quota 
 Both scroll viewports use measured document heights with explicit caps. `NSHostingController` automatic preferred-size updates are disabled; bounded geometry updates resize the popover relative to its status item. The fallback panel preserves its top edge and horizontal centre. Neither path uses `fittingSize` (which is zero with automatic hosting sizing disabled).
 
 Run `.build/release/MultimodelTracker --test-popover-layout` after building. The native fixture posts 21 mouse presses to its own window, including the left edge of the arrow's full-width target, changes 23 models to 100, checks bounded height and menu anchor coordinates, and checks fallback panel growth/shrink. No Store, network requests or Keychain reads are initialized by this mode.
+
+### Menu-bar window regression found in full-app validation
+
+The earlier ordinary-window fixture did not cover the real menu-bar window. On the affected setup, `NSStatusBarWindow.screen` was nil and its frame was above the current display bounds. AppKit placed the popover at x=0 despite the status item being at x=2822. The corrected path selects the display from the item's frame (or nearest display for a stale frame), pins the window to that item, and does not re-show it during content resizing. Reopening a visible tracker retains its window and disclosure state. The unrequested increase in arrow spacing was reverted.
+
+Use an isolated app identifier with `--mock --mock-three --open --layout-trace /absolute/path/layout.jsonl` for full UI checks. Mock model details make no credential or provider requests. The opt-in trace records only this app's window geometry, screen frames and timing. Validate normal UI actions through the native computer-use tool; the narrow self-test alone is insufficient evidence for menu-bar placement.

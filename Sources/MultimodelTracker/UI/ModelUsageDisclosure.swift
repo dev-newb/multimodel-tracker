@@ -30,10 +30,10 @@ struct ModelUsageDisclosure: View {
                     .font(.system(size: 10, weight: .semibold))
                     .rotationEffect(.degrees(expanded ? 180 : 0))
                     .foregroundStyle(accent.opacity(0.8))
-                    .frame(maxWidth: .infinity).frame(height: 28)
+                    .frame(maxWidth: .infinity).frame(height: 16)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(DetailDisclosureStyle(accent: accent))
+            .buttonStyle(.plain)
             .id("model-details-\(account.id.uuidString)")
             .accessibilityIdentifier("model-details-\(account.id.uuidString)")
             .accessibilityLabel(expanded ? "Hide model usage details" : "Show model usage details")
@@ -48,14 +48,5 @@ struct ModelUsageDisclosure: View {
             guard !Task.isCancelled else { return }
             reveal("model-details-\(account.id.uuidString)")
         }
-    }
-}
-
-private struct DetailDisclosureStyle: ButtonStyle {
-    let accent: Color
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background(accent.opacity(configuration.isPressed ? 0.16 : 0), in: RoundedRectangle(cornerRadius: 4))
-            .contentShape(Rectangle())
     }
 }

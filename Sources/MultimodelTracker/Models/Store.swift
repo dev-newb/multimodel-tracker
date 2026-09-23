@@ -197,7 +197,10 @@ final class Store: ObservableObject {
 
     func enableMockMode() {
         mockMode = true
-        accounts = Self.mockAccounts()
+        let examples = Self.mockAccounts()
+        accounts = CommandLine.arguments.contains("--mock-three")
+            ? Provider.allCases.compactMap { provider in examples.first { $0.provider == provider } }
+            : examples
         lastRefresh = Date()        // the header reads "just now", not "never"
     }
 

@@ -118,6 +118,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         popover.contentViewController = host
         popover.contentSize = NSSize(width: 340, height: 400)
         popoverHost = host
+        if LayoutTrace.enabled {
+            for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                    Task { @MainActor in
+                        guard let self, let window = notification.object as? NSWindow else { return }
+                        if window === self.popover.contentViewController?.view.window {
+                            LayoutTrace.record(name.rawValue, popover: self.popover, anchor: self.statusItem.button)
+                        } else if window === self.usagePanel {
+                            LayoutTrace.recordPanel(name.rawValue, panel: window)
+                        }
+                    }
+                }
+            }
+        }
 
         NotificationCenter.default.addObserver(forName: .mmtBadgeStyleChanged, object: nil,
                                                queue: .main) { [weak self] _ in
@@ -875,6 +889,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     /// the panel shows without activating the app, and activating it is what
     /// once made the panel hop Spaces and steal keystrokes.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        LayoutTrace.record("reopen", popover: popover, anchor: statusItem.button)
+        // Activating an already visible tracker must not recreate it elsewhere
+        // or discard its disclosure state.
+        if let panel = usagePanel, panel.isVisible { panel.makeKeyAndOrderFront(nil); return false }
+        if popover.isShown { return false }
         // When macOS has squeezed the menu-bar item out (a crowded bar on a
         // notched display), what the user can't reach is their USAGE — show
         // that. With the item visible, reopen keeps opening Config.
@@ -1148,15 +1167,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             store.setUIVisible(true)
             // Size the list for the screen the status item is on — re-read
             // on every open, since the item can move between displays.
-            popoverHost?.rootView.anchorScreen = button.window?.screen
+            popoverHost?.rootView.anchorScreen = TrackerPopoverLayout.screen(for: button)
             startCursorGovernor()
             store.noteMaxedViewing()
             store.noteBurnViewing()
             // Geometry callbacks own the measured size. A hosting controller with
             // automatic sizing disabled reports a zero fittingSize, not its content.
             TrackerPopoverLayout.resize(popover, to: popover.contentSize, anchor: button)
+            let animated = popover.animates
+            popover.animates = false
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            TrackerPopoverLayout.pin(popover, to: button)
+            popover.animates = animated
             popover.contentViewController?.view.window?.makeKey()
+            LayoutTrace.record("show", popover: popover, anchor: button)
             if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil,
                let host = popover.contentViewController as? NSHostingController<PopoverView> {
                 FileHandle.standardError.write(

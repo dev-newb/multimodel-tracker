@@ -72,17 +72,17 @@ enum PopoverLayoutSelfTest {
             guard abs(panel.frame.maxY - panelTop) < 2, abs(panel.frame.midX - panelX) < 2 else { panel.close(); return fail("Fallback panel lost its top anchor") }
         }
         panel.close()
-        print("PASS: 21 disclosure presses, 23→100 model rows, 28pt reachable button, bounded height, stable popover/panel top and horizontal anchor")
+        print("PASS: 21 disclosure presses, 23→100 model rows, 16pt reachable button, bounded height, stable popover/panel top and horizontal anchor")
         return true
     }
 
     private static func settle() async { try? await Task.sleep(for: .milliseconds(250)) }
     private static func fail(_ message: String) -> Bool { print("FAIL: \(message)"); return false }
     /// Dispatch real mouse down/up events to this test window. The fixture has
-    /// a fixed 40pt footer; the disclosure's full-width 28pt button is above it.
+    /// a fixed 40pt footer; the disclosure's full-width 16pt button is above it.
     /// Alternate the left edge and centre to test more than the chevron glyph.
     private static func press(_ window: NSWindow, host: NSView, nearEdge: Bool = false) {
-        let fromBottom: CGFloat = 40 + 14
+        let fromBottom: CGFloat = 40 + 8
         let point = NSPoint(x: nearEdge ? 20 : host.bounds.midX,
                             y: host.isFlipped ? host.bounds.maxY - fromBottom : fromBottom)
         let location = host.convert(point, to: nil)

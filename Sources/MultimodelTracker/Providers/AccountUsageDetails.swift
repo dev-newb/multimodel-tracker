@@ -10,6 +10,13 @@ enum AccountUsageDetails {
     }
 
     static func fetch(_ account: Account) async throws -> Result {
+        if CommandLine.arguments.contains("--mock") {
+            let rows = (0..<(account.provider == .google ? 23 : 1)).map {
+                ModelUsageDetail(model: account.provider == .google ? "Gemini fixture \($0 + 1)" : "Model fixture", value: 25)
+            }
+            return Result(primary: UsageDetails(title: "Model quota used", rows: rows, unit: "quotaPercent",
+                note: "Fabricated UI fixture. No provider request."), tokens: UsageDetails(title: "Local usage", note: "Fixture without recorded usage."))
+        }
         switch account.provider {
         case .openai:
             let creds = try await Keychain.openAICredentialsAsync(for: account.id)

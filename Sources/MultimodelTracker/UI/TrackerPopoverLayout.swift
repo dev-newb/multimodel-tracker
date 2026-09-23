@@ -40,6 +40,37 @@ extension EnvironmentValues {
 
 @MainActor
 enum TrackerPopoverLayout {
+    /// NSStatusBarWindow.screen may be nil even while its frame is on a display.
+    /// Resolve the display geometrically before using a generic screen fallback.
+    static func screen(for anchor: NSView?) -> NSScreen? {
+        if let frame = anchor?.window?.frame {
+            let centre = NSPoint(x: frame.midX, y: frame.midY)
+            if let screen = NSScreen.screens.first(where: { NSMouseInRect(centre, $0.frame, false) }) { return screen }
+            if let screen = NSScreen.screens.first(where: { $0.frame.intersects(frame) }) { return screen }
+            // A display-mode change can leave the menu-bar window above the
+            // display's current top. Choose its nearest display, not the key app's.
+            func distance(_ screen: NSScreen) -> CGFloat {
+                let dx = max(screen.frame.minX - centre.x, 0, centre.x - screen.frame.maxX)
+                let dy = max(screen.frame.minY - centre.y, 0, centre.y - screen.frame.maxY)
+                return dx * dx + dy * dy
+            }
+            if let nearest = NSScreen.screens.min(by: { distance($0) < distance($1) }) { return nearest }
+        }
+        return anchor?.window?.screen ?? NSScreen.main
+    }
+
+    static func pin(_ popover: NSPopover, to anchor: NSView?) {
+        guard popover.isShown, let window = popover.contentViewController?.view.window,
+              let itemFrame = anchor?.window?.frame, let screen = screen(for: anchor) else { return }
+        let visible = screen.visibleFrame
+        let frame = window.frame
+        let x = min(max(itemFrame.midX - frame.width / 2, visible.minX + 8), visible.maxX - frame.width - 8)
+        let top = min(itemFrame.minY + 4, visible.maxY + 8)
+        let y = max(top - frame.height, visible.minY + 8)
+        if abs(frame.minX - x) > 0.5 || abs(frame.minY - y) > 0.5 {
+            window.setFrameOrigin(NSPoint(x: x, y: y))
+        }
+    }
     static func bounded(_ size: NSSize, screen: NSScreen?) -> NSSize {
         let visible = screen?.visibleFrame.size ?? NSSize(width: 800, height: 800)
         return NSSize(width: min(max(size.width.rounded(.up), 1), visible.width - 24),
@@ -47,18 +78,21 @@ enum TrackerPopoverLayout {
     }
 
     static func resize(_ popover: NSPopover, to proposed: NSSize, anchor: NSView?) {
-        let size = bounded(proposed, screen: anchor?.window?.screen)
+        let size = bounded(proposed, screen: screen(for: anchor))
         guard abs(popover.contentSize.width - size.width) > 0.5 || abs(popover.contentSize.height - size.height) > 0.5 else { return }
+        LayoutTrace.record("before resize", popover: popover, anchor: anchor, proposed: proposed)
         let animated = popover.animates
         popover.animates = false // SwiftUI owns the disclosure animation; no second window animation.
         popover.contentSize = size
-        if popover.isShown, let anchor, anchor.window?.isVisible == true {
-            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
-        }
+        // Re-showing from NSStatusBarWindow can resolve its missing screen as
+        // x=0. Keep this window and position it from the item's screen frame.
+        pin(popover, to: anchor)
         popover.animates = animated
+        LayoutTrace.record("after resize", popover: popover, anchor: anchor, proposed: proposed)
     }
 
     static func resizePanel(_ panel: NSWindow, to proposed: NSSize) {
+        LayoutTrace.recordPanel("before panel resize", panel: panel, proposed: proposed)
         let size = bounded(proposed, screen: panel.screen)
         let old = panel.frame
         let contentFrame = panel.frameRect(forContentRect: NSRect(origin: .zero, size: size))
@@ -71,5 +105,39 @@ enum TrackerPopoverLayout {
             next.origin.y = max(next.minY, visible.minY + 8)
         }
         panel.setFrame(next, display: false)
+        LayoutTrace.recordPanel("after panel resize", panel: panel, proposed: proposed)
+    }
+}
+
+/// Explicit opt-in diagnostics for this app's own layout. No account data.
+@MainActor
+enum LayoutTrace {
+    static var enabled: Bool { CommandLine.arguments.contains("--layout-trace") }
+    static func record(_ event: String, popover: NSPopover, anchor: NSView?, proposed: CGSize? = nil) {
+        guard let index = CommandLine.arguments.firstIndex(of: "--layout-trace"), index + 1 < CommandLine.arguments.count else { return }
+        func rect(_ rect: NSRect?) -> Any { rect.map { [ $0.origin.x, $0.origin.y, $0.width, $0.height ] } ?? NSNull() }
+        let row: [String: Any] = ["event": event, "time": Date().timeIntervalSince1970, "pid": ProcessInfo.processInfo.processIdentifier,
+            "window": rect(popover.contentViewController?.view.window?.frame),
+            "anchorWindow": rect(anchor?.window?.frame), "anchorBounds": rect(anchor?.bounds),
+            "screen": rect(anchor?.window?.screen?.visibleFrame),
+            "screens": NSScreen.screens.map { ["frame": rect($0.frame), "visible": rect($0.visibleFrame)] },
+            "shown": popover.isShown, "content": [popover.contentSize.width, popover.contentSize.height],
+            "proposed": proposed.map { [$0.width, $0.height] } ?? []]
+        write(row, to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+    }
+    static func recordPanel(_ event: String, panel: NSWindow, proposed: CGSize? = nil) {
+        guard let index = CommandLine.arguments.firstIndex(of: "--layout-trace"), index + 1 < CommandLine.arguments.count else { return }
+        let f = panel.frame
+        write(["event": event, "time": Date().timeIntervalSince1970, "pid": ProcessInfo.processInfo.processIdentifier,
+               "window": [f.minX, f.minY, f.width, f.height], "proposed": proposed.map { [$0.width, $0.height] } ?? []],
+              to: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+    }
+    private static func write(_ row: [String: Any], to url: URL) {
+        guard var data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]) else { return }
+        data.append(10)
+        if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600]) }
+        guard let file = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? file.close() }
+        _ = try? file.seekToEnd(); try? file.write(contentsOf: data)
     }
 }
