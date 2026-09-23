@@ -616,7 +616,7 @@ struct AccountCard: View {
                         if let onRetryKeychain, err.localizedCaseInsensitiveContains("keychain") {
                             Button("Retry Keychain", action: onRetryKeychain).font(.system(size: 10)).controlSize(.small)
                         }
-                        if let onSignIn, account.provider != .google,
+                        if let onSignIn,
                            err.localizedCaseInsensitiveContains("sign"), !err.localizedCaseInsensitiveContains("keychain") {
                             Button("Sign in", action: onSignIn)
                                 .font(.system(size: 10)).controlSize(.small)

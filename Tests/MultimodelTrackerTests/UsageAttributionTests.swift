@@ -9,10 +9,12 @@ struct UsageAttributionTests {
         try suite.testOpenAIUsesDeclaredUnitsWithoutDoubleCounting()
         try suite.testGoogleModelQuotaDetails()
         try suite.testOpenAIModelFallbackAndEmptyActivity()
+        try suite.testOpenAIFreshnessAndDateRange()
         print("PASS: account switching, organization isolation, retry deduplication, persistence, content exclusion, missing identity, malformed counts, OpenAI units")
     }
     let accountA = "11111111-1111-4111-8111-111111111111"
     let accountB = "22222222-2222-4222-8222-222222222222"
+    let analyticsNow = ISO8601DateFormatter().date(from: "2026-09-23T15:00:00Z")!
     func payload(account: String?, org: String = "org-a", request: String = "req-1", kind: String = "api_request", tokens: String = "100") throws -> Data {
         var attrs = ["event.name": kind, "organization.id": org, "request_id": request,
                      "model": "claude-test", "input_tokens": tokens, "output_tokens": "20", "cache_read_tokens": "30",
@@ -60,7 +62,7 @@ struct UsageAttributionTests {
     }
     func testOpenAIModelFallbackAndEmptyActivity() throws {
         let raw = #"{"units":"percent","data":[{"date":"2026-09-01","attribution":[],"models":[{"model":"m","speed":"fast","credits":3},{"model":"m","speed":"standard","credits":2},{"model":"zero","credits":0},{"model":"bad","credits":-1}]}]}"#
-        let report = try OpenAIModelUsage.parse(Data(raw.utf8))
+        let report = try OpenAIModelUsage.parse(Data(raw.utf8), now: analyticsNow)
         assertEqual(report.rows.count, 1)
         assertEqual(report.rows.first?.value, 5)
         assertTrue(report.summary?.contains("2026-09-01") == true)
@@ -69,11 +71,21 @@ struct UsageAttributionTests {
         assertTrue(empty.emptyMessage.contains("no model activity"))
     }
     func testOpenAIUsesDeclaredUnitsWithoutDoubleCounting() throws {
-        let raw = #"{"units":"percent","data":[{"attribution":[{"model":"m","value":12.5}],"models":[{"model":"m","credits":12.5}]},{"attribution":[{"model":"m","value":3}]}]}"#
-        let report = try OpenAIModelUsage.parse(Data(raw.utf8))
+        let raw = #"{"units":"percent","data":[{"date":"2026-09-22","attribution":[{"model":"m","value":12.5}],"models":[{"model":"m","credits":12.5}]},{"date":"2026-09-23","attribution":[{"model":"m","value":3}]}]}"#
+        let report = try OpenAIModelUsage.parse(Data(raw.utf8), now: analyticsNow)
         assertEqual(report.unit, "percent")
         assertEqual(report.rows.first?.value, 15.5)
         assertThrows(try OpenAIModelUsage.parse(Data(#"{"units":"mystery","data":[]}"#.utf8)))
+    }
+    func testOpenAIFreshnessAndDateRange() throws {
+        let raw = #"{"units":"percent","data":[{"date":"2026-08-01","attribution":[{"model":"m","value":100}]},{"date":"2026-09-15","attribution":[{"model":"m","value":5}]},{"date":"2026-09-23","attribution":[],"models":[{"model":"m","credits":0}]},{"date":"2026-09-25","attribution":[{"model":"m","value":500}]}]}"#
+        let report = try OpenAIModelUsage.parse(Data(raw.utf8), now: analyticsNow)
+        assertEqual(report.rows.first?.value, 5)
+        assertTrue(report.summary?.contains("2026-09-15") == true)
+        assertTrue(report.freshnessWarning?.contains("2026-09-15") == true)
+        let fresh = try OpenAIModelUsage.parse(Data(#"{"units":"percent","data":[{"date":"2026-09-23","attribution":[{"model":"m","value":2}]}]}"#.utf8), now: analyticsNow)
+        assertTrue(fresh.freshnessWarning == nil)
+        assertThrows(try OpenAIModelUsage.parse(Data(#"{"units":"percent","data":[{"date":"invalid","models":[]}]}"#.utf8), now: analyticsNow))
     }
 }
 

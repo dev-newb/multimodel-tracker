@@ -14,6 +14,7 @@ struct UsageDetails {
     var note: String
     var emptyMessage: String = "No model usage reported."
     var summary: String? = nil
+    var freshnessWarning: String? = nil
 }
 
 /// Account-scoped server analytics. Never attributes local conversations to the current login.
@@ -24,7 +25,8 @@ enum OpenAIModelUsage {
         fmt.locale = Locale(identifier: "en_US_POSIX"); fmt.timeZone = TimeZone(secondsFromGMT: 0); fmt.dateFormat = "yyyy-MM-dd"
         url.queryItems = [URLQueryItem(name: "start_date", value: fmt.string(from: Date().addingTimeInterval(-29*86400))),
                          URLQueryItem(name: "end_date", value: fmt.string(from: Date())), URLQueryItem(name: "group_by", value: "day")]
-        var req = URLRequest(url: url.url!); req.timeoutInterval = 20
+        var req = URLRequest(url: url.url!, cachePolicy: .reloadIgnoringLocalCacheData); req.timeoutInterval = 20
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         req.setValue("Bearer \(creds.accessToken)", forHTTPHeaderField: "Authorization")
         if let id = creds.accountId { req.setValue(id, forHTTPHeaderField: "chatgpt-account-id") }
         let (data, response) = try await URLSession.shared.data(for: req)
@@ -33,13 +35,21 @@ enum OpenAIModelUsage {
         guard http.statusCode == 200 else { throw AdapterError.transport("Model usage HTTP \(http.statusCode)") }
         return try parse(data)
     }
-    static func parse(_ data: Data) throws -> UsageDetails {
+    static func parse(_ data: Data, now: Date = Date()) throws -> UsageDetails {
         guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let unit = root["units"] as? String, ["percent", "tokens", "credits"].contains(unit),
               let days = root["data"] as? [[String: Any]] else { throw AdapterError.transport("Unknown analytics format") }
         var totals: [String: Double] = [:]
         var latest: String?
+        let fmt = DateFormatter(); fmt.calendar = Calendar(identifier: .gregorian)
+        fmt.locale = Locale(identifier: "en_US_POSIX"); fmt.timeZone = TimeZone(secondsFromGMT: 0); fmt.dateFormat = "yyyy-MM-dd"
+        let today = fmt.string(from: now)
+        let start = fmt.string(from: now.addingTimeInterval(-29 * 86400))
         for day in days {
+            guard let date = day["date"] as? String, fmt.date(from: date) != nil else {
+                throw AdapterError.transport("OpenAI returned an invalid model activity date")
+            }
+            guard date >= start, date <= today else { continue }
             // Both arrays represent the same usage. Prefer attribution when present;
             // older responses only contain models[].credits, still in root.units.
             let attribution = day["attribution"] as? [[String: Any]] ?? []
@@ -49,14 +59,17 @@ enum OpenAIModelUsage {
                 guard let model = row["model"] as? String, !model.isEmpty,
                       let value = row[field] as? Double, value.isFinite, value > 0 else { continue }
                 totals[model, default: 0] += value
-                if let date = day["date"] as? String { latest = max(latest ?? date, date) }
+                latest = max(latest ?? date, date)
             }
         }
-        return UsageDetails(title: "Model usage · last 30 UTC days",
+        let cutoff = fmt.string(from: now.addingTimeInterval(-2 * 86400))
+        let warning = latest.map { $0 < cutoff ? "No recent model activity returned by OpenAI. These historical totals do not include usage after \($0)." : nil } ?? nil
+        return UsageDetails(title: "Model history · last 30 UTC days",
                             rows: totals.map { .init(model: $0.key, value: $0.value) }.sorted { $0.value == $1.value ? $0.model < $1.model : $0.value > $1.value }, unit: unit,
                             note: (unit == "percent" ? "Daily percentages are added as percentage points (pp); these are not token counts or your current quota. " : "") + "Bars compare model totals. This history may be delayed or incomplete. Account-switch billing has not been independently verified.",
                             emptyMessage: "OpenAI reports no model activity for this period.",
-                            summary: "OpenAI server · \(unit == "percent" ? "percentage points (pp)" : unit)" + (latest.map { "\nLatest activity reported: \($0)" } ?? ""))
+                            summary: "OpenAI server · \(unit == "percent" ? "percentage points (pp)" : unit)" + (latest.map { "\nLatest activity reported: \($0)" } ?? ""),
+                            freshnessWarning: warning)
     }
 }
 

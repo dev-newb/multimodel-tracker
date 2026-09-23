@@ -11,11 +11,23 @@ struct UsageDetailsView: View {
     @State private var failure: String?
     @State private var loading = true
     @State private var refreshing = false
+    @State private var lastChecked: Date?
     @ObservedObject private var telemetry = ClaudeTelemetry.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Divider()
+            if preview == nil {
+                HStack {
+                    if let lastChecked {
+                        Text("Checked \(lastChecked.formatted(date: .omitted, time: .standard))")
+                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                    Button(loading ? "Checking…" : "Refresh details") { Task { await refresh() } }
+                        .font(.system(size: 10)).buttonStyle(.plain).foregroundStyle(accent).disabled(loading)
+                }
+            }
             if loading && preview == nil && details == nil { ProgressView().controlSize(.small) }
             if let report = preview ?? details { reportView(report) }
             if let tokenDetails { reportView(tokenDetails) }
@@ -28,12 +40,8 @@ struct UsageDetailsView: View {
                     Button("Stop local collection") { telemetry.disable() }.font(.system(size: 10)).buttonStyle(.plain)
                 }
             }
-            if preview == nil {
-                Button("Refresh details") { Task { await refresh() } }
-                    .font(.system(size: 10)).buttonStyle(.plain).foregroundStyle(accent).disabled(loading)
-            }
         }
-        .task(id: "\(active)-\(account.id)-\(account.provider == .anthropic ? account.lastRefreshed?.timeIntervalSince1970 ?? 0 : 0)") {
+        .task(id: "\(active)-\(account.id)-\(account.lastRefreshed?.timeIntervalSince1970 ?? 0)") {
             guard active, preview == nil else { return }
             repeat {
                 await refresh()
@@ -47,6 +55,9 @@ struct UsageDetailsView: View {
             Text(report.title).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
             if let summary = report.summary {
                 Text(summary).font(.system(size: 9)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let warning = report.freshnessWarning {
+                Text(warning).font(.system(size: 10)).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             ForEach(report.rows) { row in
                 VStack(alignment: .leading, spacing: 3) {
@@ -86,7 +97,7 @@ struct UsageDetailsView: View {
         do {
             let result = try await AccountUsageDetails.fetch(account)
             guard !Task.isCancelled else { return }
-            details = result.primary; tokenDetails = result.tokens; failure = result.warning
+            details = result.primary; tokenDetails = result.tokens; failure = result.warning; lastChecked = Date()
         } catch is CancellationError { }
         catch let error as Keychain.AccessError { failure = error.description }
         catch let error as AdapterError { failure = "Details: \(error.description)" + (details == nil ? "" : ". Showing the previous reading.") }

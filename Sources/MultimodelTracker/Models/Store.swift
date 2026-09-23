@@ -492,6 +492,10 @@ final class Store: ObservableObject {
             case .google:
                 let t = try await GoogleOAuth.signIn()
                 try Keychain.storeGoogle(refreshToken: t.refreshToken, for: account.id)
+                // A successful browser login replaces this row's machine import.
+                // Otherwise the adapter ignores its new token and reuses the expired one.
+                unmarkMachineGoogleRow(account.id)
+                GoogleAdapterImpl.invalidateProject(for: account.id)
                 email = t.email
             }
             // The flow learns the email; put it on the row so the account is

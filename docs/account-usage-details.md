@@ -63,3 +63,23 @@ The earlier ordinary-window fixture did not cover the real menu-bar window. On t
 Use an isolated app identifier with `--mock --mock-three --open --layout-trace /absolute/path/layout.jsonl` for full UI checks. Mock model details make no credential or provider requests. The opt-in trace records only this app's window geometry, screen frames and timing. Validate normal UI actions through the native computer-use tool; the narrow self-test alone is insufficient evidence for menu-bar placement.
 
 September 23 cleanup: native UI checks confirmed the installed Anthropic detail panel no longer repeats Weekly — Fable. An isolated full-app 23-model fixture verified expansion, scrolling to the bottom, and contraction with no scrollbar; `.hidden` was insufficient with a mouse attached, so the final build uses `.never`. The fixture retained its menu-bar anchor. After the final restart, the installed app reported Keychain user-canceled errors (-128) for Anthropic and OpenAI, so live UI refresh remains blocked; the read-only server check used the current Codex login, whose email matched the visible tracker account.
+
+## Sign-in recovery and model history freshness
+
+Google's signed-out card now exposes the existing browser Sign in flow. Successful browser sign-in removes that row's machine-import marker and clears its cached Google project so the newly stored credential is actually used. Previously the card excluded Google and an imported row would keep ignoring its new browser credential.
+
+OpenAI model reads explicitly bypass the local response cache and request server revalidation. The expanded section places Refresh details and its successful check time at the top, separately from the latest nonzero activity date. A main-card refresh also triggers expanded details to refresh. Model totals are labeled as history; an old activity date receives an explicit notice before the bars. Records outside the requested 30 UTC dates, including future records, are excluded.
+
+Further live investigation on September 23 at 15:43 UTC, using the account matching the OpenAI card:
+
+- Daily model history returned HTTP 200, percent units, and empty attribution/model arrays for September 21–23 (also tested an end date of September 24 to rule out a date boundary issue).
+- The live usage endpoint returned the current 11% weekly quota. Its model_usage field contains availability booleans, not model consumption.
+- The workspace token-history endpoint returned HTTP 400 for this consumer Pro account.
+- The newer plan_limit_history endpoint returned HTTP 200 with data_as_of September 23, coverage_complete=false, and accounting_complete=false. Its only returned weekly period ended September 19; it cannot provide this week's model usage.
+- The profiles/me report returned stats_as_of September 23 and account-wide token counters, but no model breakdown. It cannot fill in missing model totals.
+
+The requests match the upstream Codex analytics contracts. These findings establish a gap between the provider's live quota and its model history, not complete coverage of all devices or account-switch billing. The tracker does not fill the gap using unattributed local logs or invent token/model amounts. Today's missing per-model totals remain unresolved upstream.
+
+Sources: OpenAI Codex backend-client client/analytics.rs, client/plan_history.rs, client/profile.rs, and tui/src/analytics/normalize.rs at https://github.com/openai/codex/tree/main/codex-rs .
+
+The exact OpenAIModelUsage.fetch implementation was compiled with transport stubs and run against the current Codex login at 16:00:49 UTC on September 23. The request succeeded with five model rows and latest activity September 15, confirming that the production fetch/parser also receives the old history. This diagnostic used no Keychain helper and printed no credentials. Native installed UI verification confirms Google Sign in is present; browser sign-in completion remains unverified.

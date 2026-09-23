@@ -260,6 +260,10 @@ struct GoogleAdapterImpl: UsageAdapter {
         }
     }
 
+    static func invalidateProject(for accountID: UUID) {
+        cachedProject[accountID] = nil
+    }
+
     private func credentials(for account: Account) async throws -> (String, AuthSource, String?) {
         // A browser-signed-in account carries its OWN refresh token, which is
         // what lets several Google accounts coexist; the machine credentials
