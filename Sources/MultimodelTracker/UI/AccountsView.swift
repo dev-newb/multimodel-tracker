@@ -156,7 +156,7 @@ struct AccountsView: View {
                     // Importing adopts the one Antigravity/gemini-cli login on
                     // this Mac; Add signs a FURTHER Google account in through
                     // the browser, which is the only way to hold several.
-                    Button("Import Antigravity") { store.importGoogleCLI() }
+                    Button("Import Antigravity") { Task { await store.importGoogleCLI() } }
                         .font(.system(size: 11))
                         .disabled(store.accounts(for: .google).contains { $0.authSource != .browser }
                                   || !store.canAdd(.google))
@@ -203,11 +203,9 @@ struct AccountsView: View {
         store.addAndSignIn(p)
     }
 
-    /// Both vendors sign in through the real browser: passkeys cannot work in
-    /// an embedded WKWebView (passkey-only accounts exist for both), and an
+    /// Providers sign in through the real browser: passkeys cannot work in
+    /// an embedded WKWebView, and an
     /// existing browser session turns the flow into a single Authorize click.
-    /// Google has no sign-in at all — its "login" is importing the Antigravity
-    /// or gemini-cli credentials already on this Mac.
     private func beginSignIn(_ account: Account) {
         Task { await store.signIn(account) }
     }

@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 enum Support {
     static let chromeUserAgent =
@@ -11,35 +12,46 @@ enum Support {
 enum Keychain {
     struct OpenAICreds { let accessToken: String; let accountId: String?; var refreshToken: String? }
 
-    /// Per-launch cache. The keychain is read once per account per run; every
-    /// later poll is served from memory, so a poll can never trigger a
-    /// password prompt.
-    private static var openAICache: [UUID: OpenAICreds] = [:]
+    @MainActor private static let reads = CredentialReadGate()
+    private static let keychainQueue = DispatchQueue(label: "com.devnewb.multimodeltracker.keychain")
 
-    /// `SecItemCopyMatching` blocks for as long as the password panel is up.
-    /// Called straight from the @MainActor store that froze the entire UI —
-    /// no popover, no Accounts window — until the prompt was answered. Only
-    /// the blocking call goes to the background queue; the cache stays on the
-    /// main actor, so it needs no locking of its own.
-    @MainActor
-    static func openAICredentialsAsync(for account: UUID) async throws -> OpenAICreds {
-        if let hit = openAICache[account] { return hit }
-        let raw: Data? = await withCheckedContinuation { cont in
-            keychainQueue.async {
-                cont.resume(returning: read(service: "MultimodelTracker.openai",
-                                            account: account.uuidString))
-            }
+    struct AccessError: Error, LocalizedError, CustomStringConvertible {
+        let status: OSStatus
+        let operation: String
+        var description: String {
+            "Keychain \(operation) failed (\(status)): \(SecCopyErrorMessageString(status, nil) as String? ?? "access unavailable"). Retry Keychain when ready."
         }
-        guard let raw,
-              let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: String],
-              let token = obj["access_token"] else { throw AdapterError.notSignedIn }
-        let creds = OpenAICreds(accessToken: token, accountId: obj["account_id"],
-                                refreshToken: obj["refresh_token"])
-        openAICache[account] = creds
-        return creds
+        var errorDescription: String? { description }
     }
 
-    private static let keychainQueue = DispatchQueue(label: "com.devnewb.multimodeltracker.keychain")
+    /// Refuse to request approval from an invalid/replaced running executable.
+    static func validateCaller() throws {
+        var code: SecCode?
+        let copied = SecCodeCopySelf([], &code)
+        guard copied == errSecSuccess, let code else { throw AccessError(status: copied, operation: "signature check") }
+        let status = SecCodeCheckValidity(code, [], nil)
+        guard status == errSecSuccess else { throw AccessError(status: status, operation: "signature check; quit and reopen the app") }
+    }
+
+    @MainActor
+    static func cachedData(service: String, account: String) async throws -> Data? {
+        try await reads.load("\(service)/\(account)") {
+            try await withCheckedThrowingContinuation { continuation in
+                keychainQueue.async {
+                    do { continuation.resume(returning: try readChecked(service: service, account: account)) }
+                    catch { continuation.resume(throwing: error) }
+                }
+            }
+        }
+    }
+
+    @MainActor
+    static func openAICredentialsAsync(for account: UUID) async throws -> OpenAICreds {
+        guard let raw = try await cachedData(service: openAIService, account: account.uuidString),
+              let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: String],
+              let token = obj["access_token"] else { throw AdapterError.notSignedIn }
+        return OpenAICreds(accessToken: token, accountId: obj["account_id"], refreshToken: obj["refresh_token"])
+    }
 
     struct AnthropicCreds {
         let accessToken: String
@@ -47,38 +59,18 @@ enum Keychain {
         var expiresAt: Date?
     }
 
-    private static var anthropicCache: [UUID: AnthropicCreds] = [:]
-
-    /// Same contract as the OpenAI read: one blocking keychain hit per
-    /// account per launch, everything after that from memory. Throwing
-    /// notSignedIn here is also the router — an account with no stored OAuth
-    /// item is a legacy cookie-jar login (a MISSING item answers instantly
-    /// and silently; only present items with foreign ACLs can prompt).
     @MainActor
     static func anthropicCredentialsAsync(for account: UUID) async throws -> AnthropicCreds {
-        if let hit = anthropicCache[account] { return hit }
-        let raw: Data? = await withCheckedContinuation { cont in
-            keychainQueue.async {
-                cont.resume(returning: read(service: anthropicService,
-                                            account: account.uuidString))
-            }
-        }
-        guard let raw,
+        guard let raw = try await cachedData(service: anthropicService, account: account.uuidString),
               let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
               let token = obj["access_token"] as? String else { throw AdapterError.notSignedIn }
-        let creds = AnthropicCreds(accessToken: token,
-                                   refreshToken: obj["refresh_token"] as? String,
-                                   expiresAt: (obj["expires_at"] as? Double).map(Date.init(timeIntervalSince1970:)))
-        anthropicCache[account] = creds
-        return creds
+        return AnthropicCreds(accessToken: token, refreshToken: obj["refresh_token"] as? String,
+                              expiresAt: (obj["expires_at"] as? Double).map(Date.init(timeIntervalSince1970:)))
     }
 
-    private static var googleCache: [UUID: String] = [:]
-
+    @MainActor
     static func invalidateCache(for account: UUID) {
-        openAICache[account] = nil
-        anthropicCache[account] = nil
-        googleCache[account] = nil
+        for service in [openAIService, anthropicService, googleService] { reads.invalidate("\(service)/\(account)") }
     }
 
     /// Every account UUID that still has a stored token for `service`. The
@@ -98,33 +90,43 @@ enum Keychain {
     static func openAIAccountIDs() -> [UUID] { accountIDs(service: openAIService) }
     static func anthropicAccountIDs() -> [UUID] { accountIDs(service: anthropicService) }
 
-    static func store(service: String, account: String, data: Data) {
-        delete(service: service, account: account)
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                kSecAttrService as String: service,
-                                kSecAttrAccount as String: account,
-                                kSecValueData as String: data]
-        SecItemAdd(q as CFDictionary, nil)
+    static func store(service: String, account: String, data: Data) throws {
+        try validateCaller()
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                   kSecAttrService as String: service, kSecAttrAccount as String: account]
+        // Preserve the existing item and its access approvals. Never delete before a save.
+        let status = CredentialWritePolicy.save(missingStatus: errSecItemNotFound, update: {
+            SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        }, add: {
+            var added = query; added[kSecValueData as String] = data
+            return SecItemAdd(added as CFDictionary, nil)
+        })
+        guard status == errSecSuccess else { throw AccessError(status: status, operation: "save") }
     }
+
+    static func readChecked(service: String, account: String? = nil) throws -> Data? {
+        try validateCaller()
+        var query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                   kSecAttrService as String: service, kSecReturnData as String: true,
+                                   kSecMatchLimit as String: kSecMatchLimitOne]
+        if let account { query[kSecAttrAccount as String] = account }
+        var out: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &out)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else { throw AccessError(status: status, operation: "read") }
+        return out as? Data
+    }
+
     static func read(service: String, account: String) -> Data? {
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                kSecAttrService as String: service,
-                                kSecAttrAccount as String: account,
-                                kSecReturnData as String: true,
-                                kSecMatchLimit as String: kSecMatchLimitOne]
-        var out: CFTypeRef?
-        return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess ? out as? Data : nil
+        do { return try readChecked(service: service, account: account) }
+        catch { record(error); return nil }
     }
-    /// First item matching the service, whatever its account attribute —
-    /// for OTHER apps' items (e.g. Claude Code's), whose account name is
-    /// theirs to choose and not ours to guess.
     static func readAny(service: String) -> Data? {
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                kSecAttrService as String: service,
-                                kSecReturnData as String: true,
-                                kSecMatchLimit as String: kSecMatchLimitOne]
-        var out: CFTypeRef?
-        return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess ? out as? Data : nil
+        do { return try readChecked(service: service) }
+        catch { record(error); return nil }
+    }
+    private static func record(_ error: Error) {
+        FileHandle.standardError.write(Data("\(error)\n".utf8))
     }
     static func delete(service: String, account: String) {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
@@ -143,51 +145,48 @@ extension Keychain {
     /// than one Google row.
     static let googleService    = "MultimodelTracker.google"
 
+    @MainActor
     static func storeOpenAI(accessToken: String, accountId: String?,
-                            refreshToken: String? = nil, for account: UUID) {
-        invalidateCache(for: account)
+                            refreshToken: String? = nil, for account: UUID) throws {
         var obj = ["access_token": accessToken]
         if let a = accountId { obj["account_id"] = a }
         if let r = refreshToken { obj["refresh_token"] = r }
-        guard let d = try? JSONSerialization.data(withJSONObject: obj) else { return }
-        store(service: openAIService, account: account.uuidString, data: d)
+        let d = try JSONSerialization.data(withJSONObject: obj)
+        try store(service: openAIService, account: account.uuidString, data: d)
+        reads.seed("\(openAIService)/\(account)", data: d)
     }
 
+    @MainActor
     static func storeAnthropic(accessToken: String, refreshToken: String?,
-                               expiresAt: Date?, for account: UUID) {
-        invalidateCache(for: account)
+                               expiresAt: Date?, for account: UUID) throws {
         var obj: [String: Any] = ["access_token": accessToken]
         if let r = refreshToken { obj["refresh_token"] = r }
         if let e = expiresAt { obj["expires_at"] = e.timeIntervalSince1970 }
-        guard let d = try? JSONSerialization.data(withJSONObject: obj) else { return }
-        store(service: anthropicService, account: account.uuidString, data: d)
+        let d = try JSONSerialization.data(withJSONObject: obj)
+        try store(service: anthropicService, account: account.uuidString, data: d)
+        reads.seed("\(anthropicService)/\(account)", data: d)
     }
 
-    static func storeGoogle(refreshToken: String, for account: UUID) {
-        invalidateCache(for: account)
-        guard let d = try? JSONSerialization.data(withJSONObject: ["refresh_token": refreshToken]) else { return }
-        store(service: googleService, account: account.uuidString, data: d)
+    @MainActor
+    static func storeGoogle(refreshToken: String, for account: UUID) throws {
+        let d = try JSONSerialization.data(withJSONObject: ["refresh_token": refreshToken])
+        try store(service: googleService, account: account.uuidString, data: d)
+        reads.seed("\(googleService)/\(account)", data: d)
     }
 
     /// The stored refresh token for a browser-added Google account, or nil
     /// when this row is the machine-credentials import.
     @MainActor
-    static func googleRefreshTokenAsync(for account: UUID) async -> String? {
-        if let hit = googleCache[account] { return hit }
-        let raw: Data? = await withCheckedContinuation { cont in
-            keychainQueue.async {
-                cont.resume(returning: read(service: googleService, account: account.uuidString))
-            }
-        }
-        guard let raw,
-              let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: String],
-              let t = obj["refresh_token"] else { return nil }
-        googleCache[account] = t
-        return t
+    static func googleRefreshTokenAsync(for account: UUID) async throws -> String? {
+        guard let raw = try await cachedData(service: googleService, account: account.uuidString),
+              let obj = try? JSONSerialization.jsonObject(with: raw) as? [String: String] else { return nil }
+        return obj["refresh_token"]
     }
 
     /// Removing an account must not leave its secrets behind.
+    @MainActor
     static func deleteAll(for account: UUID) {
+        invalidateCache(for: account)
         for svc in [openAIService, anthropicService, googleService] {
             delete(service: svc, account: account.uuidString)
         }
@@ -240,8 +239,8 @@ enum CodexCLIImport {
 /// the sibling of CodexCLIImport, with one deliberate difference: the
 /// refresh token is NEVER read or used. Claude Code rotates it, and
 /// consuming a rotating refresh token from outside can invalidate the CLI's
-/// own session. The access token is borrowed while fresh; when it expires,
-/// the CLI (which keeps its own copy current as it runs) is simply re-read.
+/// own session. The access token is borrowed while fresh; importing a new
+/// copy is explicit so a CLI account switch cannot overwrite this login.
 ///
 /// On macOS the login lives in the keychain item "Claude Code-credentials"
 /// (a foreign item — the first read prompts until Always Allow, which

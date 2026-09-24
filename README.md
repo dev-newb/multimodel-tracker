@@ -85,8 +85,10 @@ keychain access after every rebuild.
   or per-account OAuth in your real browser (Codex CLI's flow). Legacy
   web-window accounts re-mint expired tokens silently from surviving cookies.
 - **Google** — **Import Antigravity / gemini-cli**: the login already on your
-  Mac *is* the credential. Quota comes from the Code Assist
-  `retrieveUserQuota` endpoint, one bucket per Gemini model.
+  Mac *is* the credential. Antigravity mode reads the same grouped usage
+  limits as the IDE's **View Usage** menu: Gemini and Claude/GPT, each with
+  weekly and five-hour windows. The older Code Assist mode remains available
+  for logins that do not expose Antigravity's grouped summary.
 
 ## Bar effects
 

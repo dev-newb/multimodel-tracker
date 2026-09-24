@@ -322,6 +322,13 @@ struct SectionPageView: View {
         // the page is as tall as the preview and no taller.
         HStack(alignment: .top, spacing: 14) {
             VStack(alignment: .leading, spacing: 10) {
+                Toggle("Show model details", isOn: Binding(get: { store.showsModelDetails },
+                                                           set: { store.setShowsModelDetails($0) }))
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 12))
+                Text("Show the extra model information and its expand arrow on every account card.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text("Accounts roll up to one-line summaries by default. When the popover would outgrow your screen even so, a vendor's accounts switch to this layout.")
                     .font(.system(size: 10)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -568,7 +575,7 @@ private struct PreviewSection: View {
 
     private func card(_ a: Account, compact: Bool = false) -> some View {
         AccountCard(account: a, accent: provider.accent, maxedStyle: store.effectiveMaxedStyle,
-                    animating: false, compact: compact)
+                    animating: false, compact: compact, showsModelDetails: store.showsModelDetails)
     }
 
     var body: some View {

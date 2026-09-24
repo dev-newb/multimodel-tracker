@@ -126,6 +126,25 @@ struct Account: Identifiable, Codable {
     /// synthesised decoder throws keyNotFound for a missing key rather than
     /// using the default. Derived state stays out of the stored shape.
     var authSource: AuthSource = .unknown
+    /// An in-memory identity for this login, distinct from the reusable card slot.
+    /// Responses started before a replacement login must not overwrite it.
+    var credentialRevision = UUID()
+
+    mutating func replaceLogin(email: String?) {
+        credentialRevision = UUID()
+        label = email ?? "\(provider.displayName) account"
+        plan = nil; limits = []; lastRefreshed = nil; error = nil
+        authSource = .browser
+    }
+
+    @discardableResult
+    mutating func applyUsage(from fetched: Account) -> Bool {
+        guard id == fetched.id, credentialRevision == fetched.credentialRevision else { return false }
+        limits = fetched.limits; plan = fetched.plan; authSource = fetched.authSource
+        if fetched.label.contains("@") { label = fetched.label }
+        error = fetched.error; lastRefreshed = fetched.lastRefreshed
+        return true
+    }
 
     private enum CodingKeys: String, CodingKey {
         case id, provider, label, nickname, plan, limits, lastRefreshed, error

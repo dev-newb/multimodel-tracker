@@ -87,7 +87,12 @@ enum GoogleOAuth {
             let snippet = String(data: data, encoding: .utf8)?.prefix(200) ?? ""
             throw Failure.badResponse(String(snippet))
         }
-        let email = (obj["id_token"] as? String).flatMap(GoogleAdapterImpl.emailFromJWT)
+        var email = (obj["id_token"] as? String).flatMap(GoogleAdapterImpl.emailFromJWT)
+        if email == nil, let access = obj["access_token"] as? String {
+            // The existing scopes authorize userinfo even when Google omits an ID token.
+            email = await GoogleAdapterImpl.userInfoEmail(accessToken: access, id: UUID())
+        }
+        guard email != nil else { throw Failure.badResponse("could not verify the selected account's email; please try again") }
         return Tokens(refreshToken: refresh, accessToken: obj["access_token"] as? String, email: email)
     }
 }
