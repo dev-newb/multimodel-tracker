@@ -210,6 +210,11 @@ final class Store: ObservableObject {
         accounts = CommandLine.arguments.contains("--mock-three")
             ? Provider.allCases.compactMap { provider in examples.first { $0.provider == provider } }
             : examples
+        if CommandLine.arguments.contains("--mock-five") {
+            accounts = Provider.allCases.flatMap { provider in
+                Array(examples.filter { $0.provider == provider }.prefix(provider == .openai ? 1 : 2))
+            }
+        }
         if CommandLine.arguments.contains("--mock-stale") {
             for i in accounts.indices {
                 accounts[i].nickname = nil

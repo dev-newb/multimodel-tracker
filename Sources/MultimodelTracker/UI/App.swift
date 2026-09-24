@@ -121,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if LayoutTrace.enabled {
             for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
                 NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                    Task { @MainActor in
+                    MainActor.assumeIsolated {
                         guard let self, let window = notification.object as? NSWindow else { return }
                         if window === self.popover.contentViewController?.view.window {
                             LayoutTrace.record(name.rawValue, popover: self.popover, anchor: self.statusItem.button)
@@ -1184,7 +1184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             store.noteBurnViewing()
             // Geometry callbacks own the measured size. A hosting controller with
             // automatic sizing disabled reports a zero fittingSize, not its content.
-            TrackerPopoverLayout.resize(popover, to: popover.contentSize, anchor: button)
+            TrackerPopoverLayout.resize(popover, to: TrackerPopoverLayout.requestedSize(for: popover), anchor: button)
             let animated = popover.animates
             popover.animates = false
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)

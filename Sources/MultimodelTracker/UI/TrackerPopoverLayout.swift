@@ -44,6 +44,11 @@ extension EnvironmentValues {
 enum TrackerPopoverLayout {
     private static var animationDeadline: TimeInterval = 0
     private static var resizes: [ObjectIdentifier: ResizeAnimation] = [:]
+    private static var requestedSizes: [ObjectIdentifier: NSSize] = [:]
+
+    static func requestedSize(for popover: NSPopover) -> NSSize {
+        requestedSizes[ObjectIdentifier(popover)] ?? popover.contentSize
+    }
 
     /// SwiftUI reports the destination layout before its visual animation runs.
     /// Move the window through intermediate sizes instead of jumping there first.
@@ -129,8 +134,10 @@ enum TrackerPopoverLayout {
 
     static func resize(_ popover: NSPopover, to proposed: NSSize, anchor: NSView?) {
         let size = bounded(proposed, screen: screen(for: anchor))
+        requestedSizes[ObjectIdentifier(popover)] = size
         if popover.isShown, let window = popover.contentViewController?.view.window {
-            setSize(of: window, from: popover.contentSize, to: size) { [weak popover, weak anchor] next in
+            let current = popover.contentViewController?.view.bounds.size ?? popover.contentSize
+            setSize(of: window, from: current, to: size) { [weak popover, weak anchor] next in
                 guard let popover else { return }
                 resizeImmediately(popover, to: next, anchor: anchor)
             }
@@ -140,15 +147,28 @@ enum TrackerPopoverLayout {
     }
 
     private static func resizeImmediately(_ popover: NSPopover, to size: NSSize, anchor: NSView?) {
-        guard abs(popover.contentSize.width - size.width) > 0.5 || abs(popover.contentSize.height - size.height) > 0.5 else { return }
+        guard popover.isShown, let view = popover.contentViewController?.view,
+              let window = view.window else {
+            popover.contentSize = size
+            return
+        }
+        let current = view.bounds.size
+        guard abs(current.width - size.width) > 0.01 || abs(current.height - size.height) > 0.01 else { return }
         LayoutTrace.record("before resize", popover: popover, anchor: anchor, proposed: size)
-        let animated = popover.animates
-        popover.animates = false // SwiftUI owns the disclosure animation; no second window animation.
-        popover.contentSize = size
-        // Re-showing from NSStatusBarWindow can resolve its missing screen as
-        // x=0. Keep this window and position it from the item's screen frame.
-        pin(popover, to: anchor)
-        popover.animates = animated
+        // Changing NSPopover.contentSize while shown asks AppKit to re-anchor
+        // the window. A status-item window with no screen causes a visible
+        // excursion to the display edge before pin() can put it back. Resize
+        // the existing window in one frame change, keeping its chrome insets.
+        let old = window.frame
+        let width = size.width + old.width - current.width
+        let height = size.height + old.height - current.height
+        var next = NSRect(x: old.midX - width / 2, y: old.maxY - height,
+                          width: width, height: height)
+        if let visible = screen(for: anchor)?.visibleFrame {
+            next.origin.x = min(max(next.minX, visible.minX + 8), visible.maxX - next.width - 8)
+            next.origin.y = max(next.minY, visible.minY + 8)
+        }
+        window.setFrame(next, display: false)
         LayoutTrace.record("after resize", popover: popover, anchor: anchor, proposed: size)
     }
 
@@ -186,6 +206,7 @@ enum LayoutTrace {
         func rect(_ rect: NSRect?) -> Any { rect.map { [ $0.origin.x, $0.origin.y, $0.width, $0.height ] } ?? NSNull() }
         let row: [String: Any] = ["event": event, "time": Date().timeIntervalSince1970, "pid": ProcessInfo.processInfo.processIdentifier,
             "window": rect(popover.contentViewController?.view.window?.frame),
+            "hostingFrame": rect(popover.contentViewController?.view.frame),
             "anchorWindow": rect(anchor?.window?.frame), "anchorBounds": rect(anchor?.bounds),
             "screen": rect(anchor?.window?.screen?.visibleFrame),
             "screens": NSScreen.screens.map { ["frame": rect($0.frame), "visible": rect($0.visibleFrame)] },

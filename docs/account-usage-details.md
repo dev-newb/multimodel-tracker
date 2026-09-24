@@ -103,3 +103,13 @@ Window resizing now interpolates intermediate heights during account and model d
 - After Keychain approval, the installed tracker displayed OpenAI model activity through September 23 and weekly quota at 30%. The earlier daily-history gap had therefore recovered by that check. The implementation still uses the account-scoped daily history endpoint; the separate research query using this task's ID has not been substituted into the tracker.
 
 The final rebuilt app was installed and signature-verified. Its fresh production/daily comparison was still waiting on macOS Keychain access at the end of this implementation pass; no live comparison result is claimed. Code and native layout verification passed independently.
+
+### Follow-up: transient roll-up jitter
+
+The previous trace deferred native move/resize notifications into a Task, so it observed only the final corrected frame. Synchronous notification capture reproduced a 2,196-point sideways excursion and an 81-point top-edge excursion during an ordinary header roll-up: setting `NSPopover.contentSize` made AppKit re-anchor to the wrong display edge on every frame, before `pin()` moved it back.
+
+Shown popovers now resize their existing window with one combined frame change, preserving the chrome insets and top/center position while clamping to the display. `NSPopover.contentSize` is set only while hidden. The last requested content size is retained for reopening. The smooth height interpolation remains; header and model-arrow targets are unchanged.
+
+Native computer-use checks covered four Anthropic/Google header transitions, closing/reopening through Config, two floating-panel transitions, and two transitions in the final installed app. Every synchronous frame event in those roll-ups kept x/top fixed and height moved monotonically. The same checker fails on the old trace's 2,196-point excursion.
+
+For repeatable manual UI verification, use an isolated bundle identifier and `--mock --mock-five --open --layout-trace /absolute/path/trace.jsonl`, operate the header chevrons with the native UI tool, then run `python3 Tests/check-layout-trace.py /absolute/path/trace.jsonl`. Use `--kind panel` for the floating-window path. The fixture uses fabricated accounts and does not read credentials. This trace check supplements the older end-state self-test, which cannot detect a brief move corrected within the same run-loop turn.
