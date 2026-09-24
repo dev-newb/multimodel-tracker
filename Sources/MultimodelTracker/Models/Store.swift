@@ -40,6 +40,15 @@ final class Store: ObservableObject {
     @Published private(set) var offline = false
     private var passSuccesses = 0
     private var passConnectivityFailures = 0
+    private var signingIn: Set<UUID> = []
+
+    @Published private(set) var showsModelDetails =
+        UserDefaults.standard.object(forKey: "mmt.showsModelDetails") as? Bool ?? true
+
+    func setShowsModelDetails(_ show: Bool) {
+        showsModelDetails = show
+        if !mockMode { UserDefaults.standard.set(show, forKey: "mmt.showsModelDetails") }
+    }
 
     private let defaultsKey = "mmt.accounts.v1"
     private let maxedViewsKey = "mmt.maxedViews"
@@ -201,6 +210,12 @@ final class Store: ObservableObject {
         accounts = CommandLine.arguments.contains("--mock-three")
             ? Provider.allCases.compactMap { provider in examples.first { $0.provider == provider } }
             : examples
+        if CommandLine.arguments.contains("--mock-stale") {
+            for i in accounts.indices {
+                accounts[i].nickname = nil
+                accounts[i].lastRefreshed = Date().addingTimeInterval(-27 * 60)
+            }
+        }
         lastRefresh = Date()        // the header reads "just now", not "never"
     }
 
@@ -474,34 +489,46 @@ final class Store: ObservableObject {
     /// --add-anthropic debug flag. A failure lands on the row's error text
     /// (shown in Config as well as the popover), never silently.
     func signIn(_ account: Account) async {
+        guard signingIn.insert(account.id).inserted else { return }
+        defer { signingIn.remove(account.id) }
         setError(nil, for: account.id)
         do {
             let email: String?
             switch account.provider {
             case .openai:
                 let t = try await OpenAIOAuth.signIn()
+                guard accounts.contains(where: { $0.id == account.id }) else { return }
                 try Keychain.storeOpenAI(accessToken: t.accessToken, accountId: t.accountID,
                                      refreshToken: t.refreshToken, for: account.id)
                 email = t.email
             case .anthropic:
                 let t = try await AnthropicOAuth.signIn()
+                guard accounts.contains(where: { $0.id == account.id }) else { return }
                 try Keychain.storeAnthropic(accessToken: t.accessToken,
                                         refreshToken: t.refreshToken,
                                         expiresAt: t.expiresAt, for: account.id)
                 email = t.email
             case .google:
                 let t = try await GoogleOAuth.signIn()
+                guard accounts.contains(where: { $0.id == account.id }) else { return }
                 try Keychain.storeGoogle(refreshToken: t.refreshToken, for: account.id)
                 // A successful browser login replaces this row's machine import.
                 // Otherwise the adapter ignores its new token and reuses the expired one.
                 unmarkMachineGoogleRow(account.id)
-                GoogleAdapterImpl.invalidateProject(for: account.id)
+                GoogleAdapterImpl.invalidateSession(account.credentialRevision)
                 email = t.email
             }
             // The flow learns the email; put it on the row so the account is
             // recognisable, like the Codex import does.
-            if let email { setLabel(email, for: account.id) }
-            await refresh(account)
+            guard let i = accounts.firstIndex(where: { $0.id == account.id }) else { return }
+            accounts[i].replaceLogin(email: email)
+            let prefix = "\(account.id)/"
+            poolBefore = poolBefore.filter { !$0.key.hasPrefix(prefix) }
+            burnHistory = burnHistory.filter { !$0.key.hasPrefix(prefix) }
+            burnUntil = burnUntil.filter { !$0.key.hasPrefix(prefix) }
+            bankedBefore[account.id] = nil
+            saveBurnHistory(); save()
+            await refresh(accounts[i])
         } catch {
             setError(error.localizedDescription, for: account.id)
         }
@@ -667,13 +694,8 @@ final class Store: ObservableObject {
     /// replacing the whole struct with the pre-await snapshot reverted that —
     /// a rename could silently undo itself on the next poll.
     private func applyFetched(_ fetched: Account, to id: UUID) {
-        guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
-        accounts[i].limits = fetched.limits
-        accounts[i].plan = fetched.plan
-        accounts[i].authSource = fetched.authSource
-        if fetched.label.contains("@") { accounts[i].label = fetched.label }
-        accounts[i].error = fetched.error
-        accounts[i].lastRefreshed = fetched.lastRefreshed
+        guard let i = accounts.firstIndex(where: { $0.id == id }),
+              accounts[i].applyUsage(from: fetched) else { return }
         save()
     }
 
@@ -710,7 +732,7 @@ final class Store: ObservableObject {
 
     func refresh(_ account: Account) async {
         guard !mockMode else { return }
-        var a = account
+        guard var a = accounts.first(where: { $0.id == account.id }) else { return }
         // Imported CLI credentials belong to the login imported into THIS row.
         // Never silently replace them with the CLI's current login: the user may
         // have switched accounts while continuing the same conversation. Expired
@@ -720,6 +742,7 @@ final class Store: ObservableObject {
                 ? GoogleAdapterImpl(mode: googleMode)
                 : ProviderRegistry.adapter(for: a.provider)
             let fetched = try await adapter.fetch(account: a)
+            guard accounts.contains(where: { $0.id == a.id && $0.credentialRevision == a.credentialRevision }) else { return }
             if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
                 FileHandle.standardError.write(
                     "refresh \(a.provider.rawValue)/\(a.displayName): \(fetched.limits.map(\.key).joined(separator: ","))\n"
@@ -731,7 +754,7 @@ final class Store: ObservableObject {
             if let src = fetched.authSource { a.authSource = src }
             // Providers report whose account this is; a row still wearing a
             // placeholder ("OpenAI account 2", "Claude Code") takes the email.
-            if let email = fetched.accountEmail, !a.label.contains("@") { a.label = email }
+            if let email = fetched.accountEmail { a.label = email }
             a.error = nil; a.lastRefreshed = Date()
             passSuccesses += 1
         } catch {

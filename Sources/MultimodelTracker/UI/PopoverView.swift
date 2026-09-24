@@ -81,6 +81,7 @@ enum PopoverMetrics {
 
 struct PopoverView: View {
     @ObservedObject var store: Store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Roll-up rows: for a vendor with 2+ accounts, each account is a
     /// one-line summary that expands in place to the full card. Which are
     /// open is the STORE's state (persisted, settled once, never derived
@@ -148,6 +149,7 @@ struct PopoverView: View {
         // Without this the popover is see-through: NSPopover supplies no
         // material when its content is a plain SwiftUI hierarchy.
         .background(.regularMaterial)
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: overflow layouts — A grid, B pager, D tabs
@@ -165,7 +167,7 @@ struct PopoverView: View {
                         Keychain.invalidateCache(for: account.id)
                         Task { await store.refresh(account) }
                     },
-                    compact: compact)
+                    compact: compact, showsModelDetails: store.showsModelDetails)
     }
 
     @ViewBuilder
@@ -355,10 +357,11 @@ struct PopoverView: View {
                             collapsible: accounts.count >= 2,
                             expanded: open,
                             onToggle: {
-                                withAnimation(.easeOut(duration: 0.16)) {
+                                TrackerPopoverLayout.beginAnimation(duration: reduceMotion ? 0 : 0.16)
+                                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
                                     store.setExpanded(account.id, !open)
                                 }
-                            })
+                            }, showsModelDetails: store.showsModelDetails)
                     .padding(.horizontal, 12)
             }
         }
@@ -413,6 +416,7 @@ struct AccountCard: View {
     var compact = false
     @State private var hoveringRow = false
     var detailPreview: UsageDetails? = nil
+    var showsModelDetails = true
 
     private var worstColor: Color {
         guard let p = account.worstPercent else { return .secondary }
@@ -574,6 +578,7 @@ struct AccountCard: View {
                     if let stale = staleLabel {
                         Text(stale)
                             .font(.system(size: 9, weight: .medium))
+                            .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                             .foregroundStyle(.orange)
                             .padding(.horizontal, 4).padding(.vertical, 1)
                             .background(Color.orange.opacity(0.14), in: Capsule())
@@ -583,6 +588,7 @@ struct AccountCard: View {
                         if let w = account.worstPercent {
                             Text("\(Int(w))%")
                                 .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                                .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                                 .foregroundStyle(worstColor)
                             Capsule().fill(Color.primary.opacity(0.10))
                                 .frame(width: 44, height: 4)
@@ -632,8 +638,11 @@ struct AccountCard: View {
                                  animating: animating)
                     }
                 }
-                ModelUsageDisclosure(account: account, accent: accent, preview: detailPreview,
-                                     initiallyExpanded: detailPreview != nil)
+                if showsModelDetails {
+                    ModelUsageDisclosure(account: account, accent: accent, preview: detailPreview,
+                                         initiallyExpanded: detailPreview != nil)
+                        .id(account.credentialRevision)
+                }
                 }   // expanded
             }
             Spacer(minLength: 0)

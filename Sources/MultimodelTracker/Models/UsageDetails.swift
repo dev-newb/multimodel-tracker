@@ -75,6 +75,33 @@ enum OpenAIModelUsage {
 
 /// Current quota is separate from historical token consumption.
 enum GoogleModelDetails {
+    /// The model catalog can report 100% availability without measuring usage.
+    /// Take amounts from the account's explicit quota buckets; use the catalog for labels only.
+    static func parseVerified(models: [String: Any], quota: [String: Any]) throws -> UsageDetails {
+        let catalog = models["models"] as? [String: [String: Any]] ?? [:]
+        let buckets = quota["buckets"] as? [[String: Any]] ?? []
+        var rows: [ModelUsageDetail] = []
+        var seen = Set<String>()
+        for bucket in buckets {
+            guard let id = bucket["modelId"] as? String,
+                  !id.hasPrefix("chat_"), !id.hasPrefix("tab_"), !id.hasPrefix("rev"),
+                  let remaining = (bucket["remainingFraction"] as? Double)
+                    ?? (bucket["remaining"] as? [String: Any])?["remainingFraction"] as? Double,
+                  remaining.isFinite, (0...1).contains(remaining),
+                  bucket["disabled"] as? Bool != true else { continue }
+            let type = bucket["tokenType"] as? String ?? ""
+            let key = "\(id)|\(type)"
+            guard seen.insert(key).inserted else { continue }
+            let name = (catalog[id]?["displayName"] as? String) ?? id
+            rows.append(.init(model: name, value: (1 - remaining) * 100, identifier: key,
+                              caption: type.isEmpty ? nil : "\(type.lowercased()) quota"))
+        }
+        guard !rows.isEmpty else { throw AdapterError.transport("Google returned no measurable model quota buckets") }
+        return UsageDetails(title: "Antigravity · model quota used", rows: rows.sorted { $0.id < $1.id }, unit: "quotaPercent",
+                            note: "Google's account quota buckets. Models may share limits; these percentages are not token totals.",
+                            summary: "Source: Google quota service")
+    }
+
     static func parse(_ root: [String: Any]) throws -> UsageDetails {
         let entries: [(String, [String: Any])]
         if let dict = root["models"] as? [String: [String: Any]] {

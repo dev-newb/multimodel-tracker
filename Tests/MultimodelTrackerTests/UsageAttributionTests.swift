@@ -8,6 +8,7 @@ struct UsageAttributionTests {
         try suite.testMissingIdentityAndNonUsageEventsAreExcluded()
         try suite.testOpenAIUsesDeclaredUnitsWithoutDoubleCounting()
         try suite.testGoogleModelQuotaDetails()
+        try suite.testGoogleCatalogAvailabilityDoesNotOverrideQuota()
         try suite.testOpenAIModelFallbackAndEmptyActivity()
         try suite.testOpenAIFreshnessAndDateRange()
         print("PASS: account switching, organization isolation, retry deduplication, persistence, content exclusion, missing identity, malformed counts, OpenAI units")
@@ -59,6 +60,17 @@ struct UsageAttributionTests {
         assertEqual(report.rows.first { $0.id == "gpt-test" }?.value, 0)
         let array = try GoogleModelDetails.parse(["models": [["modelId": "gemini-test", "quotaInfo": ["remainingFraction": 0.25]]]])
         assertEqual(array.rows.first?.value, 75)
+    }
+    func testGoogleCatalogAvailabilityDoesNotOverrideQuota() throws {
+        let models: [String: Any] = ["models": ["gemini-test": ["displayName": "Gemini Test", "quotaInfo": ["remainingFraction": 1.0]]]]
+        let quota: [String: Any] = ["buckets": [["modelId": "gemini-test", "tokenType": "REQUESTS", "remainingFraction": 0.25],
+                                                ["modelId": "unknown", "resetTime": "2026-09-24T00:00:00Z"]]]
+        let report = try GoogleModelDetails.parseVerified(models: models, quota: quota)
+        assertEqual(report.rows.count, 1)
+        assertEqual(report.rows.first?.value, 75)
+        assertEqual(report.rows.first?.model, "Gemini Test")
+        assertThrows(try GoogleModelDetails.parseVerified(models: models, quota: [:]))
+        assertThrows(try GoogleModelDetails.parseVerified(models: models, quota: ["buckets": [["modelId": "m", "remainingFraction": 2.0]]]))
     }
     func testOpenAIModelFallbackAndEmptyActivity() throws {
         let raw = #"{"units":"percent","data":[{"date":"2026-09-01","attribution":[],"models":[{"model":"m","speed":"fast","credits":3},{"model":"m","speed":"standard","credits":2},{"model":"zero","credits":0},{"model":"bad","credits":-1}]}]}"#

@@ -22,6 +22,7 @@ struct ModelUsageDisclosure: View {
                     .padding(.bottom, 7)
             }
             Button {
+                TrackerPopoverLayout.beginAnimation(duration: reduceMotion ? 0 : ConfigPanelContainer.slideDuration)
                 withAnimation(reduceMotion ? nil : .easeOut(duration: ConfigPanelContainer.slideDuration)) {
                     expanded.toggle()
                 }

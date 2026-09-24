@@ -145,7 +145,7 @@ struct GoogleAdapterImpl: UsageAdapter {
     /// The project id comes from loadCodeAssist and rarely changes; holding it
     /// avoids a second round trip on every poll.
     /// Per ACCOUNT, not global: several Google accounts have different
-    /// projects, tiers and last-good readings, and one shared slot would
+    /// projects and tiers, and one shared slot would
     /// show one account's numbers under another's name.
     private static var cachedProject: [UUID: String] = [:]
     /// The account's Code Assist tier, from loadCodeAssist's
@@ -206,6 +206,8 @@ struct GoogleAdapterImpl: UsageAdapter {
     static func userInfoEmail(accessToken: String, id: UUID) async -> String? {
         if let hit = emailCache[id] { return hit }
         var req = URLRequest(url: URL(string: "https://www.googleapis.com/oauth2/v3/userinfo")!)
+        req.timeoutInterval = 20
+        req.cachePolicy = .reloadIgnoringLocalCacheData
         req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         var found: String?
         if let (d, r) = try? await URLSession.shared.data(for: req),
@@ -229,39 +231,90 @@ struct GoogleAdapterImpl: UsageAdapter {
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
         return o["email"] as? String
     }
-    /// Last good per-model read, held so a transient 403 shows the previous
-    /// numbers (with the popover's "stale" chip) instead of an error row.
-    private static var lastGood: [UUID: (at: Date, usage: FetchedUsage)] = [:]
 
     func fetch(account: Account) async throws -> FetchedUsage {
         let (access, source, idToken) = try await credentials(for: account)
         switch mode {
         case .codeAssist:
-            return try await loadLegacyQuota(token: access, source: source, idToken: idToken, id: account.id)
+            return try await loadLegacyQuota(token: access, source: source, idToken: idToken, id: account.credentialRevision)
         case .antigravity:
-            return try await loadModelQuota(token: access, source: source, idToken: idToken, id: account.id)
+            return try await loadModelQuota(token: access, source: source, idToken: idToken, id: account.credentialRevision)
         }
     }
 
     func fetchModelDetails(account: Account) async throws -> UsageDetails {
         let (access, _, _) = try await credentials(for: account)
-        if Self.cachedProject[account.id] == nil {
+        if Self.cachedProject[account.credentialRevision] == nil {
             let root = try await call("loadCodeAssist", body: ["metadata": Self.metadata], token: access, agent: "antigravity")
-            Self.cachedProject[account.id] = (root["cloudaicompanionProject"] as? String)
+            Self.cachedProject[account.credentialRevision] = (root["cloudaicompanionProject"] as? String)
                 ?? (root["cloudaicompanionProject"] as? [String: Any])?["id"] as? String
         }
-        var body: [String: Any] = [:]
-        if let project = Self.cachedProject[account.id] { body["project"] = project }
+        guard let project = Self.cachedProject[account.credentialRevision], !project.isEmpty else {
+            throw AdapterError.transport("Google did not return this account's quota project")
+        }
+        let body: [String: Any] = ["project": project]
         do {
-            return try GoogleModelDetails.parse(await call("fetchAvailableModels", body: body, token: access, agent: "antigravity"))
+            let quota = try await call("retrieveUserQuota", body: body, token: access, agent: "antigravity")
+            let models = try await call("fetchAvailableModels", body: body, token: access, agent: "antigravity")
+            return try GoogleModelDetails.parseVerified(models: models, quota: quota)
         } catch {
-            Self.cachedProject[account.id] = nil
+            Self.cachedProject[account.credentialRevision] = nil
             throw error
         }
     }
 
-    static func invalidateProject(for accountID: UUID) {
-        cachedProject[accountID] = nil
+    static func invalidateSession(_ revision: UUID) {
+        cachedProject[revision] = nil
+        cachedTier[revision] = nil
+        emailCache[revision] = nil
+    }
+
+    /// Explicit, sanitized diagnostics through the installed app's credential cache.
+    /// Never writes credentials, project identifiers, emails, or full API responses.
+    func diagnose(account: Account) async -> [String: Any] {
+        var result: [String: Any] = ["checkedAt": ISO8601DateFormatter().string(from: Date())]
+        do {
+            let (access, _, _) = try await credentials(for: account)
+            let email = await Self.userInfoEmail(accessToken: access, id: account.credentialRevision)
+            result["identityMatchesCard"] = email.map { $0.caseInsensitiveCompare(account.label) == .orderedSame }
+            // Antigravity builds can select Google's daily service. Compare it
+            // only in this explicit diagnostic; normal reads use production.
+            for host in [ServiceHost.production, .daily] {
+                var service: [String: Any] = [:]
+                do {
+                    let context = try await call("loadCodeAssist", body: ["metadata": Self.metadata],
+                                                 token: access, agent: "antigravity", host: host)
+                    let project = (context["cloudaicompanionProject"] as? String)
+                        ?? (context["cloudaicompanionProject"] as? [String: Any])?["id"] as? String
+                    service["projectResolved"] = project?.isEmpty == false
+                    if let project, !project.isEmpty {
+                        for method in ["retrieveUserQuotaSummary", "retrieveUserQuota", "fetchAvailableModels"] {
+                            do {
+                                let root = try await call(method, body: ["project": project], token: access,
+                                                          agent: "antigravity", host: host)
+                                var report: [String: Any] = ["keys": root.keys.sorted()]
+                                if method == "retrieveUserQuotaSummary" {
+                                    report["limits"] = try Self.parseQuotaSummary(root).limits.map {
+                                        ["label": $0.label, "usedPercent": $0.percent as Any] as [String: Any]
+                                    }
+                                } else if method == "fetchAvailableModels" {
+                                    report["models"] = try GoogleModelDetails.parse(root).rows.map {
+                                        ["model": $0.model, "usedPercent": $0.value] as [String: Any]
+                                    }
+                                } else {
+                                    report["buckets"] = (root["buckets"] as? [[String: Any]] ?? []).map { bucket in
+                                        bucket.filter { ["modelId", "tokenType", "remainingFraction", "resetTime"].contains($0.key) }
+                                    }
+                                }
+                                service[method] = report
+                            } catch { service[method] = ["error": String(describing: error)] }
+                        }
+                    }
+                } catch { service["error"] = String(describing: error) }
+                result[host.rawValue] = service
+            }
+        } catch { result["error"] = String(describing: error) }
+        return result
     }
 
     private func credentials(for account: Account) async throws -> (String, AuthSource, String?) {
@@ -332,9 +385,14 @@ struct GoogleAdapterImpl: UsageAdapter {
     private func exchange(refresh: String, client: GeminiOAuthClient.Client) async throws -> String {
         var req = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
         req.httpMethod = "POST"
+        req.timeoutInterval = 20
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        req.httpBody = ("client_id=\(client.id)&client_secret=\(client.secret)"
-                        + "&refresh_token=\(refresh)&grant_type=refresh_token").data(using: .utf8)
+        var form = URLComponents()
+        form.queryItems = [.init(name: "client_id", value: client.id), .init(name: "client_secret", value: client.secret),
+                           .init(name: "refresh_token", value: refresh), .init(name: "grant_type", value: "refresh_token")]
+        req.httpBody = form.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B").data(using: .utf8)
         // URLSession errors (offline, DNS, timeout) propagate as themselves.
         let (d, r) = try await URLSession.shared.data(for: req)
         guard let http = r as? HTTPURLResponse else { throw AdapterError.transport("no response") }
@@ -405,11 +463,19 @@ struct GoogleAdapterImpl: UsageAdapter {
         "ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"
     ]
 
+    private enum ServiceHost: String {
+        case production = "cloudcode-pa.googleapis.com"
+        case daily = "daily-cloudcode-pa.googleapis.com"
+    }
+
     private func call(_ method: String, body: [String: Any], token: String,
-                      agent: String?) async throws -> [String: Any] {
+                      agent: String?, host: ServiceHost = .production) async throws -> [String: Any] {
         var req = URLRequest(url: URL(string:
-            "https://cloudcode-pa.googleapis.com/v1internal:\(method)")!)
+            "https://\(host.rawValue)/v1internal:\(method)")!)
         req.httpMethod = "POST"
+        req.timeoutInterval = 20
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        req.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         // Identifying as "antigravity" is REQUIRED for fetchAvailableModels —
@@ -430,10 +496,9 @@ struct GoogleAdapterImpl: UsageAdapter {
         return root
     }
 
-    /// Antigravity's real metering. `fetchAvailableModels` needs the caller's
-    /// **project id in the BODY** — that, not any header, is what separates a
-    /// 200 from a 403; a bare call fails no matter what metadata is attached.
-    /// The project comes from loadCodeAssist's `cloudaicompanionProject`.
+    /// Antigravity's account-scoped grouped metering. The project comes from
+    /// loadCodeAssist's `cloudaicompanionProject`; projectless catalog reads
+    /// can describe model availability instead of this account's usage.
     private func loadModelQuota(token: String, source: AuthSource, idToken: String?,
                                 id: UUID) async throws -> FetchedUsage {
         do {
@@ -454,23 +519,20 @@ struct GoogleAdapterImpl: UsageAdapter {
                                                          id: tier["id"] as? String)
                 }
             }
-            var body: [String: Any] = [:]
-            if let p = Self.cachedProject[id] { body["project"] = p }
+            guard let project = Self.cachedProject[id], !project.isEmpty else {
+                throw AdapterError.transport("Google did not return this account's quota project")
+            }
+            let body: [String: Any] = ["project": project]
             // The same grouped quota summary Antigravity's View Usage menu
             // shows: Gemini and Claude/GPT, each with weekly and five-hour
             // buckets. The older models call has only per-model quota and
             // cannot represent all four of those limits.
-            var usage: FetchedUsage
-            do {
-                let summary = try await call("retrieveUserQuotaSummary", body: body,
-                                             token: token, agent: "antigravity")
-                usage = try Self.parseQuotaSummary(summary)
-            } catch {
-                // Older Antigravity accounts may not expose the summary yet.
-                let root = try await call("fetchAvailableModels", body: body,
-                                          token: token, agent: "antigravity")
-                usage = try Self.parseModels(root)
-            }
+            let summary = try await call("retrieveUserQuotaSummary", body: body,
+                                         token: token, agent: "antigravity")
+            // A model catalog cannot replace missing grouped quota: its 100%
+            // values may mean availability. Preserve the failure and last real
+            // check time instead of publishing those values as fresh usage.
+            var usage = try Self.parseQuotaSummary(summary)
             usage.plan = Self.cachedTier[id]
             usage.authSource = source
             var email = idToken.flatMap(Self.emailFromJWT)
@@ -481,14 +543,10 @@ struct GoogleAdapterImpl: UsageAdapter {
                     "google email for \(id.uuidString.prefix(8)): \(usage.accountEmail ?? "nil")\n"
                         .data(using: .utf8)!)
             }
-            Self.lastGood[id] = (Date(), usage)
             return usage
         } catch {
             // A stale project id 403s; drop it so the next poll re-derives one.
             Self.cachedProject[id] = nil
-            if let held = Self.lastGood[id], Date().timeIntervalSince(held.at) < 3600 {
-                return held.usage
-            }
             throw error
         }
     }
@@ -523,11 +581,15 @@ struct GoogleAdapterImpl: UsageAdapter {
             }
         }
         var limits: [UsageLimit] = []
-        let groups = root["groups"] as? [[String: Any]] ?? []
+        let payload = (root["response"] as? [String: Any]) ?? root
+        let groups = payload["groups"] as? [[String: Any]] ?? []
         for group in groups {
             let groupName = (group["displayName"] as? String) ?? "Models"
             for bucket in (group["buckets"] as? [[String: Any]] ?? []) {
-                guard let remaining = bucket["remainingFraction"] as? Double else { continue }
+                guard bucket["disabled"] as? Bool != true,
+                      let remaining = (bucket["remainingFraction"] as? Double)
+                        ?? (bucket["remaining"] as? [String: Any])?["remainingFraction"] as? Double,
+                      remaining.isFinite, (0...1).contains(remaining) else { continue }
                 let bucketName = (bucket["displayName"] as? String) ?? "Limit"
                 let bucketId = (bucket["bucketId"] as? String) ?? keyPart(bucketName)
                 let key = "google-summary-\(keyPart(groupName))-\(keyPart(bucketId))"

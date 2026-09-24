@@ -42,6 +42,54 @@ extension EnvironmentValues {
 
 @MainActor
 enum TrackerPopoverLayout {
+    private static var animationDeadline: TimeInterval = 0
+    private static var resizes: [ObjectIdentifier: ResizeAnimation] = [:]
+
+    /// SwiftUI reports the destination layout before its visual animation runs.
+    /// Move the window through intermediate sizes instead of jumping there first.
+    static func beginAnimation(duration: TimeInterval) {
+        animationDeadline = ProcessInfo.processInfo.systemUptime + duration
+    }
+
+    @MainActor private final class ResizeAnimation {
+        let target: NSSize
+        let start: NSSize
+        let began = ProcessInfo.processInfo.systemUptime
+        let duration: TimeInterval
+        var timer: Timer?
+        init(start: NSSize, target: NSSize, duration: TimeInterval) {
+            self.start = start; self.target = target; self.duration = duration
+        }
+        deinit { timer?.invalidate() }
+    }
+
+    private static func setSize(of window: NSWindow, from start: NSSize, to target: NSSize,
+                                apply: @escaping (NSSize) -> Void) {
+        let key = ObjectIdentifier(window)
+        if let running = resizes[key], running.target == target { return }
+        resizes.removeValue(forKey: key)?.timer?.invalidate()
+        let duration = animationDeadline - ProcessInfo.processInfo.systemUptime
+        guard window.isVisible, duration > 0.015,
+              abs(start.height - target.height) > 0.5 || abs(start.width - target.width) > 0.5 else {
+            apply(target); return
+        }
+        let animation = ResizeAnimation(start: start, target: target, duration: duration)
+        resizes[key] = animation
+        let timer = Timer(timeInterval: 1 / 120, repeats: true) { [weak animation, weak window] _ in
+            MainActor.assumeIsolated {
+                guard let animation, let window else { resizes.removeValue(forKey: key)?.timer?.invalidate(); return }
+                let t = min((ProcessInfo.processInfo.systemUptime - animation.began) / animation.duration, 1)
+                let eased = 1 - pow(1 - t, 3)
+                let size = NSSize(width: animation.start.width + (animation.target.width - animation.start.width) * eased,
+                                  height: animation.start.height + (animation.target.height - animation.start.height) * eased)
+                window.disableScreenUpdatesUntilFlush()
+                apply(size)
+                if t >= 1 { resizes.removeValue(forKey: key)?.timer?.invalidate() }
+            }
+        }
+        animation.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
     /// NSStatusBarWindow.screen may be nil even while its frame is on a display.
     /// Resolve the display geometrically before using a generic screen fallback.
     static func screen(for anchor: NSView?) -> NSScreen? {
@@ -81,8 +129,19 @@ enum TrackerPopoverLayout {
 
     static func resize(_ popover: NSPopover, to proposed: NSSize, anchor: NSView?) {
         let size = bounded(proposed, screen: screen(for: anchor))
+        if popover.isShown, let window = popover.contentViewController?.view.window {
+            setSize(of: window, from: popover.contentSize, to: size) { [weak popover, weak anchor] next in
+                guard let popover else { return }
+                resizeImmediately(popover, to: next, anchor: anchor)
+            }
+        } else {
+            resizeImmediately(popover, to: size, anchor: anchor)
+        }
+    }
+
+    private static func resizeImmediately(_ popover: NSPopover, to size: NSSize, anchor: NSView?) {
         guard abs(popover.contentSize.width - size.width) > 0.5 || abs(popover.contentSize.height - size.height) > 0.5 else { return }
-        LayoutTrace.record("before resize", popover: popover, anchor: anchor, proposed: proposed)
+        LayoutTrace.record("before resize", popover: popover, anchor: anchor, proposed: size)
         let animated = popover.animates
         popover.animates = false // SwiftUI owns the disclosure animation; no second window animation.
         popover.contentSize = size
@@ -90,12 +149,19 @@ enum TrackerPopoverLayout {
         // x=0. Keep this window and position it from the item's screen frame.
         pin(popover, to: anchor)
         popover.animates = animated
-        LayoutTrace.record("after resize", popover: popover, anchor: anchor, proposed: proposed)
+        LayoutTrace.record("after resize", popover: popover, anchor: anchor, proposed: size)
     }
 
     static func resizePanel(_ panel: NSWindow, to proposed: NSSize) {
-        LayoutTrace.recordPanel("before panel resize", panel: panel, proposed: proposed)
         let size = bounded(proposed, screen: panel.screen)
+        setSize(of: panel, from: panel.contentRect(forFrameRect: panel.frame).size, to: size) { [weak panel] next in
+            guard let panel else { return }
+            resizePanelImmediately(panel, to: next)
+        }
+    }
+
+    private static func resizePanelImmediately(_ panel: NSWindow, to size: NSSize) {
+        LayoutTrace.recordPanel("before panel resize", panel: panel, proposed: size)
         let old = panel.frame
         let contentFrame = panel.frameRect(forContentRect: NSRect(origin: .zero, size: size))
         guard abs(old.width - contentFrame.width) > 0.5 || abs(old.height - contentFrame.height) > 0.5 else { return }
@@ -107,7 +173,7 @@ enum TrackerPopoverLayout {
             next.origin.y = max(next.minY, visible.minY + 8)
         }
         panel.setFrame(next, display: false)
-        LayoutTrace.recordPanel("after panel resize", panel: panel, proposed: proposed)
+        LayoutTrace.recordPanel("after panel resize", panel: panel, proposed: size)
     }
 }
 

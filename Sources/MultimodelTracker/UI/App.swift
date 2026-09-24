@@ -160,6 +160,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
         Task { @MainActor in
             await store.refreshAll(); renderBadges()
+            if let i = CommandLine.arguments.firstIndex(of: "--google-diagnostics"), i + 1 < CommandLine.arguments.count {
+                var results: [[String: Any]] = []
+                for account in store.accounts(for: .google) {
+                    results.append(await GoogleAdapterImpl().diagnose(account: account))
+                }
+                let url = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+                if let data = try? JSONSerialization.data(withJSONObject: results, options: [.prettyPrinted, .sortedKeys]) {
+                    try? data.write(to: url, options: .atomic)
+                    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                }
+            }
             if let i = CommandLine.arguments.firstIndex(of: "--detail-diagnostics"), i + 1 < CommandLine.arguments.count {
                 await AccountUsageDetails.diagnose(store.accounts, to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
             }
