@@ -85,7 +85,8 @@ enum GoogleCredentialSource {
         return TokenBlob(
             accessToken: pick(tok, ["access_token", "accessToken"]),
             refreshToken: pick(tok, ["refresh_token", "refreshToken", "RefreshToken"]),
-            expiry: expiryString.flatMap { iso.date(from: $0) ?? plain.date(from: $0) },
+            expiry: expiryString.flatMap { iso.date(from: $0) ?? plain.date(from: $0) }
+                ?? (tok["expiry_date"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) },
             idToken: pick(root, ["id_token", "idToken"]) ?? pick(tok, ["id_token", "idToken"]))
     }
 
@@ -203,8 +204,8 @@ struct GoogleAdapterImpl: UsageAdapter {
     /// on every poll.
     private static var emailCache: [UUID: String?] = [:]
 
-    static func userInfoEmail(accessToken: String, id: UUID) async -> String? {
-        if let hit = emailCache[id] { return hit }
+    static func userInfoEmail(accessToken: String, id: UUID, fresh: Bool = false) async -> String? {
+        if !fresh, let hit = emailCache[id] { return hit }
         var req = URLRequest(url: URL(string: "https://www.googleapis.com/oauth2/v3/userinfo")!)
         req.timeoutInterval = 20
         req.cachePolicy = .reloadIgnoringLocalCacheData
@@ -215,7 +216,7 @@ struct GoogleAdapterImpl: UsageAdapter {
            let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
             found = o["email"] as? String
         }
-        emailCache[id] = found
+        if !fresh { emailCache[id] = found }
         return found
     }
 
@@ -233,17 +234,22 @@ struct GoogleAdapterImpl: UsageAdapter {
     }
 
     func fetch(account: Account) async throws -> FetchedUsage {
-        let (access, source, idToken) = try await credentials(for: account)
+        Self.synchronizeServiceRoute()
+        let (access, source, idToken, info) = try await credentials(for: account)
+        var out: FetchedUsage
         switch mode {
         case .codeAssist:
-            return try await loadLegacyQuota(token: access, source: source, idToken: idToken, id: account.credentialRevision)
+            out = try await loadLegacyQuota(token: access, source: source, idToken: idToken, id: account.credentialRevision)
         case .antigravity:
-            return try await loadModelQuota(token: access, source: source, idToken: idToken, id: account.credentialRevision)
+            out = try await loadModelQuota(token: access, source: source, idToken: idToken, id: account.credentialRevision)
         }
+        out.authentication = info
+        return out
     }
 
     func fetchModelDetails(account: Account) async throws -> UsageDetails {
-        let (access, _, _) = try await credentials(for: account)
+        Self.synchronizeServiceRoute()
+        let (access, _, _, _) = try await credentials(for: account)
         if Self.cachedProject[account.credentialRevision] == nil {
             let root = try await call("loadCodeAssist", body: ["metadata": Self.metadata], token: access, agent: "antigravity")
             Self.cachedProject[account.credentialRevision] = (root["cloudaicompanionProject"] as? String)
@@ -253,14 +259,24 @@ struct GoogleAdapterImpl: UsageAdapter {
             throw AdapterError.transport("Google did not return this account's quota project")
         }
         let body: [String: Any] = ["project": project]
+        var groups: [GoogleQuotaGroup] = []
+        var groupFailure: String?
+        do {
+            groups = try GoogleModelDetails.parseGroups(try await call("retrieveUserQuotaSummary", body: body, token: access, agent: "antigravity"))
+        } catch { groupFailure = "Shared pools unavailable: \(error)" }
+        var report: UsageDetails
         do {
             let quota = try await call("retrieveUserQuota", body: body, token: access, agent: "antigravity")
             let models = try await call("fetchAvailableModels", body: body, token: access, agent: "antigravity")
-            return try GoogleModelDetails.parseVerified(models: models, quota: quota)
+            report = try GoogleModelDetails.parseVerified(models: models, quota: quota)
         } catch {
-            Self.cachedProject[account.credentialRevision] = nil
-            throw error
+            guard !groups.isEmpty else { throw error }
+            report = UsageDetails(title: "Model details", unit: "quotaPercent", note: "Shared pools are still available.",
+                                  emptyMessage: "Individual model quotas unavailable: \(error)")
         }
+        report.googleGroups = groups
+        report.groupFailure = groupFailure
+        return report
     }
 
     static func invalidateSession(_ revision: UUID) {
@@ -272,13 +288,13 @@ struct GoogleAdapterImpl: UsageAdapter {
     /// Explicit, sanitized diagnostics through the installed app's credential cache.
     /// Never writes credentials, project identifiers, emails, or full API responses.
     func diagnose(account: Account) async -> [String: Any] {
-        var result: [String: Any] = ["checkedAt": ISO8601DateFormatter().string(from: Date())]
+        var result: [String: Any] = ["checkedAt": ISO8601DateFormatter().string(from: Date()), "configuredHost": AntigravityServiceRoute.current().rawValue]
         do {
-            let (access, _, _) = try await credentials(for: account)
+            let (access, _, _, _) = try await credentials(for: account)
             let email = await Self.userInfoEmail(accessToken: access, id: account.credentialRevision)
             result["identityMatchesCard"] = email.map { $0.caseInsensitiveCompare(account.label) == .orderedSame }
             // Antigravity builds can select Google's daily service. Compare it
-            // only in this explicit diagnostic; normal reads use production.
+            // only in this explicit diagnostic; normal reads follow the installed client.
             for host in [ServiceHost.production, .daily] {
                 var service: [String: Any] = [:]
                 do {
@@ -298,8 +314,8 @@ struct GoogleAdapterImpl: UsageAdapter {
                                         ["label": $0.label, "usedPercent": $0.percent as Any] as [String: Any]
                                     }
                                 } else if method == "fetchAvailableModels" {
-                                    report["models"] = try GoogleModelDetails.parse(root).rows.map {
-                                        ["model": $0.model, "usedPercent": $0.value] as [String: Any]
+                                    report["models"] = (root["models"] as? [String: [String: Any]] ?? [:]).mapValues {
+                                        $0.filter { ["displayName", "modelId", "isSelectable", "isHidden", "disabled", "quotaInfo"].contains($0.key) }
                                     }
                                 } else {
                                     report["buckets"] = (root["buckets"] as? [[String: Any]] ?? []).map { bucket in
@@ -317,7 +333,7 @@ struct GoogleAdapterImpl: UsageAdapter {
         return result
     }
 
-    private func credentials(for account: Account) async throws -> (String, AuthSource, String?) {
+    private func credentials(for account: Account) async throws -> (String, AuthSource, String?, AuthenticationInfo) {
         // A browser-signed-in account carries its OWN refresh token, which is
         // what lets several Google accounts coexist; the machine credentials
         // (one Antigravity login, one gemini-cli file) are the fallback for
@@ -356,10 +372,12 @@ struct GoogleAdapterImpl: UsageAdapter {
         // hourly and an idle agy does not rotate it, so trusting it is the
         // main cause of spurious 401s.
         var access: String?
+        var accessExpiry: Date?
         if let refresh = refreshToken {
             for client in GeminiOAuthClient.candidates() {
                 do {
-                    access = try await exchange(refresh: refresh, client: client)
+                    let fresh = try await exchangeToken(refresh: refresh, client: client)
+                    access = fresh.0; accessExpiry = fresh.1
                     GeminiOAuthClient.winner = client
                     break
                 } catch AdapterError.notSignedIn {
@@ -375,14 +393,24 @@ struct GoogleAdapterImpl: UsageAdapter {
         // Only fall back to the stored token if it is genuinely still live.
         if access == nil, let token = storedAccess,
            storedExpiry.map({ $0 > Date().addingTimeInterval(60) }) ?? false {
-            access = token
+            access = token; accessExpiry = storedExpiry
         }
         guard let access else { throw AdapterError.notSignedIn }
 
-        return (access, source, idToken)
+        // A shared CLI credential may have switched accounts since the last poll.
+        // Verify it afresh before any usage/detail request, including direct detail refreshes.
+        if machineRow, let expected = account.normalizedEmail {
+            guard let actual = await Self.userInfoEmail(accessToken: access, id: account.credentialRevision, fresh: true),
+                  Account.normalizedEmail(actual) == expected else { throw AdapterError.notSignedIn }
+        }
+        return (access, source, idToken, AuthenticationInfo(source: source, accessExpiresAt: accessExpiry, canRefresh: refreshToken != nil))
     }
 
     private func exchange(refresh: String, client: GeminiOAuthClient.Client) async throws -> String {
+        try await exchangeToken(refresh: refresh, client: client).0
+    }
+
+    private func exchangeToken(refresh: String, client: GeminiOAuthClient.Client) async throws -> (String, Date?) {
         var req = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
         req.httpMethod = "POST"
         req.timeoutInterval = 20
@@ -401,7 +429,7 @@ struct GoogleAdapterImpl: UsageAdapter {
         guard http.statusCode == 200,
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
               let t = o["access_token"] as? String else { throw AdapterError.notSignedIn }
-        return t
+        return (t, (o["expires_in"] as? Double).flatMap { $0.isFinite && $0 > 0 ? Date().addingTimeInterval($0) : nil })
     }
 
     /// Diagnostic (`--google-raw`): the whole loadCodeAssist response, which
@@ -463,13 +491,19 @@ struct GoogleAdapterImpl: UsageAdapter {
         "ideType": "ANTIGRAVITY", "platform": "PLATFORM_UNSPECIFIED", "pluginType": "GEMINI"
     ]
 
-    private enum ServiceHost: String {
-        case production = "cloudcode-pa.googleapis.com"
-        case daily = "daily-cloudcode-pa.googleapis.com"
+    private typealias ServiceHost = AntigravityServiceRoute.Host
+    private static var lastServiceHost: ServiceHost?
+    private static func synchronizeServiceRoute() {
+        let host = AntigravityServiceRoute.current()
+        if host != lastServiceHost {
+            cachedProject.removeAll(); cachedTier.removeAll()
+            lastServiceHost = host
+        }
     }
 
     private func call(_ method: String, body: [String: Any], token: String,
-                      agent: String?, host: ServiceHost = .production) async throws -> [String: Any] {
+                      agent: String?, host: ServiceHost? = nil) async throws -> [String: Any] {
+        let host = host ?? (mode == .antigravity ? AntigravityServiceRoute.current() : .production)
         var req = URLRequest(url: URL(string:
             "https://\(host.rawValue)/v1internal:\(method)")!)
         req.httpMethod = "POST"

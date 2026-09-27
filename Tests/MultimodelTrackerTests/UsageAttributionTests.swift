@@ -8,6 +8,7 @@ struct UsageAttributionTests {
         try suite.testMissingIdentityAndNonUsageEventsAreExcluded()
         try suite.testOpenAIUsesDeclaredUnitsWithoutDoubleCounting()
         try suite.testGoogleModelQuotaDetails()
+        try suite.testGoogleIdentityAndDeclaredPools()
         try suite.testGoogleCatalogAvailabilityDoesNotOverrideQuota()
         try suite.testOpenAIModelFallbackAndEmptyActivity()
         try suite.testOpenAIFreshnessAndDateRange()
@@ -48,6 +49,28 @@ struct UsageAttributionTests {
         assertTrue(try ClaudeTelemetryParser.parse(payload(account: accountA, kind: "user_prompt")).isEmpty)
         assertTrue(try ClaudeTelemetryParser.parse(payload(account: accountA, tokens: "-1")).isEmpty)
         assertTrue(try ClaudeTelemetryParser.parse(payload(account: accountA, tokens: "nan")).isEmpty)
+    }
+    func testGoogleIdentityAndDeclaredPools() throws {
+        let models: [String: Any] = ["models": ["variant-a": ["displayName": "Gemini Same"], "variant-b": ["displayName": "Gemini Same"]]]
+        let bucket: [String: Any] = ["modelId": "variant-a", "tokenType": "WTUS", "remainingFraction": 0.7]
+        let report = try GoogleModelDetails.parseVerified(models: models, quota: ["buckets": [bucket, bucket,
+            ["modelId": "variant-b", "tokenType": "WTUS", "remainingFraction": 0.7]]])
+        assertEqual(report.rows.count, 2)
+        assertTrue(report.rows[0].id != report.rows[1].id)
+        assertTrue(report.rows[0].caption != report.rows[1].caption)
+        let groups = try GoogleModelDetails.parseGroups(["response": ["groups": [
+            ["displayName": "Gemini Models", "buckets": [
+                ["bucketId": "weekly", "displayName": "Weekly Limit Remaining", "remainingFraction": 0.6],
+                ["bucketId": "5h", "displayName": "Five Hour Limit Remaining", "remainingFraction": 0.6],
+                ["bucketId": "missing", "displayName": "Missing"],
+                ["bucketId": "disabled", "displayName": "Disabled", "remainingFraction": 0.0, "disabled": true]]],
+            ["displayName": "Claude and GPT models", "buckets": [
+                ["bucketId": "weekly", "displayName": "Weekly Limit Remaining", "remainingFraction": 0.6]]]
+        ]]])
+        assertEqual(groups.count, 2) // equal amounts do not merge groups
+        assertEqual(groups[0].rows.count, 2) // equal amounts do not merge windows
+        assertEqual(groups[0].rows[0].value, 40)
+        assertThrows(try GoogleModelDetails.parseGroups(["groups": []]))
     }
     func testGoogleModelQuotaDetails() throws {
         let raw = #"{"models":{"gemini-test":{"displayName":"Gemini Test","quotaInfo":{"remainingFraction":0.25}},"claude-test":{"quotaInfo":{"remainingFraction":0}},"gpt-test":{"quotaInfo":{"remainingFraction":1}},"chat_internal":{"quotaInfo":{"remainingFraction":1}},"unknown":{},"invalid":{"quotaInfo":{"remainingFraction":2}}}}"#

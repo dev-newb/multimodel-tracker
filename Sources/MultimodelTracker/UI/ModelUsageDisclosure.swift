@@ -17,9 +17,16 @@ struct ModelUsageDisclosure: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            BoundedTrackerScroll(maxHeight: 240, expanded: expanded) {
-                UsageDetailsView(account: account, accent: accent, preview: preview, active: expanded)
-                    .padding(.bottom, 7)
+            if account.provider == .google {
+                TrackerDisclosureClip(expanded: expanded) {
+                    UsageDetailsView(account: account, accent: accent, preview: preview, active: expanded)
+                        .padding(.bottom, 7)
+                }
+            } else {
+                BoundedTrackerScroll(maxHeight: 240, expanded: expanded) {
+                    UsageDetailsView(account: account, accent: accent, preview: preview, active: expanded)
+                        .padding(.bottom, 7)
+                }
             }
             Button {
                 TrackerPopoverLayout.beginAnimation(duration: reduceMotion ? 0 : ConfigPanelContainer.slideDuration)

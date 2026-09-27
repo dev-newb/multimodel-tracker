@@ -29,7 +29,10 @@ struct UsageDetailsView: View {
                 }
             }
             if loading && preview == nil && details == nil { ProgressView().controlSize(.small) }
-            if let report = preview ?? details { reportView(report) }
+            if let report = preview ?? details {
+                if account.provider == .google { GoogleQuotaDetailsView(report: report, accent: accent) }
+                else { reportView(report) }
+            }
             if let tokenDetails { reportView(tokenDetails) }
             if let failure { Text(failure).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             if account.provider == .anthropic {

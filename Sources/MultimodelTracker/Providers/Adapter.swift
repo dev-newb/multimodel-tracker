@@ -12,6 +12,7 @@ struct FetchedUsage {
     var accountEmail: String?
     /// How these credentials were obtained, re-derived on every refresh.
     var authSource: AuthSource?
+    var authentication: AuthenticationInfo?
 
     init(plan: String?, limits: [UsageLimit], bankedResets: Int? = nil) {
         self.plan = plan; self.limits = limits; self.bankedResets = bankedResets
@@ -93,7 +94,10 @@ struct OpenAIAdapter: UsageAdapter {
         guard let http = resp as? HTTPURLResponse else { throw AdapterError.transport("no response") }
         if http.statusCode == 401 || http.statusCode == 403 { throw AdapterError.notSignedIn }
         guard http.statusCode == 200 else { throw AdapterError.transport("HTTP \(http.statusCode)") }
-        return try OpenAIParser.parse(data)
+        var out = try OpenAIParser.parse(data)
+        out.authSource = creds.refreshToken == nil ? .codexCLI : .browser
+        out.authentication = AuthenticationInfo(source: out.authSource!, accessExpiresAt: AuthenticationInfo.jwtExpiry(creds.accessToken), canRefresh: creds.refreshToken != nil)
+        return out
     }
 }
 
@@ -129,6 +133,7 @@ struct AnthropicAdapter: UsageAdapter {
         do {
             var out = await withEmail(try await fetchOnce(live.accessToken), token: live.accessToken, account: account)
             out.authSource = source
+            out.authentication = AuthenticationInfo(source: source, accessExpiresAt: live.expiresAt, canRefresh: live.refreshToken != nil)
             return out
         } catch AdapterError.notSignedIn {
             // The token died early (revocation, clock skew) — one refresh,
@@ -136,6 +141,7 @@ struct AnthropicAdapter: UsageAdapter {
             let renewed = try await refreshed(live, account: account.id)
             var out = await withEmail(try await fetchOnce(renewed.accessToken), token: renewed.accessToken, account: account)
             out.authSource = source
+            out.authentication = AuthenticationInfo(source: source, accessExpiresAt: renewed.expiresAt, canRefresh: renewed.refreshToken != nil)
             return out
         }
     }
@@ -146,17 +152,23 @@ struct AnthropicAdapter: UsageAdapter {
     private func withEmail(_ usage: FetchedUsage, token: String, account: Account) async -> FetchedUsage {
         guard !account.label.contains("@") else { return usage }
         var out = usage
+        out.accountEmail = await Self.profileEmail(token: token)
+        return out
+    }
+
+    static func profileEmail(token: String) async -> String? {
         var req = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/profile")!)
+        req.timeoutInterval = 20
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue(AnthropicOAuth.betaHeader, forHTTPHeaderField: "anthropic-beta")
         if let (data, resp) = try? await URLSession.shared.data(for: req),
            (resp as? HTTPURLResponse)?.statusCode == 200,
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             let acct = obj["account"] as? [String: Any]
-            out.accountEmail = (acct?["email_address"] as? String) ?? (acct?["email"] as? String)
+            return (acct?["email_address"] as? String) ?? (acct?["email"] as? String)
                 ?? (obj["email"] as? String)
         }
-        return out
+        return nil
     }
 
     private func refreshed(_ creds: Keychain.AnthropicCreds,

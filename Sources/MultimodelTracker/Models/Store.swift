@@ -41,6 +41,9 @@ final class Store: ObservableObject {
     private var passSuccesses = 0
     private var passConnectivityFailures = 0
     private var signingIn: Set<UUID> = []
+    @Published var accountNotice: String?
+    private var importingGoogle = false
+    private var importingClaude = false
 
     @Published private(set) var showsModelDetails =
         UserDefaults.standard.object(forKey: "mmt.showsModelDetails") as? Bool ?? true
@@ -63,6 +66,7 @@ final class Store: ObservableObject {
         // seed ("personal@…" at 66%) predated the adapters and greeted every
         // new user with plausible numbers for accounts that didn't exist.
         migrateGoogleMachineRows()
+        consolidateDuplicateAccounts()
         maxedStyle = Self.style(forViewing: UserDefaults.standard.integer(forKey: maxedViewsKey))
         burnCycleStyle = BurnStyle(rawValue:
             ((max(UserDefaults.standard.integer(forKey: "mmt.burnViews"), 1) - 1) / 3)
@@ -235,7 +239,7 @@ final class Store: ObservableObject {
                                      resetsAt: hasClock ? Date().addingTimeInterval(Double.random(in: 3600...432_000)) : nil)
                     },
                     lastRefreshed: Date())
-            out.authSource = via
+            out.authentication = AuthenticationInfo(source: via, accessExpiresAt: Date().addingTimeInterval(3600), canRefresh: via == .browser || via == .antigravity)
             return out
         }
         let cl: [(String, String, Double?)] = [("5h", "5-hour limit", 0), ("7d", "Weekly · all models", 0), ("fable", "Weekly · Fable", 0)]
@@ -289,7 +293,7 @@ final class Store: ObservableObject {
         var changed = false
         for p in Provider.allCases {
             let group = accounts.filter { $0.provider == p }
-            guard group.count >= 2 else { continue }
+            guard !group.isEmpty else { continue }
             let unsettled = group.filter { expanded[$0.id] == nil }
             guard !unsettled.isEmpty else { continue }
             let anyOpen = group.contains { expanded[$0.id] == true }
@@ -430,6 +434,49 @@ final class Store: ObservableObject {
 
     func accounts(for p: Provider) -> [Account] { accounts.filter { $0.provider == p } }
 
+    /// Identity is provider + verified email, independent of nickname or login source.
+    private func rejectDuplicate(_ provider: Provider, email: String?, excluding id: UUID? = nil) -> Bool {
+        guard accounts.contains(where: { $0.id != id && $0.matches(provider: provider, email: email) }) else { return false }
+        accountNotice = "This \(provider.displayName) account is already tracked"
+        return true
+    }
+
+    /// Retire duplicate metadata without deleting credentials. A recovery operation
+    /// must not resurrect these rows; retained secrets remain available for recovery.
+    private func retireDuplicate(_ duplicate: Account, keeping winner: Account) {
+        let backupKey = "mmt.retiredDuplicateAccounts"
+        var archived = (UserDefaults.standard.data(forKey: backupKey)).flatMap {
+            try? JSONDecoder().decode([Account].self, from: $0)
+        } ?? []
+        if !archived.contains(where: { $0.id == duplicate.id }) { archived.append(duplicate) }
+        if let data = try? JSONEncoder().encode(archived) { UserDefaults.standard.set(data, forKey: backupKey) }
+        if let i = accounts.firstIndex(where: { $0.id == winner.id }),
+           accounts[i].nickname?.isEmpty != false, duplicate.nickname?.isEmpty == false {
+            accounts[i].nickname = duplicate.nickname
+        }
+        accounts.removeAll { $0.id == duplicate.id }
+        expanded[duplicate.id] = nil; saveExpanded(); save()
+    }
+
+    private func consolidateDuplicateAccounts() {
+        // Prefer renewable, account-specific Google credentials over the machine
+        // login, which can be changed outside the tracker. Otherwise keep freshest.
+        let ordered = accounts.sorted { a, b in
+            if a.provider != b.provider { return a.provider.rawValue < b.provider.rawValue }
+            if a.provider == .google, b.provider == .google,
+               Self.isMachineGoogleRow(a.id) != Self.isMachineGoogleRow(b.id) {
+                return !Self.isMachineGoogleRow(a.id)
+            }
+            return (a.lastRefreshed ?? .distantPast) > (b.lastRefreshed ?? .distantPast)
+        }
+        var winners: [Account] = []
+        for account in ordered {
+            if let winner = winners.first(where: { $0.matches(provider: account.provider, email: account.label) }) {
+                retireDuplicate(account, keeping: winner)
+            } else { winners.append(account) }
+        }
+    }
+
     func canAdd(_ p: Provider) -> Bool {
         accounts(for: p).count < Provider.maxAccountsPerProvider
     }
@@ -443,15 +490,13 @@ final class Store: ObservableObject {
 
     func remove(_ id: UUID) {
         unmarkMachineGoogleRow(id)
-        Keychain.deleteAll(for: id)
+        if !mockMode { Keychain.deleteAll(for: id) }
         // Leave nothing that --recover would faithfully resurrect: the burn
         // history and the per-account cookie jar both outlive the row.
         let prefix = "\(id)/"
         burnHistory = burnHistory.filter { !$0.key.hasPrefix(prefix) }
         saveBurnHistory()
-        if #available(macOS 14.0, *) {
-            WKWebsiteDataStore.remove(forIdentifier: id) { _ in }
-        }
+        if !mockMode { WebSessionPool.shared.removeData(for: id) }
         accounts.removeAll { $0.id == id }
         expanded[id] = nil; saveExpanded()
         save()
@@ -480,11 +525,13 @@ final class Store: ObservableObject {
     /// the first OpenAI account rather than making the user do OAuth again.
     @discardableResult
     func importCodexCLI() -> Account? {
-        guard canAdd(.openai), let creds = CodexCLIImport.read() else { return nil }
+        guard let creds = CodexCLIImport.read() else { return nil }
+        guard !rejectDuplicate(.openai, email: creds.email), canAdd(.openai) else { return nil }
         var a = Account(provider: .openai, label: creds.email ?? "Codex CLI")
         do { try Keychain.storeOpenAI(accessToken: creds.accessToken, accountId: creds.accountId, for: a.id) }
         catch { a.error = String(describing: error) }
         a.nickname = "Codex CLI"
+        a.authentication = AuthenticationInfo(source: .codexCLI, accessExpiresAt: AuthenticationInfo.jwtExpiry(creds.accessToken), canRefresh: false)
         accounts.append(a); save()
         if a.error == nil { Task { await refresh(a) } }
         return a
@@ -502,19 +549,27 @@ final class Store: ObservableObject {
             switch account.provider {
             case .openai:
                 let t = try await OpenAIOAuth.signIn()
+                guard let verifiedEmail = t.email else { throw AdapterError.transport("Could not verify the selected account's email. Please try again.") }
+                guard !rejectDuplicate(.openai, email: verifiedEmail, excluding: account.id) else { return }
                 guard accounts.contains(where: { $0.id == account.id }) else { return }
                 try Keychain.storeOpenAI(accessToken: t.accessToken, accountId: t.accountID,
                                      refreshToken: t.refreshToken, for: account.id)
-                email = t.email
+                email = verifiedEmail
             case .anthropic:
                 let t = try await AnthropicOAuth.signIn()
+                let verifiedEmail: String?
+                if let known = t.email { verifiedEmail = known }
+                else { verifiedEmail = await AnthropicAdapter.profileEmail(token: t.accessToken) }
+                guard let verifiedEmail else { throw AdapterError.transport("Could not verify the selected account's email. Please try again.") }
+                guard !rejectDuplicate(.anthropic, email: verifiedEmail, excluding: account.id) else { return }
                 guard accounts.contains(where: { $0.id == account.id }) else { return }
                 try Keychain.storeAnthropic(accessToken: t.accessToken,
                                         refreshToken: t.refreshToken,
                                         expiresAt: t.expiresAt, for: account.id)
-                email = t.email
+                email = verifiedEmail
             case .google:
                 let t = try await GoogleOAuth.signIn()
+                guard !rejectDuplicate(.google, email: t.email, excluding: account.id) else { return }
                 guard accounts.contains(where: { $0.id == account.id }) else { return }
                 try Keychain.storeGoogle(refreshToken: t.refreshToken, for: account.id)
                 // A successful browser login replaces this row's machine import.
@@ -551,17 +606,23 @@ final class Store: ObservableObject {
 
     /// The Anthropic sibling of importCodexCLI: adopt Claude Code's login as
     /// the first Claude account, no browser round trip. The stored creds
-    /// carry NO refresh token on purpose — see ClaudeCodeImport; when the
-    /// borrowed access token nears expiry, refresh() below re-reads the
-    /// CLI's own (self-refreshing) copy instead.
+    /// carry NO refresh token on purpose — see ClaudeCodeImport. When the
+    /// borrowed access token expires, the user reconnects. The CLI's current
+    /// login is never silently substituted.
     @discardableResult
-    func importClaudeCode() -> Account? {
-        guard canAdd(.anthropic), let creds = ClaudeCodeImport.freshCreds() else { return nil }
-        var a = Account(provider: .anthropic, label: "Claude Code")
+    func importClaudeCode() async -> Account? {
+        guard !importingClaude else { return nil }
+        importingClaude = true
+        defer { importingClaude = false }
+        guard let creds = ClaudeCodeImport.freshCreds(),
+              let email = await AnthropicAdapter.profileEmail(token: creds.accessToken) else { return nil }
+        guard !rejectDuplicate(.anthropic, email: email), canAdd(.anthropic) else { return nil }
+        var a = Account(provider: .anthropic, label: email)
         do { try Keychain.storeAnthropic(accessToken: creds.accessToken, refreshToken: nil,
                                         expiresAt: creds.expiresAt, for: a.id) }
         catch { a.error = String(describing: error) }
         a.nickname = "Claude Code"
+        a.authentication = AuthenticationInfo(source: .claudeCode, accessExpiresAt: creds.expiresAt, canRefresh: false)
         accounts.append(a); save()
         if a.error == nil { Task { await refresh(a) } }
         return a
@@ -612,16 +673,18 @@ final class Store: ObservableObject {
         // Only one row can ride the machine credentials — that login is a
         // property of the Mac, not of the row. Further Google accounts come
         // in through the browser.
-        guard canAdd(.google),
-              !accounts(for: .google).contains(where: { $0.authSource != .browser }) else { return nil }
+        guard !importingGoogle else { return nil }
+        importingGoogle = true
+        defer { importingGoogle = false }
+        guard canAdd(.google) else { return nil }
         let viaAntigravity = await GoogleCredentialSource.antigravityKeychainBlobAsync() != nil
         guard viaAntigravity || GoogleCredentialSource.geminiCLITokenBlob() != nil else { return nil }
         var a = Account(provider: .google, label: viaAntigravity ? "Antigravity" : "gemini-cli")
         a.nickname = viaAntigravity ? "Antigravity" : "gemini-cli"
         markMachineGoogleRow(a.id)
         accounts.append(a); save()
-        if a.error == nil { Task { await refresh(a) } }
-        return a
+        await refresh(a)
+        return accounts.first { $0.id == a.id }
     }
 
     /// Rebuilds accounts from the credentials that outlive the accounts list.
@@ -636,6 +699,10 @@ final class Store: ObservableObject {
     func recoverAccounts() async -> [String] {
         var notes: [String] = []
         var known = Set(accounts.map(\.id))
+        if let data = UserDefaults.standard.data(forKey: "mmt.retiredDuplicateAccounts"),
+           let retired = try? JSONDecoder().decode([Account].self, from: data) {
+            known.formUnion(retired.map(\.id))
+        }
 
         let openAIIDs = Set(Keychain.openAIAccountIDs())
         for id in openAIIDs where !known.contains(id) {
@@ -743,6 +810,21 @@ final class Store: ObservableObject {
         // have switched accounts while continuing the same conversation. Expired
         // imported tokens require explicit sign-in/import, like other credentials.
         do {
+            // Cached app-owned reads: no additional prompts when the adapter reads
+            // the same item. Preserve expiry even when the ensuing request fails.
+            switch a.provider {
+            case .openai:
+                if let c = try? await Keychain.openAICredentialsAsync(for: a.id) {
+                    a.authentication = AuthenticationInfo(source: c.refreshToken == nil ? .codexCLI : .browser,
+                        accessExpiresAt: AuthenticationInfo.jwtExpiry(c.accessToken), canRefresh: c.refreshToken != nil)
+                }
+            case .anthropic:
+                if let c = try? await Keychain.anthropicCredentialsAsync(for: a.id) {
+                    a.authentication = AuthenticationInfo(source: c.refreshToken == nil ? .claudeCode : .browser,
+                        accessExpiresAt: c.expiresAt, canRefresh: c.refreshToken != nil)
+                }
+            case .google: break
+            }
             let adapter: UsageAdapter = a.provider == .google
                 ? GoogleAdapterImpl(mode: googleMode)
                 : ProviderRegistry.adapter(for: a.provider)
@@ -753,16 +835,31 @@ final class Store: ObservableObject {
                     "refresh \(a.provider.rawValue)/\(a.displayName): \(fetched.limits.map(\.key).joined(separator: ","))\n"
                         .data(using: .utf8)!)
             }
+            if let email = fetched.accountEmail {
+                if let existing = a.normalizedEmail, existing != Account.normalizedEmail(email) {
+                    // An external CLI changed accounts. Never attribute its usage
+                    // to the old card or silently relabel that card.
+                    throw AdapterError.notSignedIn
+                }
+                if rejectDuplicate(a.provider, email: email, excluding: a.id),
+                   let winner = accounts.first(where: { $0.id != a.id && $0.matches(provider: a.provider, email: email) }) {
+                    retireDuplicate(a, keeping: winner)
+                    return
+                }
+            }
             noteAlertTriggers(fetched: fetched, accountID: a.id)
             a.limits = markBurning(fetched: fetched.limits, accountID: a.id)
             a.plan = fetched.plan
             if let src = fetched.authSource { a.authSource = src }
+            if let info = fetched.authentication { a.authentication = info }
+            a.needsReconnect = false
             // Providers report whose account this is; a row still wearing a
             // placeholder ("OpenAI account 2", "Claude Code") takes the email.
             if let email = fetched.accountEmail { a.label = email }
             a.error = nil; a.lastRefreshed = Date()
             passSuccesses += 1
         } catch {
+            if case AdapterError.notSignedIn = error { a.needsReconnect = true }
             if Self.isConnectivity(error) {
                 // Not this account's fault. Keep its last numbers (the stale
                 // chip dates them) and let refreshAll report the outage once.

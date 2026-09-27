@@ -2,7 +2,7 @@
 
 ## Detail controls
 
-The bottom chevron on each account card opens/closes model details vertically using the Config panel's 0.12-second ease-out timing. The arrow retains its original 16-point row and plain styling. Both scroll containers use `.scrollIndicators(.never)` to hide their indicators even when a mouse is attached, including during expansion/contraction; wheel and trackpad scrolling remain enabled. Details scroll within a 240-point viewport, keeping the collapse control outside that scroll area; the outer list reveals the control after expansion if necessary. Reduced Motion disables the transition. Details refresh every minute while expanded; collapsing retains the loaded report. Background refresh does not insert/remove controls around the arrow. Historical usage bars compare model amounts within the selected report. Native quota bars use a fixed 0–100% scale and say “quota used.”
+The bottom chevron on each account card opens/closes model details vertically using the Config panel's 0.12-second ease-out timing. The arrow retains its original 16-point row and plain styling. The outer list and non-Google detail scroll containers use `.scrollIndicators(.never)` to hide their indicators even when a mouse is attached, including during expansion/contraction; wheel and trackpad scrolling remain enabled. Non-Google details scroll within a 240-point viewport, keeping the collapse control outside that scroll area; the outer list reveals the control after expansion if necessary. Reduced Motion disables the transition. Details refresh every minute while expanded; collapsing retains the loaded report. Background refresh does not insert/remove controls around the arrow. Historical usage bars compare model amounts within the selected report. Native quota bars use a fixed 0–100% scale and say “quota used.”
 
 Config → Layout → **Show model details** hides the entire detail section and its bottom chevron for every account. It is on by default and persisted. Account roll-up controls and the main quota bars remain available. Replacing a login recreates its detail view so a response from the previous identity cannot populate the new one.
 
@@ -12,7 +12,7 @@ Read the authenticated `GET /backend-api/wham/usage/daily-token-usage-breakdown`
 
 The authenticated endpoint returns per-model data. Backend billing behavior when the same conversation is continued under two accounts has not been independently verified. The UI says so. Local Codex logs are not a substitute: the inspected token events have no payer identity.
 
-Imported CLI credentials are no longer silently replaced from the CLI's current login when the old token expires/disappears. Explicitly sign in or import again so switching the CLI cannot relabel another account's card.
+Imported CLI credentials are no longer silently replaced from the CLI's current login when the old token expires/disappears. Use Reconnect for an expired tracked account. A repeated import of an already tracked email is rejected rather than adding another row, and switching the CLI cannot relabel another account's card.
 
 Sources:
 - https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/client/analytics.rs
@@ -113,3 +113,42 @@ Shown popovers now resize their existing window with one combined frame change, 
 Native computer-use checks covered four Anthropic/Google header transitions, closing/reopening through Config, two floating-panel transitions, and two transitions in the final installed app. Every synchronous frame event in those roll-ups kept x/top fixed and height moved monotonically. The same checker fails on the old trace's 2,196-point excursion.
 
 For repeatable manual UI verification, use an isolated bundle identifier and `--mock --mock-five --open --layout-trace /absolute/path/trace.jsonl`, operate the header chevrons with the native UI tool, then run `python3 Tests/check-layout-trace.py /absolute/path/trace.jsonl`. Use `--kind panel` for the floating-window path. The fixture uses fabricated accounts and does not read credentials. This trace check supplements the older end-state self-test, which cannot detect a brief move corrected within the same run-loop turn.
+
+
+## September 27: identities, controls and Google endpoint audit
+
+### Endpoint findings
+
+A live, account-scoped comparison through the installed app succeeded on September 27. Both Google rows verified the same identity. Production returned all four summary windows at 0% used, whereas the daily service returned nonzero Gemini weekly and five-hour use. Claude/GPT remained at 0%. The installed Antigravity language server was configured with the daily endpoint. These are observations from that check, not permanent expected values.
+
+Normal Antigravity requests now follow the running installed client's `--cloud_code_endpoint`. Only the two exact HTTPS Google hosts are accepted. The last observed host is retained while Antigravity is closed; a new installation without a detected host defaults to production. Ambiguous multiple clients do not select a host by guessing which usage looks larger. Project/tier caches are invalidated on a routing change. Code Assist legacy mode continues to use production. The account's own OAuth credentials and project are used on the selected host; local Antigravity usage is not copied onto other accounts.
+
+The remote quota service returned 27 bucket IDs: four editor-internal buckets and 23 model-related buckets. The catalog reused display names, including Flash Lite and Pro, for different IDs and older variants. The installed app's model configuration exposed 14 selectable variants. Therefore, a raw model-row count is not a count of independent subscription allowances. Exact repeated model/token-type buckets are deduplicated; distinct IDs with equal display names remain identified by their ID caption. Explicit disabled/hidden rows are omitted. Equal percentages alone never establish identity.
+
+Google's official [model list](https://antigravity.google/docs/models/) and [CLI usage documentation](https://antigravity.google/docs/cli/commands/usage/) describe current models and refreshed backend quotas. The reference [CodexBar implementation](https://github.com/steipete/CodexBar/blob/main/docs/antigravity.md) also distinguishes declared shared pools from individual model observations.
+
+### Native presentation
+
+- Google details provide **Quota pools** and **Models** modes. Pools use `retrieveUserQuotaSummary` groups and windows; model amounts use `retrieveUserQuota`, with names from `fetchAvailableModels`. Catalog availability is never used as consumed quota.
+- Google details have no inner scroll view. Model pages hold three rows; pool pages hold a named group (paging further if a future group contains more windows). Window height stays constant when changing pages.
+- Every account, including a single Codex account and accounts in grid/pager/tab layouts, supports roll-up. The roll-up control precedes the rightmost remove control. Original header/model-disclosure geometry is retained.
+- Vendor pager arrows use 26-point native targets and 12-point symbols; dots are 6.5 points. Left and right mouse clicks invoke the same navigation action.
+- Nicknames remain. Source badges are visible for browser, CLI, Antigravity and legacy web credentials. Grid cards place the source beneath the compact header to preserve room for the nickname.
+- Config has a centered add control beneath each company. Empty rows have a larger flat company-colored Sign in button immediately after the accent rail. Signed-in rows omit that button; failed authentication exposes Reconnect.
+
+### Account identity and expiry
+
+Identity is provider plus trimmed, case-insensitive email. Sign-in validates the email before replacing credentials. Import and refresh paths reject duplicate identities with “This [company name] account is already tracked”. Existing duplicates consolidate globally on load, preferring account-specific Google credentials over a machine login and otherwise the freshest record. Nicknames are preserved. Retired metadata and credentials are retained for recovery, while retired IDs are excluded from automatic account recovery.
+
+Only non-secret authentication metadata is persisted. All new persisted properties are optional so old account records decode without loss. Email tooltips distinguish access-token expiry from the unknown lifetime of a renewable login. Imported Claude/Codex tokens cannot renew in the tracker; browser OAuth and Google refresh tokens can. Failed renewal requires Reconnect. Changing a machine Google login cannot silently assign the new user's usage to the old card, including when refreshing details directly.
+
+### Verification
+
+Account replacement/legacy persistence/identity/expiry/endpoint allowlist tests, usage attribution and Google grouping tests, and credential-read gate tests passed without live Keychain access. A native isolated fixture verified single-account Codex roll-up/reopen, both Google views, left/right-click detail paging, and the colored Sign in row. Four synchronous popover transitions kept x/top fixed (`Tests/check-layout-trace.py`).
+
+Testing also exposed an existing empty-account deletion crash in WebKit's static data-store removal API. OAuth-only/empty rows now skip WebKit cleanup. Existing legacy stores clear their data through an initialized view retained until completion. Mock deletion never touches credentials or cookie stores.
+
+The Mac locked during the remaining UI checks. Repeated vendor-pager interaction and the final installed UI still require visual verification after unlock; the successful fixture checks above are not presented as those checks.
+
+
+The final bundle was signature-verified, installed, and launched. Persisted account counts changed from 2 Anthropic / 1 OpenAI / 2 Google to 2 / 1 / 1; the retired duplicate's metadata was preserved. The installed application selected the daily Google service. Its post-install authenticated refresh was still pending while the Mac was locked, so the earlier live comparison—not post-install usage—is the evidence for the endpoint mismatch.

@@ -109,7 +109,6 @@ struct PopoverView: View {
     }
 
     private func isExpanded(_ account: Account, in accounts: [Account]) -> Bool {
-        if accounts.count < 2 { return true }          // a lone card never rolls up
         return store.expanded[account.id] ?? true      // unsettled: show, never hide
     }
 
@@ -150,6 +149,7 @@ struct PopoverView: View {
         // material when its content is a plain SwiftUI hierarchy.
         .background(.regularMaterial)
         .frame(maxHeight: .infinity, alignment: .top)
+        .accountNotice(store)
     }
 
     // MARK: overflow layouts — A grid, B pager, D tabs
@@ -167,7 +167,15 @@ struct PopoverView: View {
                         Keychain.invalidateCache(for: account.id)
                         Task { await store.refresh(account) }
                     },
-                    compact: compact, showsModelDetails: store.showsModelDetails)
+                    collapsible: true, expanded: store.expanded[account.id] ?? true,
+                    onToggle: { toggleAccount(account) }, compact: compact, showsModelDetails: store.showsModelDetails)
+    }
+
+    private func toggleAccount(_ account: Account) {
+        TrackerPopoverLayout.beginAnimation(duration: reduceMotion ? 0 : 0.16)
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+            store.setExpanded(account.id, !(store.expanded[account.id] ?? true))
+        }
     }
 
     @ViewBuilder
@@ -186,18 +194,18 @@ struct PopoverView: View {
                     // ‹ dots › — a dot goes red when the page it stands for
                     // is in trouble, so a hidden problem still shows.
                     HStack(spacing: 5) {
-                        Button { pageIndex[p] = (idx - 1 + accounts.count) % accounts.count } label: {
-                            Image(systemName: "chevron.left").font(.system(size: 9, weight: .bold))
-                        }.buttonStyle(.plain).foregroundStyle(.secondary)
+                        PagerArrow(direction: .left, label: "Previous \(p.displayName) account") {
+                            pageIndex[p] = (idx - 1 + accounts.count) % accounts.count
+                        }
                         ForEach(accounts.indices, id: \.self) { i in
                             Circle()
                                 .fill(i == idx ? Color.primary
                                       : ((accounts[i].worstPercent ?? 0) >= 90 ? Color.red : Color.primary.opacity(0.25)))
-                                .frame(width: 5, height: 5)
+                                .frame(width: 6.5, height: 6.5)
                         }
-                        Button { pageIndex[p] = (idx + 1) % accounts.count } label: {
-                            Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
-                        }.buttonStyle(.plain).foregroundStyle(.secondary)
+                        PagerArrow(direction: .right, label: "Next \(p.displayName) account") {
+                            pageIndex[p] = (idx + 1) % accounts.count
+                        }
                     }
                 }
             }
@@ -354,7 +362,7 @@ struct PopoverView: View {
                         Keychain.invalidateCache(for: account.id)
                         Task { await store.refresh(account) }
                     },
-                            collapsible: accounts.count >= 2,
+                            collapsible: true,
                             expanded: open,
                             onToggle: {
                                 TrackerPopoverLayout.beginAnimation(duration: reduceMotion ? 0 : 0.16)
@@ -537,9 +545,11 @@ struct AccountCard: View {
                     // are detail, and they return the moment the row opens.
                     let rolled = collapsible && !expanded
                     Text(account.displayName).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                        .help(account.authenticationTooltip)
                         .layoutPriority(rolled || compact ? 1 : 0)
                     if let sub = account.subtitle, !rolled, !compact {
                         Text(sub).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+                            .help(account.authenticationTooltip)
                     }
                     Spacer()
                     // The chips sit AFTER the spacer, so they line up down
@@ -600,14 +610,15 @@ struct AccountCard: View {
                             Text("!").font(.system(size: 11, weight: .bold)).foregroundStyle(.orange)
                         }
                     }
-                    if let onRemove { removeControl(onRemove) }
                     if collapsible {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(.tertiary)
                             .rotationEffect(.degrees(expanded ? 90 : 0))
                             .frame(width: 12)
+                            .help(expanded ? "Roll up account" : "Expand account")
                     }
+                    if let onRemove { removeControl(onRemove) }
                 }
                 // The header row is the click target for roll-up: an explicit
                 // tap gesture there, not on the whole card, so the pools' own
@@ -616,6 +627,12 @@ struct AccountCard: View {
                 .onTapGesture { if collapsible { onToggle?() } }
                 .onHover { hoveringRow = $0 }
                 if !collapsible || expanded {
+                if compact, let via = account.authSource.chipLabel {
+                    Text(via).font(.system(size: 8, weight: .medium))
+                        .padding(.horizontal, 5).padding(.vertical, 1.5)
+                        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5))
+                        .foregroundStyle(.tertiary).lineLimit(1).fixedSize()
+                }
                 if let err = account.error {
                     HStack(spacing: 8) {
                         Text(err).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
@@ -624,7 +641,7 @@ struct AccountCard: View {
                         }
                         if let onSignIn,
                            err.localizedCaseInsensitiveContains("sign"), !err.localizedCaseInsensitiveContains("keychain") {
-                            Button("Sign in", action: onSignIn)
+                            Button(account.needsReconnect == true ? "Reconnect" : "Sign in", action: onSignIn)
                                 .font(.system(size: 10)).controlSize(.small)
                         }
                     }
@@ -789,8 +806,10 @@ struct FirstRunView: View {
                         switch p {
                         case .anthropic:
                             Button("Import Claude Code") {
-                                report(store.importClaudeCode() == nil
-                                       ? "No Claude Code login found on this Mac." : nil)
+                                Task {
+                                    report(await store.importClaudeCode() == nil && store.accountNotice == nil
+                                           ? "No verifiable Claude Code login found on this Mac." : nil)
+                                }
                             }
                             Button("Sign in with browser") { store.addAndSignIn(.anthropic) }
                         case .openai:

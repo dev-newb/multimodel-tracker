@@ -14,8 +14,15 @@ enum AccountUsageDetails {
             let rows = (0..<(account.provider == .google ? 23 : 1)).map {
                 ModelUsageDetail(model: account.provider == .google ? "Gemini fixture \($0 + 1)" : "Model fixture", value: 25)
             }
-            return Result(primary: UsageDetails(title: "Model quota used", rows: rows, unit: "quotaPercent",
-                note: "Fabricated UI fixture. No provider request."), tokens: UsageDetails(title: "Local usage", note: "Fixture without recorded usage."))
+            var report = UsageDetails(title: "Model quota used", rows: rows, unit: "quotaPercent",
+                                      note: "Fabricated UI fixture. No provider request.")
+            if account.provider == .google {
+                report.googleGroups = ["Gemini Models", "Claude and GPT models"].map {
+                    GoogleQuotaGroup(id: $0, title: $0, description: "Models share these weekly and five-hour limits.", rows: [
+                        ModelUsageDetail(model: "Weekly", value: 25), ModelUsageDetail(model: "Five Hour", value: 15)])
+                }
+            }
+            return Result(primary: report)
         }
         switch account.provider {
         case .openai:

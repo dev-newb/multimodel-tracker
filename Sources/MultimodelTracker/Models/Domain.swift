@@ -91,7 +91,7 @@ struct UsageLimit: Identifiable, Codable, Hashable {
 /// How an account's credentials were obtained. This is a different KIND of
 /// fact from the plan tier, and must never occupy the tier's place on the
 /// card: "Antigravity" is the route in, not something you subscribe to.
-enum AuthSource: String {
+enum AuthSource: String, Codable {
     case browser, codexCLI, claudeCode, antigravity, geminiCLI, legacyCookies, unknown
 
     /// What the card says, or nil when there is nothing worth saying — a
@@ -99,11 +99,31 @@ enum AuthSource: String {
     var chipLabel: String? {
         switch self {
         case .codexCLI:     return "via Codex CLI"
-        case .claudeCode:   return "via Claude Code"
-        case .antigravity:  return "via AGY"
-        case .geminiCLI:    return "via gemini-cli"
-        case .browser, .legacyCookies, .unknown: return nil
+        case .claudeCode:   return "via Claude CLI"
+        case .antigravity:  return "via Antigravity"
+        case .geminiCLI:    return "via Gemini CLI"
+        case .browser: return "via Browser"
+        case .legacyCookies: return "via Web session"
+        case .unknown: return nil
         }
+    }
+}
+
+/// Non-secret metadata only. Optional on Account so older saved accounts still decode.
+struct AuthenticationInfo: Codable {
+    var source: AuthSource
+    var accessExpiresAt: Date? = nil
+    var canRefresh: Bool? = nil
+
+    static func jwtExpiry(_ token: String) -> Date? {
+        let parts = token.split(separator: ".")
+        guard parts.count == 3 else { return nil }
+        var body = String(parts[1]).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        body += String(repeating: "=", count: (4 - body.count % 4) % 4)
+        guard let data = Data(base64Encoded: body),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let exp = json["exp"] as? Double, exp.isFinite else { return nil }
+        return Date(timeIntervalSince1970: exp)
     }
 }
 
@@ -120,12 +140,47 @@ struct Account: Identifiable, Codable {
     var limits: [UsageLimit]
     var lastRefreshed: Date?
     var error: String?
-    /// Derived on every refresh from how the credentials actually read, and
-    /// DELIBERATELY absent from CodingKeys below. Adding a property to the
-    /// persisted shape is what once wiped the account list: Swift's
-    /// synthesised decoder throws keyNotFound for a missing key rather than
-    /// using the default. Derived state stays out of the stored shape.
-    var authSource: AuthSource = .unknown
+    var authentication: AuthenticationInfo?
+    var needsReconnect: Bool?
+    var authSource: AuthSource {
+        get { authentication?.source ?? .unknown }
+        set {
+            if authentication == nil { authentication = AuthenticationInfo(source: newValue) }
+            else { authentication?.source = newValue }
+        }
+    }
+    var normalizedEmail: String? {
+        Self.normalizedEmail(label)
+    }
+    static func normalizedEmail(_ email: String?) -> String? {
+        guard let value = email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              value.contains("@") else { return nil }
+        return value
+    }
+    func matches(provider: Provider, email: String?) -> Bool {
+        self.provider == provider && normalizedEmail != nil && normalizedEmail == Self.normalizedEmail(email)
+    }
+    var needsSignIn: Bool {
+        needsReconnect == true || (authentication == nil && lastRefreshed == nil && normalizedEmail == nil)
+    }
+    var authenticationTooltip: String {
+        var lines = [label]
+        if let expiry = authentication?.accessExpiresAt {
+            lines.append("Access token expires: " + expiry.formatted(date: .abbreviated, time: .standard))
+        } else {
+            lines.append("Access token expiry: not provided by this source.")
+        }
+        if needsReconnect == true {
+            lines.append("Reconnect to resume provider usage updates.")
+        } else if authentication?.canRefresh == true {
+            lines.append("Automatic renewal is available. Sign-in expiry is not provided; access-token expiry does not end the login.")
+        } else if authentication?.canRefresh == false {
+            lines.append("This imported token cannot renew here. Reconnect when it expires.")
+        } else {
+            lines.append("Sign-in expiry is not provided by this source.")
+        }
+        return lines.joined(separator: "\n")
+    }
     /// An in-memory identity for this login, distinct from the reusable card slot.
     /// Responses started before a replacement login must not overwrite it.
     var credentialRevision = UUID()
@@ -134,20 +189,21 @@ struct Account: Identifiable, Codable {
         credentialRevision = UUID()
         label = email ?? "\(provider.displayName) account"
         plan = nil; limits = []; lastRefreshed = nil; error = nil
-        authSource = .browser
+        authentication = AuthenticationInfo(source: .browser); needsReconnect = false
     }
 
     @discardableResult
     mutating func applyUsage(from fetched: Account) -> Bool {
         guard id == fetched.id, credentialRevision == fetched.credentialRevision else { return false }
-        limits = fetched.limits; plan = fetched.plan; authSource = fetched.authSource
+        limits = fetched.limits; plan = fetched.plan; authentication = fetched.authentication
+        needsReconnect = fetched.needsReconnect
         if fetched.label.contains("@") { label = fetched.label }
         error = fetched.error; lastRefreshed = fetched.lastRefreshed
         return true
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, provider, label, nickname, plan, limits, lastRefreshed, error
+        case id, provider, label, nickname, plan, limits, lastRefreshed, error, authentication, needsReconnect
     }
 
     init(id: UUID = UUID(), provider: Provider, label: String,

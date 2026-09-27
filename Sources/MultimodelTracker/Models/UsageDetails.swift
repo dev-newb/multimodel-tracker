@@ -7,6 +7,13 @@ struct ModelUsageDetail: Identifiable {
     var identifier: String? = nil
     var caption: String? = nil
 }
+struct GoogleQuotaGroup: Identifiable {
+    let id: String
+    let title: String
+    let description: String
+    let rows: [ModelUsageDetail]
+}
+
 struct UsageDetails {
     var title: String
     var rows: [ModelUsageDetail] = []
@@ -15,6 +22,8 @@ struct UsageDetails {
     var emptyMessage: String = "No model usage reported."
     var summary: String? = nil
     var freshnessWarning: String? = nil
+    var googleGroups: [GoogleQuotaGroup]? = nil
+    var groupFailure: String? = nil
 }
 
 /// Account-scoped server analytics. Never attributes local conversations to the current login.
@@ -75,6 +84,43 @@ enum OpenAIModelUsage {
 
 /// Current quota is separate from historical token consumption.
 enum GoogleModelDetails {
+    /// Only backend-declared groups establish shared quota identity. Equal
+    /// percentages or model display names are not evidence of a shared pool.
+    static func parseGroups(_ root: [String: Any]) throws -> [GoogleQuotaGroup] {
+        let payload = (root["response"] as? [String: Any]) ?? root
+        let groups = payload["groups"] as? [[String: Any]] ?? []
+        var seen = Set<String>()
+        let result = groups.compactMap { group -> GoogleQuotaGroup? in
+            guard let name = group["displayName"] as? String else { return nil }
+            let groupID = (group["groupId"] as? String) ?? name
+            guard seen.insert(groupID).inserted else { return nil }
+            var bucketIDs = Set<String>()
+            let rows = (group["buckets"] as? [[String: Any]] ?? []).compactMap { bucket -> ModelUsageDetail? in
+                guard bucket["disabled"] as? Bool != true,
+                      let fraction = (bucket["remainingFraction"] as? Double)
+                        ?? (bucket["remaining"] as? [String: Any])?["remainingFraction"] as? Double,
+                      fraction.isFinite, (0...1).contains(fraction),
+                      let label = bucket["displayName"] as? String else { return nil }
+                let id = (bucket["bucketId"] as? String) ?? label
+                guard bucketIDs.insert(id).inserted else { return nil }
+                let title = label.replacingOccurrences(of: " Limit Remaining", with: "", options: .caseInsensitive)
+                return ModelUsageDetail(model: title, value: (1 - fraction) * 100, identifier: groupID + "/" + id,
+                                        caption: resetCaption(bucket["resetTime"]))
+            }
+            guard !rows.isEmpty else { return nil }
+            return GoogleQuotaGroup(id: groupID, title: name, description: group["description"] as? String ?? "Shared limits reported by Google", rows: rows)
+        }
+        guard !result.isEmpty else { throw AdapterError.transport("Google returned no shared quota pools") }
+        return result
+    }
+
+    private static func resetCaption(_ value: Any?) -> String? {
+        guard let string = value as? String else { return nil }
+        let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = ISO8601DateFormatter().date(from: string) ?? fractional.date(from: string) else { return nil }
+        return "Resets " + date.formatted(date: .abbreviated, time: .shortened)
+    }
+
     /// The model catalog can report 100% availability without measuring usage.
     /// Take amounts from the account's explicit quota buckets; use the catalog for labels only.
     static func parseVerified(models: [String: Any], quota: [String: Any]) throws -> UsageDetails {
@@ -88,18 +134,29 @@ enum GoogleModelDetails {
                   let remaining = (bucket["remainingFraction"] as? Double)
                     ?? (bucket["remaining"] as? [String: Any])?["remainingFraction"] as? Double,
                   remaining.isFinite, (0...1).contains(remaining),
-                  bucket["disabled"] as? Bool != true else { continue }
+                  bucket["disabled"] as? Bool != true,
+                  catalog[id]?["disabled"] as? Bool != true,
+                  catalog[id]?["isHidden"] as? Bool != true else { continue }
             let type = bucket["tokenType"] as? String ?? ""
             let key = "\(id)|\(type)"
             guard seen.insert(key).inserted else { continue }
             let name = (catalog[id]?["displayName"] as? String) ?? id
             rows.append(.init(model: name, value: (1 - remaining) * 100, identifier: key,
-                              caption: type.isEmpty ? nil : "\(type.lowercased()) quota"))
+                              caption: resetCaption(bucket["resetTime"])))
+        }
+        // Same title can describe different canonical IDs. Preserve those rows,
+        // but label the variants explicitly instead of showing identical bars.
+        let titles = Dictionary(grouping: rows, by: \.model)
+        rows = rows.map { row in
+            var out = row
+            if (titles[row.model]?.count ?? 0) > 1 {
+                out.caption = row.id.split(separator: "|").map(String.init).joined(separator: " · ")
+            }
+            return out
         }
         guard !rows.isEmpty else { throw AdapterError.transport("Google returned no measurable model quota buckets") }
         return UsageDetails(title: "Antigravity · model quota used", rows: rows.sorted { $0.id < $1.id }, unit: "quotaPercent",
-                            note: "Google's account quota buckets. Models may share limits; these percentages are not token totals.",
-                            summary: "Source: Google quota service")
+                            note: "Quota used, not tokens. Models can share the pools shown in Quota pools.")
     }
 
     static func parse(_ root: [String: Any]) throws -> UsageDetails {
