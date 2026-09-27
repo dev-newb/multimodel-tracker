@@ -43,7 +43,7 @@ enum OverflowMode: Int, CaseIterable, Identifiable {
 /// estimate is built from: a card is base + pools × row; an error card and
 /// a rolled-up row are fixed. If the card design changes, re-measure.
 enum PopoverMetrics {
-    static let cardBase: CGFloat = 33
+    static let cardBase: CGFloat = 56
     static let poolRow: CGFloat = 29
     static let errorCard: CGFloat = 60
     static let sectionHeader: CGFloat = 20
@@ -81,6 +81,7 @@ enum PopoverMetrics {
 
 struct PopoverView: View {
     @ObservedObject var store: Store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Roll-up rows: for a vendor with 2+ accounts, each account is a
     /// one-line summary that expands in place to the full card. Which are
     /// open is the STORE's state (persisted, settled once, never derived
@@ -88,6 +89,7 @@ struct PopoverView: View {
 
     /// Pager / tabs selection per vendor, for the app's lifetime.
     @State private var pageIndex: [Provider: Int] = [:]
+    var onContentSizeChange: ((CGSize) -> Void)? = nil
 
     /// Whether the chosen overflow layout is in force right now. Automatic
     /// mode asks one question of the accounts and THIS screen: would the
@@ -107,7 +109,6 @@ struct PopoverView: View {
     }
 
     private func isExpanded(_ account: Account, in accounts: [Account]) -> Bool {
-        if accounts.count < 2 { return true }          // a lone card never rolls up
         return store.expanded[account.id] ?? true      // unsettled: show, never hide
     }
 
@@ -115,39 +116,40 @@ struct PopoverView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider().opacity(0.35)
-            // No fixed cap: a hard 460 started scrolling the moment Gemini
-            // added rows. fixedSize lets the ScrollView take its content's
-            // ideal height so the popover snaps to whatever is there, and the
-            // ceiling only engages when the content genuinely outgrows the
-            // screen.
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    // First run: this is where a new user lands, so each
-                    // vendor's first action lives here, not behind Config.
-                    if store.accounts.isEmpty { FirstRunView(store: store) }
-                    ForEach(Provider.allCases) { provider in
-                        let accts = store.accounts(for: provider)
-                        if accts.count >= 2 && overflowActive {
-                            overflowSection(provider, accts)
-                        } else if !accts.isEmpty {
-                            section(provider, accts)
+            ScrollViewReader { proxy in
+                BoundedTrackerScroll(maxHeight: maxListHeight) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        // Keep each empty vendor's actions in reach until the
+                        // user explicitly dismisses that vendor's setup row.
+                        if !store.providersNeedingSetup.isEmpty { FirstRunView(store: store) }
+                        ForEach(Provider.allCases) { provider in
+                            let accts = store.accounts(for: provider)
+                            if accts.count >= 2 && overflowActive {
+                                overflowSection(provider, accts)
+                            } else if !accts.isEmpty {
+                                section(provider, accts)
+                            }
                         }
                     }
+                    .padding(.vertical, 12)
                 }
-                .padding(.vertical, 12)
+                .environment(\.revealTrackerDetail) { id in proxy.scrollTo(id) }
             }
-            // Same rubber-banding fix as the Config panel: no bounce while the
-            // list fits, normal scrolling once it doesn't.
-            .scrollBounceBehavior(.basedOnSize)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxHeight: maxListHeight)
             Divider().opacity(0.35)
             footer
         }
         .frame(width: popoverWidth)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(GeometryReader { geometry in
+            Color.clear
+                .onAppear { onContentSizeChange?(geometry.size) }
+                .onChange(of: geometry.size) { _, size in onContentSizeChange?(size) }
+        })
         // Without this the popover is see-through: NSPopover supplies no
         // material when its content is a plain SwiftUI hierarchy.
         .background(.regularMaterial)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .accountNotice(store)
     }
 
     // MARK: overflow layouts — A grid, B pager, D tabs
@@ -161,7 +163,19 @@ struct PopoverView: View {
                     animating: store.uiVisible,
                     onSignIn: { Task { await store.signIn(account) } },
                     onRemove: { store.remove(account.id) },
-                    compact: compact)
+                    onRetryKeychain: {
+                        Keychain.invalidateCache(for: account.id)
+                        Task { await store.refresh(account) }
+                    },
+                    collapsible: true, expanded: store.expanded[account.id] ?? true,
+                    onToggle: { toggleAccount(account) }, compact: compact, showsModelDetails: store.showsModelDetails)
+    }
+
+    private func toggleAccount(_ account: Account) {
+        TrackerPopoverLayout.beginAnimation(duration: reduceMotion ? 0 : 0.16)
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+            store.setExpanded(account.id, !(store.expanded[account.id] ?? true))
+        }
     }
 
     @ViewBuilder
@@ -180,18 +194,18 @@ struct PopoverView: View {
                     // ‹ dots › — a dot goes red when the page it stands for
                     // is in trouble, so a hidden problem still shows.
                     HStack(spacing: 5) {
-                        Button { pageIndex[p] = (idx - 1 + accounts.count) % accounts.count } label: {
-                            Image(systemName: "chevron.left").font(.system(size: 9, weight: .bold))
-                        }.buttonStyle(.plain).foregroundStyle(.secondary)
+                        PagerArrow(direction: .left, label: "Previous \(p.displayName) account") {
+                            pageIndex[p] = (idx - 1 + accounts.count) % accounts.count
+                        }
                         ForEach(accounts.indices, id: \.self) { i in
                             Circle()
                                 .fill(i == idx ? Color.primary
                                       : ((accounts[i].worstPercent ?? 0) >= 90 ? Color.red : Color.primary.opacity(0.25)))
-                                .frame(width: 5, height: 5)
+                                .frame(width: 6.5, height: 6.5)
                         }
-                        Button { pageIndex[p] = (idx + 1) % accounts.count } label: {
-                            Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
-                        }.buttonStyle(.plain).foregroundStyle(.secondary)
+                        PagerArrow(direction: .right, label: "Next \(p.displayName) account") {
+                            pageIndex[p] = (idx + 1) % accounts.count
+                        }
                     }
                 }
             }
@@ -344,13 +358,18 @@ struct PopoverView: View {
                             animating: store.uiVisible && open,
                             onSignIn: { Task { await store.signIn(account) } },
                             onRemove: { store.remove(account.id) },
-                            collapsible: accounts.count >= 2,
+                    onRetryKeychain: {
+                        Keychain.invalidateCache(for: account.id)
+                        Task { await store.refresh(account) }
+                    },
+                            collapsible: true,
                             expanded: open,
                             onToggle: {
-                                withAnimation(.easeOut(duration: 0.16)) {
+                                TrackerPopoverLayout.beginAnimation(duration: reduceMotion ? 0 : 0.16)
+                                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
                                     store.setExpanded(account.id, !open)
                                 }
-                            })
+                            }, showsModelDetails: store.showsModelDetails)
                     .padding(.horizontal, 12)
             }
         }
@@ -390,6 +409,7 @@ struct AccountCard: View {
     var onSignIn: (() -> Void)? = nil
     /// Remove the account from here, without a trip to Config.
     var onRemove: (() -> Void)? = nil
+    var onRetryKeychain: (() -> Void)? = nil
     @State private var confirmingRemove = false
     @State private var hoveringRemove = false
     /// Roll-up rows (vendors with 2+ accounts): the header row IS the
@@ -403,6 +423,8 @@ struct AccountCard: View {
     /// shrinks so the name and the numbers keep their room.
     var compact = false
     @State private var hoveringRow = false
+    var detailPreview: UsageDetails? = nil
+    var showsModelDetails = true
 
     private var worstColor: Color {
         guard let p = account.worstPercent else { return .secondary }
@@ -523,9 +545,11 @@ struct AccountCard: View {
                     // are detail, and they return the moment the row opens.
                     let rolled = collapsible && !expanded
                     Text(account.displayName).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                        .help(account.authenticationTooltip)
                         .layoutPriority(rolled || compact ? 1 : 0)
                     if let sub = account.subtitle, !rolled, !compact {
                         Text(sub).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+                            .help(account.authenticationTooltip)
                     }
                     Spacer()
                     // The chips sit AFTER the spacer, so they line up down
@@ -564,6 +588,7 @@ struct AccountCard: View {
                     if let stale = staleLabel {
                         Text(stale)
                             .font(.system(size: 9, weight: .medium))
+                            .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                             .foregroundStyle(.orange)
                             .padding(.horizontal, 4).padding(.vertical, 1)
                             .background(Color.orange.opacity(0.14), in: Capsule())
@@ -573,6 +598,7 @@ struct AccountCard: View {
                         if let w = account.worstPercent {
                             Text("\(Int(w))%")
                                 .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                                .lineLimit(1).fixedSize(horizontal: true, vertical: false)
                                 .foregroundStyle(worstColor)
                             Capsule().fill(Color.primary.opacity(0.10))
                                 .frame(width: 44, height: 4)
@@ -584,14 +610,15 @@ struct AccountCard: View {
                             Text("!").font(.system(size: 11, weight: .bold)).foregroundStyle(.orange)
                         }
                     }
-                    if let onRemove { removeControl(onRemove) }
                     if collapsible {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(.tertiary)
                             .rotationEffect(.degrees(expanded ? 90 : 0))
                             .frame(width: 12)
+                            .help(expanded ? "Roll up account" : "Expand account")
                     }
+                    if let onRemove { removeControl(onRemove) }
                 }
                 // The header row is the click target for roll-up: an explicit
                 // tap gesture there, not on the whole card, so the pools' own
@@ -600,12 +627,21 @@ struct AccountCard: View {
                 .onTapGesture { if collapsible { onToggle?() } }
                 .onHover { hoveringRow = $0 }
                 if !collapsible || expanded {
+                if compact, let via = account.authSource.chipLabel {
+                    Text(via).font(.system(size: 8, weight: .medium))
+                        .padding(.horizontal, 5).padding(.vertical, 1.5)
+                        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5))
+                        .foregroundStyle(.tertiary).lineLimit(1).fixedSize()
+                }
                 if let err = account.error {
                     HStack(spacing: 8) {
                         Text(err).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
-                        if let onSignIn, account.provider != .google,
-                           err.localizedCaseInsensitiveContains("sign") {
-                            Button("Sign in", action: onSignIn)
+                        if let onRetryKeychain, err.localizedCaseInsensitiveContains("keychain") {
+                            Button("Retry Keychain", action: onRetryKeychain).font(.system(size: 10)).controlSize(.small)
+                        }
+                        if let onSignIn,
+                           err.localizedCaseInsensitiveContains("sign"), !err.localizedCaseInsensitiveContains("keychain") {
+                            Button(account.needsReconnect == true ? "Reconnect" : "Sign in", action: onSignIn)
                                 .font(.system(size: 10)).controlSize(.small)
                         }
                     }
@@ -618,6 +654,11 @@ struct AccountCard: View {
                                  burnStyle: styleForBurn(burnOrdinals[l.id] ?? 0),
                                  animating: animating)
                     }
+                }
+                if showsModelDetails {
+                    ModelUsageDisclosure(account: account, accent: accent, preview: detailPreview,
+                                         initiallyExpanded: detailPreview != nil)
+                        .id(account.credentialRevision)
                 }
                 }   // expanded
             }
@@ -731,7 +772,7 @@ struct LimitRow: View {
 }
 
 
-/// The popover's empty state: no accounts yet. One row per vendor, each with
+/// Setup rows for vendors without accounts. One row per vendor, each with
 /// its REAL first action — an import of a login already on this Mac where
 /// one exists, or the browser sign-in — because a lone "Sign in" button is
 /// ambiguous in a three-vendor app. Import failures say so right here.
@@ -741,22 +782,34 @@ struct FirstRunView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add your first account")
+            Text(store.accounts.isEmpty ? "Add your first account" : "Add another provider")
                 .font(.system(size: 13, weight: .semibold))
-            Text("Usage limits show here and in the menu bar once an account is signed in — up to \(Provider.maxAccountsPerProvider) per vendor.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-            ForEach(Provider.allCases) { p in
+            if store.accounts.isEmpty {
+                Text("Usage limits show here and in the menu bar once an account is signed in — up to \(Provider.maxAccountsPerProvider) per vendor.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            ForEach(store.providersNeedingSetup) { p in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
                         Circle().fill(p.accent).frame(width: 8, height: 8)
                         Text(p.displayName).font(.system(size: 12, weight: .semibold))
+                        Spacer()
+                        Button { store.dismissSetup(for: p) } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Dismiss \(p.displayName) setup")
                     }
                     HStack(spacing: 8) {
                         switch p {
                         case .anthropic:
                             Button("Import Claude Code") {
-                                report(store.importClaudeCode() == nil
-                                       ? "No Claude Code login found on this Mac." : nil)
+                                Task {
+                                    report(await store.importClaudeCode() == nil && store.accountNotice == nil
+                                           ? "No verifiable Claude Code login found on this Mac." : nil)
+                                }
                             }
                             Button("Sign in with browser") { store.addAndSignIn(.anthropic) }
                         case .openai:
@@ -767,8 +820,10 @@ struct FirstRunView: View {
                             Button("Sign in with browser") { store.addAndSignIn(.openai) }
                         case .google:
                             Button("Import Antigravity") {
-                                report(store.importGoogleCLI() == nil
-                                       ? "No Antigravity or gemini-cli login found on this Mac." : nil)
+                                Task {
+                                    report(await store.importGoogleCLI() == nil
+                                           ? "No Antigravity or gemini-cli login found on this Mac." : nil)
+                                }
                             }
                             Button("Sign in with browser") { store.addAndSignIn(.google) }
                         }

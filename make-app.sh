@@ -7,7 +7,17 @@
 set -euo pipefail
 CONF="${1:-debug}"
 APP="build/Multimodel Tracker.app"
-swift build -c "$CONF"
+if python3 - "$APP" <<'PYGUARD'
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("installer", "scripts/install-app.py")
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+sys.exit(0 if module.running_pids(pathlib.Path(sys.argv[1])) else 1)
+PYGUARD
+then
+  echo "Quit the app running from build/ before rebuilding that bundle." >&2
+  exit 1
+fi
+swift build --disable-sandbox -c "$CONF"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp ".build/$CONF/MultimodelTracker" "$APP/Contents/MacOS/MultimodelTracker"
@@ -49,7 +59,8 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
   codesign --force --sign "$SIGN_IDENTITY" "$APP"
   echo "signed with: $SIGN_IDENTITY"
 else
-  codesign --force --sign - "$APP" 2>/dev/null || true
+  codesign --force --sign - "$APP"
   echo "WARNING: ad-hoc signed — keychain prompts will return after every rebuild"
 fi
+codesign --verify --deep --strict "$APP"
 echo "built: $APP"
