@@ -600,9 +600,11 @@ private struct PreviewSection: View {
             .padding(.horizontal, 16)
             switch layout {
             case .grid:
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                // Same as the popover's grid: cards keep their own height.
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8, alignment: .top),
+                                    GridItem(.flexible(), spacing: 8, alignment: .top)],
                           alignment: .leading, spacing: 8) {
-                    ForEach(accounts) { a in card(a, compact: true) }
+                    ForEach(accounts) { a in card(a, compact: true).fixedSize(horizontal: false, vertical: true) }
                 }
                 .padding(.horizontal, 12)
             case .pager:

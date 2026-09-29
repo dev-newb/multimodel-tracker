@@ -235,9 +235,15 @@ struct PopoverView: View {
 
             switch store.overflowLayout {
             case .grid:
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                // Each card keeps its OWN height, top-aligned in its row. A grid
+                // row offers every cell the tallest cell's height, and the card's
+                // accent bar -- a shape with no height of its own -- took all of
+                // it: a rolled-up card beside an open one became a tall empty box
+                // instead of rolling up.
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8, alignment: .top),
+                                    GridItem(.flexible(), spacing: 8, alignment: .top)],
                           alignment: .leading, spacing: 8) {
-                    ForEach(accounts) { a in card(a, p, compact: true) }
+                    ForEach(accounts) { a in card(a, p, compact: true).fixedSize(horizontal: false, vertical: true) }
                 }
                 .padding(.horizontal, 12)
             case .pager:
