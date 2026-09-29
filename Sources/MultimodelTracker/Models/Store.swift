@@ -447,6 +447,48 @@ final class Store: ObservableObject {
         return true
     }
 
+    /// Adopts the CLI's current token into an imported row whose borrowed
+    /// one has expired (or, for Codex, whose keychain item has gone -- an
+    /// ACL reset does that), after checking it is the same account. Codex
+    /// carries its identity in the id_token, so that check costs no network;
+    /// Claude Code's blob has no email, so one profile call verifies it --
+    /// once per adoption, every few hours at most. Returns false when the
+    /// CLI has moved to another account, with the row's error set to say so.
+    private func readoptImportedLogin(_ a: inout Account) async -> Bool {
+        let margin = Date().addingTimeInterval(120)
+        switch a.provider {
+        case .openai:
+            guard a.authSource == .codexCLI || a.nickname == "Codex CLI" else { return true }
+            let stored = try? await Keychain.openAICredentialsAsync(for: a.id)
+            if let stored, stored.refreshToken != nil { return true }        // a browser login renews itself
+            let expiring = stored.flatMap { AuthenticationInfo.jwtExpiry($0.accessToken) }.map { $0 <= margin } ?? true
+            guard expiring, let cli = CodexCLIImport.read() else { return true }
+            if let mine = a.normalizedEmail, let theirs = Account.normalizedEmail(cli.email), mine != theirs {
+                a.error = "Codex CLI is now signed in as \(cli.email ?? "another account"); this row tracks \(a.label). Reconnect to update it."
+                return false
+            }
+            try? Keychain.storeOpenAI(accessToken: cli.accessToken, accountId: cli.accountId, for: a.id)
+        case .anthropic:
+            guard a.authSource == .claudeCode || a.nickname == "Claude Code" else { return true }
+            guard let stored = try? await Keychain.anthropicCredentialsAsync(for: a.id),
+                  stored.refreshToken == nil else { return true }             // browser logins renew; legacy rows have no item
+            guard (stored.expiresAt ?? .distantFuture) <= margin,
+                  let cli = ClaudeCodeImport.freshCreds() else { return true }
+            if let mine = a.normalizedEmail {
+                guard let theirs = await AnthropicAdapter.profileEmail(token: cli.accessToken) else { return true }
+                if Account.normalizedEmail(theirs) != mine {
+                    a.error = "Claude Code is now signed in as \(theirs); this row tracks \(a.label). Reconnect to update it."
+                    return false
+                }
+            }
+            try? Keychain.storeAnthropic(accessToken: cli.accessToken, refreshToken: nil,
+                                         expiresAt: cli.expiresAt, for: a.id)
+        case .google:
+            break
+        }
+        return true
+    }
+
     /// Retire duplicate metadata without deleting credentials. A recovery operation
     /// must not resurrect these rows; retained secrets remain available for recovery.
     private func retireDuplicate(_ duplicate: Account, keeping winner: Account) {
@@ -811,10 +853,18 @@ final class Store: ObservableObject {
     func refresh(_ account: Account) async {
         guard !mockMode else { return }
         guard var a = accounts.first(where: { $0.id == account.id }) else { return }
-        // Imported CLI credentials belong to the login imported into THIS row.
-        // Never silently replace them with the CLI's current login: the user may
-        // have switched accounts while continuing the same conversation. Expired
-        // imported tokens require explicit sign-in/import, like other credentials.
+        // An imported CLI login is re-read from the CLI when its borrowed
+        // token runs out -- Claude Code and Codex keep their own copies
+        // current as they run -- but only while the CLI is still signed in
+        // as THIS row's account. Someone who switched accounts in the CLI
+        // mid-conversation gets a row that says so and waits for a
+        // reconnect, never one that quietly becomes someone else.
+        guard await readoptImportedLogin(&a) else {
+            if let i = accounts.firstIndex(where: { $0.id == a.id }) {
+                accounts[i].needsReconnect = true; accounts[i].error = a.error; save()
+            }
+            return
+        }
         do {
             // Cached app-owned reads: no additional prompts when the adapter reads
             // the same item. Preserve expiry even when the ensuing request fails.
