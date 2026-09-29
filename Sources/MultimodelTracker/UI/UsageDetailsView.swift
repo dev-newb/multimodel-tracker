@@ -12,7 +12,6 @@ struct UsageDetailsView: View {
     @State private var loading = true
     @State private var refreshing = false
     @State private var lastChecked: Date?
-    @ObservedObject private var telemetry = ClaudeTelemetry.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -35,14 +34,6 @@ struct UsageDetailsView: View {
             }
             if let tokenDetails { reportView(tokenDetails) }
             if let failure { Text(failure).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-            if account.provider == .anthropic {
-                Text(telemetry.status).font(.system(size: 9)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if !telemetry.enabled {
-                    Button("Enable local Claude Code collection") { telemetry.enable() }.controlSize(.small)
-                } else {
-                    Button("Stop local collection") { telemetry.disable() }.font(.system(size: 10)).buttonStyle(.plain)
-                }
-            }
         }
         .task(id: "\(active)-\(account.id)-\(account.lastRefreshed?.timeIntervalSince1970 ?? 0)") {
             guard active, preview == nil else { return }

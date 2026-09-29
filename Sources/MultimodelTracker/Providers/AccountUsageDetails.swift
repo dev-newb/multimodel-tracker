@@ -35,36 +35,13 @@ enum AccountUsageDetails {
         case .google:
             return Result(primary: try await GoogleAdapterImpl().fetchModelDetails(account: account))
         case .anthropic:
-            // Subscription limits, including scoped weekly limits, already appear
-            // on the account card. This disclosure is only for local model totals.
-            var result = Result(primary: UsageDetails(title: "Claude Code · last 7 days",
-                note: "Only Claude Code activity collected on this Mac is included. Other computers, Desktop chat and past conversations are not included.",
-                emptyMessage: ClaudeTelemetry.shared.enabled ? "No Claude Code usage events received yet." : "Local Claude Code collection is off."))
-            if await ClaudeUsageLedger.shared.hasEvents() {
-                do { result.primary = try await claudeTokens(account) }
-                catch {
-                    result.primary.emptyMessage = "Claude Code totals unavailable for this account."
-                    result.warning = "Claude Code totals: \(String(describing: error))"
-                }
-            }
-            return result
+            // Anthropic's subscription limits ARE the card; there is no
+            // account-scoped model breakdown to fetch. The local Claude Code
+            // collector that once filled this panel was removed before merge:
+            // it reported tokens spent, never the reset offers it was built
+            // to find, and never received a live event.
+            throw AdapterError.transport("No model details for Anthropic")
         }
-    }
-
-    private static func claudeTokens(_ account: Account) async throws -> UsageDetails {
-        let creds = try await Keychain.anthropicCredentialsAsync(for: account.id)
-        var req = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/profile")!)
-        req.timeoutInterval = 15
-        req.setValue("Bearer \(creds.accessToken)", forHTTPHeaderField: "Authorization")
-        req.setValue(AnthropicOAuth.betaHeader, forHTTPHeaderField: "anthropic-beta")
-        let (data, response) = try await URLSession.shared.data(for: req)
-        guard (response as? HTTPURLResponse)?.statusCode == 200,
-              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let owner = root["account"] as? [String: Any], let uuid = owner["uuid"] as? String,
-              let org = root["organization"] as? [String: Any], let orgID = org["uuid"] as? String else {
-            throw AdapterError.transport("Cannot verify account identity for local Claude Code totals")
-        }
-        return await ClaudeUsageLedger.shared.report(account: uuid, organization: orgID)
     }
 
     /// Explicit developer opt-in. Records only provider names, models, amounts and errors;

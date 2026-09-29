@@ -20,15 +20,7 @@ Sources:
 
 ## Claude Code
 
-An optional local OTLP/HTTP JSON log collector listens only on `127.0.0.1:43189`. Enable/stop controls are inside Anthropic details. Enabling merges the required environment variables into `~/.claude/settings.json`, saves a backup, preserves unrelated settings, and refuses to replace another log exporter. Restart Claude Code after configuration changes. Existing sessions, remote machines, Claude Desktop chat, and periods when the tracker is stopped are not backfilled.
-
-Only `api_request` events with an explicit account UUID, organization ID, request ID, model, valid timestamp and token counters are accepted. Aggregation matches the OAuth profile's account **and** organization IDs. No attribution is inferred from the session's current login or email. Retries are deduplicated by organization/account/request. Missing identity is excluded. Input, output, cache-read and cache-creation tokens contribute to total tokens; these are not subscription charges.
-
-Only the allowlisted usage metadata is persisted in `~/Library/Application Support/MultimodelTracker/claude-usage.json` (mode 0600), with 30-day/100,000-event retention. Prompts, responses, email addresses, tools and raw log bodies are not persisted. HTTP requests require an installation-specific Authorization header and a bounded Content-Length. Claude Code versions using chunked OTLP exports must be upgraded (Anthropic documents Content-Length support restored in v2.1.212).
-
-Synthetic tests verify per-event account switching, organization isolation, duplicate delivery, reload, and content exclusion. The receiver has been tested live with an empty authenticated batch and an unauthenticated rejection. There was no installed Claude CLI/usable Claude Code credential to produce a live event in this session, so upstream identity freshness across `/login` remains an integration limitation.
-
-Source: https://code.claude.com/docs/en/monitoring-usage
+Removed before merge. A local OTLP/HTTP collector for Claude Code was built here as a route to seeing Anthropic's banked (never-granted) reset. It cannot: telemetry carries tokens *spent*, never reset offers or entitlements, and no live Claude Code event was ever received. The offer is a web-surface entitlement (`ineligible_reason: "surface"` on OAuth); the tracker already holds a headless claude.ai session for legacy rows, which is the elegant path once the endpoint is known.
 
 ## Claude saved resets
 
@@ -36,7 +28,7 @@ Removed the provisional reset probes, embedded Claude Usage window, web connecti
 
 ## Anthropic native quotas
 
-Subscription limits, including Weekly — Fable, appear only on the main account card. Expanded Anthropic details show the local Claude Code model totals and collection controls; they do not duplicate scoped quotas or poll the quota endpoint. An empty or disabled collector is identified explicitly. No profile request is needed until local events exist.
+Subscription limits, including Weekly — Fable, appear on the main account card. Anthropic cards carry no model-details disclosure: there is no account-scoped model breakdown to fetch.
 
 ## Google Antigravity
 

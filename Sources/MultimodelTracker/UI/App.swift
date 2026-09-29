@@ -146,10 +146,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             }
         }
 
-        if !CommandLine.arguments.contains("--mock") {
-            if CommandLine.arguments.contains("--enable-claude-telemetry") { ClaudeTelemetry.shared.enable() }
-            else { ClaudeTelemetry.shared.start() }
-        }
         renderBadges()
         registerHotKey()
         timer = Timer.scheduledTimer(withTimeInterval: Store.pollInterval, repeats: true) { [weak self] _ in
