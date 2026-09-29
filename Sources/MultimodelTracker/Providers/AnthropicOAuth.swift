@@ -44,7 +44,15 @@ enum AnthropicOAuth {
         }
     }
 
-    static func signIn() async throws -> Tokens {
+    /// Shows the authorize page somewhere other than the system browser --
+    /// in practice WebSignInWindow. `redirect` is the loopback URL; a
+    /// presenter that catches that navigation itself hands it to `deliver`.
+    /// `cancel` ends the wait when the user gives up.
+    typealias Presenter = @MainActor (_ authorize: URL, _ redirect: String,
+                                      _ deliver: @escaping @Sendable (URL) -> Void,
+                                      _ cancel: @escaping @Sendable () -> Void) -> Bool
+
+    static func signIn(present: Presenter? = nil) async throws -> Tokens {
         let verifier = OAuthPKCE.randomURLSafe(64)
         let state = OAuthPKCE.randomURLSafe(24)
 
@@ -68,8 +76,13 @@ enum AnthropicOAuth {
             .init(name: "code_challenge_method", value: "S256"),
             .init(name: "state", value: state),
         ]
-        let opened = NSWorkspace.shared.open(comps.url!)
-        if debug { FileHandle.standardError.write("oauth: browser open=\(opened)\n".data(using: .utf8)!) }
+        let opened: Bool
+        if let present {
+            opened = await present(comps.url!, redirect, { waiter.deliver($0) }, { waiter.cancel() })
+        } else {
+            opened = await NSWorkspace.shared.open(comps.url!)
+        }
+        if debug { FileHandle.standardError.write("oauth: \(present == nil ? "browser" : "in-app") open=\(opened)\n".data(using: .utf8)!) }
         guard opened else { throw Failure.badResponse("the browser could not be opened") }
 
         let code = try await waiter.awaitCode()

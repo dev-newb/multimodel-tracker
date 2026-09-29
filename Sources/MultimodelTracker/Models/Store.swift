@@ -545,6 +545,7 @@ final class Store: ObservableObject {
         burnHistory = burnHistory.filter { !$0.key.hasPrefix(prefix) }
         saveBurnHistory()
         if !mockMode { WebSessionPool.shared.removeData(for: id) }
+        if webSessionRows.contains(id) { setWebSession(false, for: id) }
         accounts.removeAll { $0.id == id }
         expanded[id] = nil; saveExpanded()
         save()
@@ -604,7 +605,12 @@ final class Store: ObservableObject {
                                      refreshToken: t.refreshToken, for: account.id)
                 email = verifiedEmail
             case .anthropic:
-                let t = try await AnthropicOAuth.signIn()
+                // Inside the tracker, in this row's own cookie jar: the one
+                // login yields the OAuth token AND the claude.ai session that
+                // banked resets are only visible on. See WebSignInWindow.
+                let window = WebSignInWindow(account: account.id)
+                defer { window.close() }
+                let t = try await AnthropicOAuth.signIn(present: window.present)
                 let verifiedEmail: String?
                 if let known = t.email { verifiedEmail = known }
                 else { verifiedEmail = await AnthropicAdapter.profileEmail(token: t.accessToken) }
@@ -615,6 +621,7 @@ final class Store: ObservableObject {
                                         refreshToken: t.refreshToken,
                                         expiresAt: t.expiresAt, for: account.id)
                 email = verifiedEmail
+                setWebSession(await window.captureSession(), for: account.id)
             case .google:
                 let t = try await GoogleOAuth.signIn()
                 guard !rejectDuplicate(.google, email: t.email, excluding: account.id) else { return }
@@ -637,6 +644,9 @@ final class Store: ObservableObject {
             bankedBefore[account.id] = nil
             saveBurnHistory(); save()
             await refresh(accounts[i])
+        } catch LoopbackError.cancelled {
+            // The user closed the sign-in window. Nothing was replaced, so a
+            // working row must not be painted with an error for it.
         } catch {
             setError(error.localizedDescription, for: account.id)
         }
@@ -686,6 +696,32 @@ final class Store: ObservableObject {
     /// list). Without this marker, a Google row mid-sign-in would fall back
     /// to the machine credentials and show ANOTHER account's numbers under
     /// its name.
+    /// Anthropic OAuth rows whose cookie jar ALSO holds a claude.ai session,
+    /// because they were signed in through WebSignInWindow. Only those can
+    /// show banked resets: Anthropic answers grants on the web surface
+    /// alone. Kept beside the account, not in it -- the persisted Account
+    /// shape does not change.
+    nonisolated private static let webSessionKey = "mmt.webSessionRows"
+    nonisolated static func hasWebSession(_ id: UUID) -> Bool {
+        (UserDefaults.standard.array(forKey: webSessionKey) as? [String] ?? []).contains(id.uuidString)
+    }
+    /// The same fact, observable, for Config's "See banked resets" offer.
+    @Published private(set) var webSessionRows: Set<UUID> =
+        Set((UserDefaults.standard.array(forKey: "mmt.webSessionRows") as? [String] ?? []).compactMap(UUID.init))
+    private func setWebSession(_ on: Bool, for id: UUID) {
+        var v = Set(UserDefaults.standard.array(forKey: Self.webSessionKey) as? [String] ?? [])
+        if on { v.insert(id.uuidString) } else { v.remove(id.uuidString) }
+        UserDefaults.standard.set(Array(v), forKey: Self.webSessionKey)
+        webSessionRows = Set(v.compactMap(UUID.init))
+        WebSessionPool.shared.forgetGrants(id)
+    }
+    /// Called by the pool when the session has expired. The UI picks it up
+    /// at the next refresh, when webSessionRows is re-read.
+    nonisolated static func forgetWebSession(_ id: UUID) {
+        let v = (UserDefaults.standard.array(forKey: webSessionKey) as? [String] ?? []).filter { $0 != id.uuidString }
+        UserDefaults.standard.set(v, forKey: webSessionKey)
+    }
+
     private static let machineRowsKey = "mmt.googleMachineRows"
     static func isMachineGoogleRow(_ id: UUID) -> Bool {
         (UserDefaults.standard.array(forKey: machineRowsKey) as? [String] ?? []).contains(id.uuidString)
@@ -831,6 +867,7 @@ final class Store: ObservableObject {
         defer {
             isRefreshing = false
             if passSuccesses > 0 { lastRefresh = Date() }
+            webSessionRows = Set((UserDefaults.standard.array(forKey: Self.webSessionKey) as? [String] ?? []).compactMap(UUID.init))
             offline = passSuccesses == 0 && passConnectivityFailures > 0
             if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {
                 FileHandle.standardError.write(

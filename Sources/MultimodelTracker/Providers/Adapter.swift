@@ -2,7 +2,7 @@ import Foundation
 
 struct FetchedUsage {
     var plan: String?
-    let limits: [UsageLimit]
+    var limits: [UsageLimit]
     /// OpenAI's banked limit-reset count. Kept as a number as well as in the
     /// row label, because the "banked reset added" alert needs to compare it
     /// against the previous refresh — parsing it back out of a label would
@@ -131,7 +131,7 @@ struct AnthropicAdapter: UsageAdapter {
             live = try await refreshed(creds, account: account.id)
         }
         do {
-            var out = await withEmail(try await fetchOnce(live.accessToken), token: live.accessToken, account: account)
+            var out = await withGrants(await withEmail(try await fetchOnce(live.accessToken), token: live.accessToken, account: account), account: account)
             out.authSource = source
             out.authentication = AuthenticationInfo(source: source, accessExpiresAt: live.expiresAt, canRefresh: live.refreshToken != nil)
             return out
@@ -139,11 +139,24 @@ struct AnthropicAdapter: UsageAdapter {
             // The token died early (revocation, clock skew) — one refresh,
             // one retry, then give up to the "Sign in" button.
             let renewed = try await refreshed(live, account: account.id)
-            var out = await withEmail(try await fetchOnce(renewed.accessToken), token: renewed.accessToken, account: account)
+            var out = await withGrants(await withEmail(try await fetchOnce(renewed.accessToken), token: renewed.accessToken, account: account), account: account)
             out.authSource = source
             out.authentication = AuthenticationInfo(source: source, accessExpiresAt: renewed.expiresAt, canRefresh: renewed.refreshToken != nil)
             return out
         }
+    }
+
+    /// Adds banked-reset grants for a row that also holds a claude.ai session
+    /// (signed in through WebSignInWindow): OAuth usage says nothing about
+    /// them, the web surface does. The same pseudo-row the legacy parser and
+    /// Codex's append, so card, height estimate and trigger treat it alike.
+    private func withGrants(_ usage: FetchedUsage, account: Account) async -> FetchedUsage {
+        guard Store.hasWebSession(account.id),
+              let n = await WebSessionPool.shared.bankedResets(for: account) else { return usage }
+        var out = usage
+        out.bankedResets = n
+        out.limits.append(.init(key: "resets", label: "Banked resets · \(n)", percent: nil, resetsAt: nil))
+        return out
     }
 
     /// Adds the token owner's email while the row still shows a placeholder

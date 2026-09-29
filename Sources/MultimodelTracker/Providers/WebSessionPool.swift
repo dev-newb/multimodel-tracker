@@ -36,6 +36,35 @@ final class WebSessionPool {
 
     private var bridges: [UUID: BridgeChannel] = [:]
 
+    /// ONE store object per account, shared by the hidden view and the
+    /// in-app sign-in window, so the cookies a sign-in leaves are the ones
+    /// the next poll sends -- no reliance on two store objects for the same
+    /// identifier syncing through the network process.
+    private var stores: [UUID: WKWebsiteDataStore] = [:]
+    func dataStore(for id: UUID) -> WKWebsiteDataStore {
+        if let s = stores[id] { return s }
+        let s = WKWebsiteDataStore(forIdentifier: id)
+        stores[id] = s
+        return s
+    }
+
+    /// Banked-reset grants for an OAuth row that also holds a claude.ai
+    /// session. Grants change on the scale of days, so one read per ten
+    /// minutes; a failed read keeps the last count rather than dropping the
+    /// row. An expired web session reads as nil and clears the row's mark,
+    /// which brings back Config's offer to connect it.
+    private var grantCache: [UUID: (at: Date, count: Int?)] = [:]
+    func bankedResets(for account: Account) async -> Int? {
+        if let hit = grantCache[account.id], Date().timeIntervalSince(hit.at) < 600 { return hit.count }
+        var count = grantCache[account.id]?.count
+        do { count = try await fetchUsage(for: account).bankedResets }
+        catch AdapterError.notSignedIn { count = nil; Store.forgetWebSession(account.id) }
+        catch {}
+        grantCache[account.id] = (Date(), count)
+        return count
+    }
+    func forgetGrants(_ id: UUID) { grantCache[id] = nil }
+
     /// Empty OAuth-only rows never created a WebKit store. Calling the static
     /// remove-store API before WebKit's network run loop exists crashes inside
     /// WebKit. Clear only an existing legacy store, keeping its view alive until
@@ -49,9 +78,10 @@ final class WebSessionPool {
         if let existing = views.removeValue(forKey: id) { view = existing }
         else {
             let configuration = WKWebViewConfiguration()
-            configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: id)
+            configuration.websiteDataStore = dataStore(for: id)
             view = WKWebView(frame: .zero, configuration: configuration)
         }
+        stores[id] = nil; grantCache[id] = nil
         view.stopLoading(); view.removeFromSuperview()
         view.configuration.userContentController.removeScriptMessageHandler(forName: "mmt")
         bridges[id] = nil
@@ -69,7 +99,7 @@ final class WebSessionPool {
         bridges[account.id] = channel
         if #available(macOS 14.0, *) {
             // Persistent AND isolated: survives relaunch, never shares cookies.
-            cfg.websiteDataStore = WKWebsiteDataStore(forIdentifier: account.id)
+            cfg.websiteDataStore = dataStore(for: account.id)
         } else {
             cfg.websiteDataStore = .nonPersistent()
         }

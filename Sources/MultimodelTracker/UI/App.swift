@@ -267,6 +267,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             }
         }
 
+        // `--web-session-probe` reports, per Anthropic row: whether it is
+        // marked as holding a web session, which claude.* cookies its jar
+        // has (NAMES and domains only -- never values), and the banked-reset
+        // count the web surface returns. Read-only.
+        if CommandLine.arguments.contains("--web-session-probe") {
+            Task { @MainActor in
+                for acct in store.accounts(for: .anthropic) {
+                    // Fetch FIRST: WebKit loads a store lazily, and a jar no
+                    // view has attached to yet reads as empty.
+                    let banked = await WebSessionPool.shared.bankedResets(for: acct)
+                    let jar = WebSessionPool.shared.dataStore(for: acct.id).httpCookieStore
+                    let names = await jar.allCookies()
+                        .filter { $0.domain.contains("claude") }
+                        .map { "\($0.name)@\($0.domain)" }.sorted()
+                    FileHandle.standardError.write(("[\(acct.displayName)] marked=\(Store.hasWebSession(acct.id)) "
+                        + "banked=\(banked.map(String.init) ?? "nil")\n   cookies: \(names.joined(separator: ", "))\n")
+                        .data(using: .utf8)!)
+                }
+                exit(0)
+            }
+        }
+
         // `--usage-raw` fetches every account through the SAME adapter path a
         // refresh uses and prints each pool with its ABSOLUTE reset instant
         // and the minutes until it. The card shows a rounded "resets 4h",

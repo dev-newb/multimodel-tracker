@@ -55,6 +55,9 @@ final class LoopbackCatcher: @unchecked Sendable {
     private let expectedState: String
     private var continuation: CheckedContinuation<String, Error>?
     private var finished = false
+    /// An outcome that arrived before anyone awaited it -- a cancel from a
+    /// window closed quickly, or a delivery racing awaitCode().
+    private var pending: Result<String, Error>?
     private let lock = NSLock()
 
     /// Bind state. NWListener reports "port already in use" ASYNCHRONOUSLY via
@@ -142,7 +145,12 @@ final class LoopbackCatcher: @unchecked Sendable {
 
     func awaitCode() async throws -> String {
         try await withCheckedThrowingContinuation { cont in
-            lock.lock(); continuation = cont; lock.unlock()
+            lock.lock()
+            if let early = pending {
+                pending = nil; finished = true; lock.unlock()
+                cont.resume(with: early); listener.cancel(); return
+            }
+            continuation = cont; lock.unlock()
             // The browser may never come back (tab closed); don't hang forever.
             DispatchQueue.global().asyncAfter(deadline: .now() + 300) { [weak self] in
                 self?.finish(.failure(LoopbackError.cancelled))
@@ -152,6 +160,30 @@ final class LoopbackCatcher: @unchecked Sendable {
 
     func stop() { listener.cancel() }
 
+    /// Ends the wait now: the user closed the sign-in window. Without this a
+    /// closed window left awaitCode() hanging for its full five minutes.
+    func cancel() { finish(.failure(LoopbackError.cancelled)) }
+
+    /// The in-app sign-in window catches the redirect itself -- it never
+    /// needs to leave the process, or depend on WebKit loading plain-http
+    /// localhost -- and hands the URL over here. Same validation as a real
+    /// hit on the socket; a stray URL is ignored.
+    func deliver(_ url: URL) {
+        if let result = outcome(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []) {
+            finish(result)
+        }
+    }
+
+    /// nil for a stray hit (favicon and the like); otherwise the callback's verdict.
+    private func outcome(_ items: [URLQueryItem]) -> Result<String, Error>? {
+        let code = items.first { $0.name == "code" }?.value
+        let state = items.first { $0.name == "state" }?.value
+        let err = items.first { $0.name == "error" }?.value
+        if err == nil, let code, state == expectedState { return .success(code) }
+        if err != nil || code != nil { return .failure(LoopbackError.badCallback(err ?? "state mismatch")) }
+        return nil
+    }
+
     private func handle(_ conn: NWConnection) {
         conn.start(queue: .global(qos: .userInitiated))
         conn.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [weak self] data, _, _, _ in
@@ -159,11 +191,10 @@ final class LoopbackCatcher: @unchecked Sendable {
             let line = text.split(separator: "\r\n").first.map(String.init) ?? ""
             let path = line.split(separator: " ").dropFirst().first.map(String.init) ?? ""
             let items = URLComponents(string: "http://localhost" + path)?.queryItems ?? []
-            let code = items.first { $0.name == "code" }?.value
-            let state = items.first { $0.name == "state" }?.value
+            let result = self.outcome(items)
             let err = items.first { $0.name == "error" }?.value
-
-            let ok = err == nil && code != nil && state == self.expectedState
+            let ok: Bool
+            if case .success = result { ok = true } else { ok = false }
             let message = ok
                 ? "Signed in. You can close this tab and return to Multimodel Tracker."
                 : "Sign-in failed: \(err ?? "unexpected response"). Return to Multimodel Tracker and try again."
@@ -174,18 +205,18 @@ final class LoopbackCatcher: @unchecked Sendable {
                 + "Content-Length: \(html.utf8.count)\r\nConnection: close\r\n\r\n" + html
             conn.send(content: Data(response.utf8), completion: .contentProcessed { _ in conn.cancel() })
 
-            if ok, let code {
-                self.finish(.success(code))
-            } else if err != nil || code != nil {
-                // Only fail on a real callback; ignore favicon and stray hits.
-                self.finish(.failure(LoopbackError.badCallback(err ?? "state mismatch")))
-            }
+            // Only a real callback decides anything; favicon and stray hits don't.
+            if let result { self.finish(result) }
         }
     }
 
     private func finish(_ result: Result<String, Error>) {
         lock.lock()
-        guard !finished, let cont = continuation else { lock.unlock(); return }
+        guard !finished else { lock.unlock(); return }
+        guard let cont = continuation else {
+            if pending == nil { pending = result }
+            lock.unlock(); return
+        }
         finished = true; continuation = nil
         lock.unlock()
         cont.resume(with: result)

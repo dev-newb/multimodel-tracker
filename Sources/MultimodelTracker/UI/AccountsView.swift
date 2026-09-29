@@ -208,7 +208,10 @@ struct AccountsView: View {
                 AccountRow(account: account, accent: p.accent,
                            onNickname: { store.setNickname($0, for: account.id) },
                            onSignIn:  { beginSignIn(account) },
-                           onRemove:  { store.remove(account.id) })
+                           onRemove:  { store.remove(account.id) },
+                           onSeeBanked: account.provider == .anthropic && account.authSource == .browser
+                                        && !store.webSessionRows.contains(account.id)
+                                        ? { beginSignIn(account) } : nil)
             }
             if store.canAdd(p) {
                 HStack {
@@ -250,6 +253,9 @@ struct AccountRow: View {
     let onNickname: (String?) -> Void
     let onSignIn: () -> Void
     let onRemove: () -> Void
+    /// Offered on Anthropic OAuth rows whose jar holds no claude.ai session:
+    /// one sign-in inside the tracker, and banked resets appear. Nil hides it.
+    var onSeeBanked: (() -> Void)? = nil
 
     @State private var draft: String = ""
     @FocusState private var focused: Bool
@@ -297,6 +303,11 @@ struct AccountRow: View {
                 // Sign in button looked like nothing had happened.
                 if let err = account.error {
                     Text(err).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(2)
+                }
+                if let onSeeBanked {
+                    Button("See banked resets\u{2026}", action: onSeeBanked)
+                        .buttonStyle(.link).font(.system(size: 10))
+                        .help("Sign in once inside the tracker. That login also carries the claude.ai session Anthropic shows banked resets on.")
                 }
             }
             Spacer()
