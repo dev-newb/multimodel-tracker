@@ -22,12 +22,12 @@ enum FlashEvent: String, CaseIterable, Identifiable {
         case .limit:  return "Usage limit!"
         }
     }
-    /// Matches the sound rows' wording. A limit reset is EVERY vendor's
-    /// event; only the banked reset is Codex's alone.
+    /// Matches the sound rows' wording. Both are every vendor's event now:
+    /// Anthropic grants banked resets too, read from the web surface.
     var displayName: String {
         switch self {
         case .reset:  return "Limit reset"
-        case .banked: return "Banked reset added (Codex)"
+        case .banked: return "Banked reset added"
         case .burn:   return "Burning tokens"
         case .limit:  return "Usage limit reached"
         }

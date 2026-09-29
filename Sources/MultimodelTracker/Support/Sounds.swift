@@ -13,7 +13,7 @@ enum SoundKind: String, CaseIterable, Identifiable {
         switch self {
         case .burn:   return "Burning tokens quickly"
         case .reset:  return "Limit reset"
-        case .banked: return "Banked reset added (Codex)"
+        case .banked: return "Banked reset added"
         case .limit:  return "Usage limit reached"
         }
     }

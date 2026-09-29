@@ -197,7 +197,7 @@ final class WebSessionPool {
         const orgs = await (await fetch('https://claude.ai/api/organizations', {credentials:'include'})).json();
         if (!Array.isArray(orgs) || !orgs.length) return JSON.stringify({error:'no-orgs'});
         const id = orgs[0].uuid;
-        const r = await fetch('https://claude.ai/api/organizations/' + id + '/usage', {credentials:'include'});
+        const r = await fetch('https://claude.ai/api/organizations/' + id + '/usage?cedar_ember=1&skip_spend=1', {credentials:'include'});
         return JSON.stringify({status:r.status, body: await r.text()});
         """
         let s = try await callBridge(js, in: v, for: account.id)
@@ -263,7 +263,21 @@ enum AnthropicParser {
                 }
             }
         }
-        return FetchedUsage(plan: nil, limits: limits)
+        // Asked with ?cedar_ember=1, the web surface also answers with BANKED
+        // RESETS: grants the account holds that clear a limit on demand, the
+        // Anthropic counterpart of Codex's. OAuth answers ineligible_reason
+        // "surface", so only a web-session row can see them. Captured live
+        // 2026-09-29 from Settings > Usage; the shape is in the project notes.
+        var banked: Int?
+        if let ember = root["cedar_ember"] as? [String: Any] {
+            let grants = ember["grants"] as? [[String: Any]] ?? []
+            banked = grants.filter { ($0["paused"] as? Bool) != true }
+                           .reduce(0) { $0 + (($1["resets_left"] as? Int) ?? 0) }
+            // The same pseudo-row Codex's parser appends, so the card, the
+            // height estimate and the alert log all treat it identically.
+            limits.append(.init(key: "resets", label: "Banked resets · \(banked!)", percent: nil, resetsAt: nil))
+        }
+        return FetchedUsage(plan: nil, limits: limits, bankedResets: banked)
     }
 }
 
