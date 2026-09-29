@@ -244,7 +244,36 @@ final class WebSessionPool {
                 ? AdapterError.notSignedIn
                 : AdapterError.transport("usage HTTP \(status)")
         }
+        await noteSessionExpiry(for: account)
         return try AnthropicParser.parse(body)
+    }
+
+    /// Records the claude.ai session's expiry whenever it CHANGES, from the
+    /// process that actually holds the live cookies -- a second process
+    /// reading this store is not guaranteed fresh, which is what made the
+    /// first readings of "does it slide?" untrustworthy. One line per change
+    /// (plus the first reading per launch) in
+    /// ~/Library/Logs/Multimodel Tracker/web-session.log. Expiry only,
+    /// never the value.
+    private var lastExpiry: [UUID: Date] = [:]
+    private func noteSessionExpiry(for account: Account) async {
+        let cookies = await dataStore(for: account.id).httpCookieStore.allCookies()
+        guard let expiry = cookies.first(where: { $0.name == "sessionKey" && $0.domain.hasSuffix("claude.ai") })?
+                .expiresDate else { return }
+        let before = lastExpiry[account.id]
+        guard before != expiry else { return }
+        lastExpiry[account.id] = expiry
+        let iso = ISO8601DateFormatter()
+        let line = "\(iso.string(from: Date()))  \(account.displayName)  sessionKey expires \(iso.string(from: expiry))"
+            + (before.map { String(format: "  (was %@, %+.1fh)", iso.string(from: $0), expiry.timeIntervalSince($0) / 3600) } ?? "  (first reading this launch)")
+            + "\n"
+        let url = AlertLog.url.deletingLastPathComponent().appendingPathComponent("web-session.log")
+        if let h = try? FileHandle(forWritingTo: url) {
+            defer { try? h.close() }
+            _ = try? h.seekToEnd(); try? h.write(contentsOf: Data(line.utf8))
+        } else {
+            try? Data(line.utf8).write(to: url)
+        }
     }
 }
 
