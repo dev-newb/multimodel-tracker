@@ -6,8 +6,14 @@ import SwiftUI
 struct BoundedTrackerScroll<Content: View>: View {
     let maxHeight: CGFloat
     var expanded = true
+    /// Reports the height this region WANTS (its document, capped), which is
+    /// what the window should be sized from -- independent of the height it
+    /// is actually given.
+    var onIdealHeight: ((CGFloat) -> Void)? = nil
     @ViewBuilder var content: () -> Content
     @State private var documentHeight: CGFloat = 1
+
+    private var ideal: CGFloat { expanded ? min(max(documentHeight, 1), maxHeight) : 0 }
 
     var body: some View {
         ScrollView {
@@ -22,8 +28,14 @@ struct BoundedTrackerScroll<Content: View>: View {
         // .hidden still permits macOS to show indicators when a mouse is attached.
         .scrollIndicators(.never)
         .scrollBounceBehavior(.basedOnSize)
-        .frame(height: expanded ? min(max(documentHeight, 1), maxHeight) : 0, alignment: .top)
+        // Compressible, not fixed: asked for its ideal it gives the capped
+        // document height, but given LESS (a window AppKit sized smaller
+        // than asked) it shrinks and scrolls instead of pushing its
+        // neighbours out of view.
+        .frame(minHeight: 0, idealHeight: ideal, maxHeight: ideal, alignment: .top)
         .clipped()
+        .onAppear { onIdealHeight?(ideal) }
+        .onChange(of: ideal) { _, h in onIdealHeight?(h) }
         .allowsHitTesting(expanded)
         .accessibilityHidden(!expanded)
     }

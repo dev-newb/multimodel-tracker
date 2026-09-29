@@ -267,6 +267,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             }
         }
 
+        // `--render-squeeze <dir>` renders the popover in a REAL hosting view
+        // twice: at the height it asks for, and squeezed to 60% of that --
+        // the case of a window that comes out shorter than its content. The
+        // header and footer must survive the squeeze; the list gives way.
+        // Pair it with --mock: fabricated accounts, no network.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-squeeze"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            Task { @MainActor in
+                var wanted = CGSize(width: 340, height: 600)
+                var root = PopoverView(store: store)
+                root.onContentSizeChange = { wanted = $0 }
+                let host = NSHostingView(rootView: root.environment(\.colorScheme, .dark))
+                let w = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 560, height: 900),
+                                 styleMask: [.borderless], backing: .buffered, defer: false)
+                w.contentView = host
+                w.orderFrontRegardless()
+                try? await Task.sleep(for: .seconds(2))
+                for (name, h) in [("asked", wanted.height), ("squeezed", (wanted.height * 0.6).rounded())] {
+                    w.setContentSize(NSSize(width: wanted.width, height: h))
+                    host.layoutSubtreeIfNeeded()
+                    try? await Task.sleep(for: .milliseconds(600))
+                    if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                        host.cacheDisplay(in: host.bounds, to: rep)
+                        try? rep.representation(using: .png, properties: [:])?
+                            .write(to: dir.appendingPathComponent("squeeze-\(name).png"))
+                    }
+                    FileHandle.standardError.write("squeeze \(name): \(Int(wanted.width))x\(Int(h))\n".data(using: .utf8)!)
+                }
+                exit(0)
+            }
+        }
+
         // `--web-session-probe` reports, per Anthropic row: whether it is
         // marked as holding a web session, which claude.* cookies its jar
         // has (NAMES and domains only -- never values), and the banked-reset

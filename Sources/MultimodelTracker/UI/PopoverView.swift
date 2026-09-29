@@ -91,6 +91,18 @@ struct PopoverView: View {
     /// open is the STORE's state (persisted, settled once, never derived
     /// here) -- see Store.expanded for why it cannot live in this view.
 
+    /// The parts the window's height is measured from; see body.
+    @State private var topHeight: CGFloat = 0
+    @State private var listHeight: CGFloat = 0
+    @State private var bottomHeight: CGFloat = 0
+    private var wantedHeight: CGFloat { (topHeight + listHeight + bottomHeight).rounded(.up) }
+    private func heightReader(_ report: @escaping (CGFloat) -> Void) -> some View {
+        GeometryReader { g in
+            Color.clear.onAppear { report(g.size.height) }
+                .onChange(of: g.size.height) { _, h in report(h) }
+        }
+    }
+
     /// Pager / tabs selection per vendor, for the app's lifetime.
     @State private var pageIndex: [Provider: Int] = [:]
     var onContentSizeChange: ((CGSize) -> Void)? = nil
@@ -118,10 +130,11 @@ struct PopoverView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider().opacity(0.35)
+            VStack(spacing: 0) { header; Divider().opacity(0.35) }
+                .fixedSize(horizontal: false, vertical: true)
+                .background(heightReader { topHeight = $0 })
             ScrollViewReader { proxy in
-                BoundedTrackerScroll(maxHeight: maxListHeight) {
+                BoundedTrackerScroll(maxHeight: maxListHeight, onIdealHeight: { listHeight = $0 }) {
                     VStack(alignment: .leading, spacing: 14) {
                         // Keep each empty vendor's actions in reach until the
                         // user explicitly dismisses that vendor's setup row.
@@ -139,20 +152,25 @@ struct PopoverView: View {
                 }
                 .environment(\.revealTrackerDetail) { id in proxy.scrollTo(id) }
             }
-            Divider().opacity(0.35)
-            footer
+            VStack(spacing: 0) { Divider().opacity(0.35); footer }
+                .fixedSize(horizontal: false, vertical: true)
+                .background(heightReader { bottomHeight = $0 })
         }
         .frame(width: popoverWidth)
-        .fixedSize(horizontal: false, vertical: true)
-        .background(GeometryReader { geometry in
-            Color.clear
-                .onAppear { onContentSizeChange?(geometry.size) }
-                .onChange(of: geometry.size) { _, size in onContentSizeChange?(size) }
-        })
+        // The window is sized from what the content WANTS -- header, the
+        // list's capped ideal, footer -- measured in parts, never by forcing
+        // the whole view to its ideal size. Forcing it (fixedSize) meant a
+        // window that came out shorter than asked -- AppKit re-applying a
+        // stale popover size -- got content taller than itself, and a view
+        // taller than its window is CENTRED: the header clipped off the top,
+        // the footer off the bottom. Now the header and footer hold their
+        // places and the list gives up the difference and scrolls.
+        .onChange(of: wantedHeight) { _, h in onContentSizeChange?(CGSize(width: popoverWidth, height: h)) }
+        .onChange(of: popoverWidth) { _, w in onContentSizeChange?(CGSize(width: w, height: wantedHeight)) }
+        .frame(maxHeight: .infinity, alignment: .top)
         // Without this the popover is see-through: NSPopover supplies no
         // material when its content is a plain SwiftUI hierarchy.
         .background(.regularMaterial)
-        .frame(maxHeight: .infinity, alignment: .top)
         .accountNotice(store)
     }
 
