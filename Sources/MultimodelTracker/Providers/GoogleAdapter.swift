@@ -202,6 +202,13 @@ struct GoogleAdapterImpl: UsageAdapter {
     /// name the account. Cached per account: one call per launch, and a
     /// failure is cached too so a token without the scope isn't re-asked
     /// on every poll.
+    /// Last good read per login, held so a transient 403 shows the previous
+    /// numbers under the popover's "stale" chip instead of an error row.
+    /// The PR removed this because the old models catalog could report 100%
+    /// meaning "available"; the grouped summary it now reads has no such
+    /// ambiguity, so the resilience comes back. Keyed by credentialRevision,
+    /// so a re-sign-in never inherits the previous login's numbers.
+    private static var lastGood: [UUID: (at: Date, usage: FetchedUsage)] = [:]
     private static var emailCache: [UUID: String?] = [:]
 
     static func userInfoEmail(accessToken: String, id: UUID, fresh: Bool = false) async -> String? {
@@ -283,6 +290,7 @@ struct GoogleAdapterImpl: UsageAdapter {
         cachedProject[revision] = nil
         cachedTier[revision] = nil
         emailCache[revision] = nil
+        lastGood[revision] = nil
     }
 
     /// Explicit, sanitized diagnostics through the installed app's credential cache.
@@ -577,10 +585,14 @@ struct GoogleAdapterImpl: UsageAdapter {
                     "google email for \(id.uuidString.prefix(8)): \(usage.accountEmail ?? "nil")\n"
                         .data(using: .utf8)!)
             }
+            Self.lastGood[id] = (Date(), usage)
             return usage
         } catch {
             // A stale project id 403s; drop it so the next poll re-derives one.
             Self.cachedProject[id] = nil
+            if let held = Self.lastGood[id], Date().timeIntervalSince(held.at) < 3600 {
+                return held.usage
+            }
             throw error
         }
     }
