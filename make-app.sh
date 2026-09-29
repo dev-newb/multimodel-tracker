@@ -17,7 +17,7 @@ then
   echo "Quit the app running from build/ before rebuilding that bundle." >&2
   exit 1
 fi
-swift build --disable-sandbox -c "$CONF"
+swift build -c "$CONF"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp ".build/$CONF/MultimodelTracker" "$APP/Contents/MacOS/MultimodelTracker"
