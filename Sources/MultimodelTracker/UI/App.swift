@@ -278,11 +278,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                     // view has attached to yet reads as empty.
                     let banked = await WebSessionPool.shared.bankedResets(for: acct)
                     let jar = WebSessionPool.shared.dataStore(for: acct.id).httpCookieStore
-                    let names = await jar.allCookies()
-                        .filter { $0.domain.contains("claude") }
-                        .map { "\($0.name)@\($0.domain)" }.sorted()
+                    let all = await jar.allCookies().filter { $0.domain.contains("claude") }
+                    let names = all.map { "\($0.name)@\($0.domain)" }.sorted()
+                    // Expiry is metadata, not the secret: it answers "how long
+                    // does this session last" without reading the value.
+                    let fmt = ISO8601DateFormatter()
+                    let lifetimes = all.filter { $0.name.hasPrefix("sessionKey") }
+                        .map { "\($0.name) expires \($0.expiresDate.map(fmt.string) ?? "at quit (session cookie)")" }
+                        .sorted().joined(separator: "; ")
                     FileHandle.standardError.write(("[\(acct.displayName)] marked=\(Store.hasWebSession(acct.id)) "
-                        + "banked=\(banked.map(String.init) ?? "nil")\n   cookies: \(names.joined(separator: ", "))\n")
+                        + "banked=\(banked.map(String.init) ?? "nil")\n   cookies: \(names.joined(separator: ", "))\n"
+                        + "   session: \(lifetimes.isEmpty ? "none" : lifetimes)\n")
                         .data(using: .utf8)!)
                 }
                 exit(0)
