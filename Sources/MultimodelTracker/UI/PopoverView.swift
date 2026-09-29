@@ -829,7 +829,9 @@ struct FirstRunView: View {
                         case .google:
                             Button("Import Antigravity") {
                                 Task {
-                                    report(await store.importGoogleCLI() == nil
+                                    // A login that is already tracked is not a
+                                    // missing one; the notice says which it was.
+                                    report(await store.importGoogleCLI() == nil && store.accountNotice == nil
                                            ? "No Antigravity or gemini-cli login found on this Mac." : nil)
                                 }
                             }
