@@ -863,7 +863,20 @@ final class Store: ObservableObject {
         else if pendingBanked { event = .banked }
         else if pendingReset { event = .reset }
         // Edge trigger: something is burning now that was not burning before.
-        else if burningNow.contains(where: { !burningBefore.contains($0) }) { event = .burn }
+        else if burningNow.contains(where: { !burningBefore.contains($0) }) {
+            event = .burn
+            // Named, like every other trigger. This was the one unlogged
+            // sound, and so the one that had to be inferred the night a
+            // "false reset choir" turned out to be a burn.
+            for key in burningNow.subtracting(burningBefore).sorted() {
+                let parts = key.split(separator: "/", maxSplits: 1).map(String.init)
+                let acct = parts.first.flatMap(UUID.init).flatMap { id in accounts.first { $0.id == id } }
+                let pool = acct?.limits.first { $0.key == parts.last }
+                AlertLog.write("burn: \(acct.map { "\($0.provider.rawValue)/\($0.displayName)" } ?? key)"
+                               + " / \(pool?.label ?? parts.last ?? key)"
+                               + (pool?.percent.map { " at \(Int($0))%" } ?? ""))
+            }
+        }
         else { event = nil }
         guard let event else { return }
         Sounds.shared.play(event.soundKind)
