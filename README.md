@@ -80,10 +80,13 @@ keychain access after every rebuild.
 
 ## Signing in
 
-- **Anthropic** — per-account OAuth in your real browser (the same
-  "log in with your Claude account" flow Claude Code runs). If you're already
-  signed in to claude.ai there, it's a single Authorize click; the app keeps a
-  refresh token per account, so four accounts stay signed in simultaneously.
+- **Anthropic** — per-account OAuth (the same "log in with your Claude
+  account" flow Claude Code runs), in a sign-in window inside the tracker.
+  The app keeps a refresh token per account, so four accounts stay signed in
+  simultaneously. Signing in there rather than in your browser is what lets
+  the tracker see **banked resets** — see below. **Use my browser instead**
+  at the bottom of that window hands the same sign-in to your real browser
+  (needed for Google sign-in and passkeys) at the cost of banked resets.
   Accounts from the old embedded-window flow keep working through their
   isolated cookie jars.
 - **OpenAI** — either one-click **Import Codex CLI** (adopts `~/.codex/auth.json`)
@@ -94,6 +97,64 @@ keychain access after every rebuild.
   limits as the IDE's **View Usage** menu: Gemini and Claude/GPT, each with
   weekly and five-hour windows. The older Code Assist mode remains available
   for logins that do not expose Antigravity's grouped summary.
+
+## Banked resets
+
+A banked reset is a grant from the vendor that clears a usage limit on
+demand — Codex hands them out as reset credits, and Anthropic has granted
+them occasionally (one per Pro/Max account at a model launch, for instance).
+When an account holds any, its card shows **Banked resets · N**, and the
+banked-reset sound plays when N goes up. The tracker only ever *reads* them:
+nothing in the app spends one. (claude.ai's own **Reset for free** button
+does — that's the only way to use it.)
+
+- **OpenAI** — nothing to do. Codex's usage endpoint reports them.
+- **Google** — Antigravity reports no such thing.
+- **Anthropic** — needs a claude.ai session, which is why sign-in happens
+  in a window inside the tracker.
+
+### Why Anthropic needs a second credential
+
+Anthropic reports banked resets only to **claude.ai itself**. The OAuth
+token that fetches your usage — the one Claude Code uses — is refused them
+(the API answers `ineligible_reason: "surface"`). So to see them, the
+tracker needs a claude.ai web session for that account as well.
+
+That doesn't mean two logins. The sign-in window runs Anthropic's authorize
+page in that account's own private cookie jar, so **one login leaves both
+behind**: the OAuth token for usage, and the claude.ai session for resets.
+
+A **second** login is needed only for an account that doesn't have the
+session yet:
+
+- **Accounts signed in before this version**, or through **Use my browser
+  instead** — those logins happened in your browser, whose cookies the
+  tracker can't and doesn't read. Such an account shows **See banked
+  resets…** under its name in **Config → Anthropic**; click it and sign in
+  once in the tracker's window.
+- **Accounts that sign in with Google or a passkey** can't use the tracker's
+  window (neither works in an embedded web view), so they get usage but not
+  banked resets.
+
+### How long it lasts
+
+The claude.ai session cookie is issued for **28 days**. It looks like
+claude.ai extends it as it's used — a session the tracker had been reading
+for weeks still showed about 27 days left — which would mean it never lapses
+while the tracker runs; that is still being confirmed. The tracker checks
+for resets **every ten minutes**, not on every poll: they change on the
+scale of days.
+
+If the session does lapse, **only the banked-reset line goes**. Usage keeps
+updating over OAuth, which renews itself separately. The account's **See
+banked resets…** link comes back in Config; one sign-in restores it.
+
+### Where the session lives
+
+In that account's own WebKit data store, isolated from your browser and
+from every other account, and deleted with the account. It is never written
+to preferences or logs; `--web-session-probe` lists each account's cookie
+*names* and expiry for diagnosis, never their values.
 
 ## Bar effects
 
@@ -164,6 +225,8 @@ Antigravity's token can never work.
 | `--cursor-probe` | walk the pointer down the Config panel, report live cursor vs the governor's decision |
 | `--loopback-test` | exercise the OAuth redirect catcher without a browser |
 | `--google-raw` | dump Google's `loadCodeAssist` and `fetchAvailableModels` responses verbatim |
+| `--usage-raw` | every account's pools with their **absolute** reset instants (the card rounds to "4h") |
+| `--web-session-probe` | per Anthropic account: web-session mark, claude.ai cookie *names* and session expiry, banked-reset count — never cookie values |
 | `--mock` | fill the app with 12 fabricated accounts (4 per vendor) for UI work — saves nothing, fetches nothing |
 | `MMT_DEBUG=1` | log refreshes and window metrics to stderr |
 
