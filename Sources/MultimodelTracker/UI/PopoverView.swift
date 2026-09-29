@@ -430,6 +430,23 @@ struct AccountCard: View {
     var detailPreview: UsageDetails? = nil
     var showsModelDetails = true
 
+    /// Google's daily service reports different balances from production's.
+    /// When that is where these numbers come from -- because Antigravity is
+    /// there -- the card says so.
+    private var onDailyService: Bool {
+        account.provider == .google && AntigravityServiceRoute.current() == .daily
+    }
+    private var dailyTag: some View {
+        outlinedChip("daily")
+            .help("Reading Google's daily service, as Antigravity is. Config > Google > Service pins it.")
+    }
+    private func outlinedChip(_ text: String) -> some View {
+        Text(text).font(.system(size: 8, weight: .medium))
+            .padding(.horizontal, 5).padding(.vertical, 1.5)
+            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5))
+            .foregroundStyle(.tertiary).lineLimit(1).fixedSize()
+    }
+
     private var worstColor: Color {
         guard let p = account.worstPercent else { return .secondary }
         if p >= 90 { return .red }
@@ -572,17 +589,7 @@ struct AccountCard: View {
                             .lineLimit(1)
                             .fixedSize()
                     }
-                    if account.provider == .google, !rolled, !compact, AntigravityServiceRoute.current() == .daily {
-                        // Google's daily service reports different balances
-                        // from production's. When that is where these numbers
-                        // come from -- because Antigravity is there -- say so.
-                        Text("daily")
-                            .font(.system(size: 8, weight: .medium))
-                            .padding(.horizontal, 5).padding(.vertical, 1.5)
-                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5))
-                            .foregroundStyle(.tertiary).lineLimit(1).fixedSize()
-                            .help("Reading Google's daily service, as Antigravity is. Config > Google > Service pins it.")
-                    }
+                    if onDailyService, !rolled, !compact { dailyTag }
                     if let plan = account.plan, !rolled {
                         // The subscription TIER — filled, in the vendor's
                         // accent. Nothing else belongs in this slot.
@@ -646,11 +653,14 @@ struct AccountCard: View {
                 .onTapGesture { if collapsible { onToggle?() } }
                 .onHover { hoveringRow = $0 }
                 if !collapsible || expanded {
-                if compact, let via = account.authSource.chipLabel {
-                    Text(via).font(.system(size: 8, weight: .medium))
-                        .padding(.horizontal, 5).padding(.vertical, 1.5)
-                        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5))
-                        .foregroundStyle(.tertiary).lineLimit(1).fixedSize()
+                // Compact cards move the route chips below the name; the daily
+                // tag rides along, since the grid is where a details-on user
+                // lives and the tag is no use hidden there.
+                if compact, account.authSource.chipLabel != nil || onDailyService {
+                    HStack(spacing: 4) {
+                        if let via = account.authSource.chipLabel { outlinedChip(via) }
+                        if onDailyService { dailyTag }
+                    }
                 }
                 if let err = account.error {
                     HStack(spacing: 8) {
