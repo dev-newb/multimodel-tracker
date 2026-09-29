@@ -4,6 +4,8 @@ import SwiftUI
 /// removed. Hosted at the top of ConfigPanelContainer; the settings pages
 /// below it are separate hosting views (see ConfigPanel.swift).
 struct AccountsView: View {
+    /// Bumped when the service choice changes, so the "following" note re-reads.
+    @State private var serviceTick = 0
     @ObservedObject var store: Store
     /// Reports the content's height so the window owner can match it — a
     /// tab switch is one discrete resize, nothing animates.
@@ -175,6 +177,28 @@ struct AccountsView: View {
                         ForEach(GoogleAuthMode.allCases, id: \.rawValue) { m in
                             Text(m.displayName).tag(m.rawValue)
                         }
+                    }
+                    .labelsHidden().frame(maxWidth: .infinity).frame(width: Self.pickerWidth)
+                }
+                .padding(.horizontal, 2)
+                // Antigravity can run against Google's DAILY service, whose
+                // balances differ from production's. Auto follows whatever the
+                // installed client is doing and says so; the pins are for when
+                // you know better, or Antigravity is not running to be asked.
+                HStack(spacing: 8) {
+                    Text("Service").font(.system(size: 11)).foregroundStyle(.secondary)
+                    if AntigravityServiceRoute.setting == .auto, let live = AntigravityServiceRoute.detectedHost() {
+                        Text("following Antigravity → \(live.displayName)")
+                            .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+                    }
+                    Spacer()
+                    Picker("", selection: Binding(get: { AntigravityServiceRoute.setting.rawValue },
+                                                  set: { AntigravityServiceRoute.setting = .init(rawValue: $0) ?? .auto
+                                                         serviceTick += 1
+                                                         Task { await store.refreshAll() } })) {
+                        Text("Auto").tag("auto")
+                        Text("Production").tag("production")
+                        Text("Daily").tag("daily")
                     }
                     .labelsHidden().frame(maxWidth: .infinity).frame(width: Self.pickerWidth)
                 }

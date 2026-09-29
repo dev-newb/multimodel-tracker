@@ -64,6 +64,11 @@ Requires macOS 14+ and Xcode command-line tools.
 git clone https://github.com/dev-newb/multimodel-tracker.git
 cd multimodel-tracker
 ./make-app.sh
+```
+
+Quit the app first if it is running from `build/`: the script refuses to overwrite a running bundle. A signed binary overwritten in place fails its own signature check, and the Keychain then refuses it until relaunch.
+
+```bash
 open "build/Multimodel Tracker.app"
 ```
 

@@ -144,3 +144,7 @@ The Mac locked during the remaining UI checks. Repeated vendor-pager interaction
 
 
 The final bundle was signature-verified, installed, and launched. Persisted account counts changed from 2 Anthropic / 1 OpenAI / 2 Google to 2 / 1 / 1; the retired duplicate's metadata was preserved. The installed application selected the daily Google service. Its post-install authenticated refresh was still pending while the Mac was locked, so the earlier live comparison—not post-install usage—is the evidence for the endpoint mismatch.
+
+## Google service: production or daily
+
+Antigravity can run its language server against Google's daily service (`--cloud_code_endpoint https://daily-cloudcode-pa.googleapis.com`), and the two services report different quota balances. The tracker follows whichever the installed client is using, read from the language server's arguments through `sysctl` (the choice exists nowhere on disk). Config > Google > Service shows what it is following and lets you pin production or daily; the Google card wears a small `daily` tag while that is the source. With Antigravity not running, the last host seen live is used.

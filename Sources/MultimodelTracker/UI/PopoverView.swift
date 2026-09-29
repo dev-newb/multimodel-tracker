@@ -572,6 +572,17 @@ struct AccountCard: View {
                             .lineLimit(1)
                             .fixedSize()
                     }
+                    if account.provider == .google, !rolled, !compact, AntigravityServiceRoute.current() == .daily {
+                        // Google's daily service reports different balances
+                        // from production's. When that is where these numbers
+                        // come from -- because Antigravity is there -- say so.
+                        Text("daily")
+                            .font(.system(size: 8, weight: .medium))
+                            .padding(.horizontal, 5).padding(.vertical, 1.5)
+                            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5))
+                            .foregroundStyle(.tertiary).lineLimit(1).fixedSize()
+                            .help("Reading Google's daily service, as Antigravity is. Config > Google > Service pins it.")
+                    }
                     if let plan = account.plan, !rolled {
                         // The subscription TIER — filled, in the vendor's
                         // accent. Nothing else belongs in this slot.
