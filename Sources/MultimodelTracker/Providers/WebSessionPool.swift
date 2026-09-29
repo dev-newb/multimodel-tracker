@@ -58,7 +58,10 @@ final class WebSessionPool {
         if let hit = grantCache[account.id], Date().timeIntervalSince(hit.at) < 600 { return hit.count }
         var count = grantCache[account.id]?.count
         do { count = try await fetchUsage(for: account).bankedResets }
-        catch AdapterError.notSignedIn { count = nil; Store.forgetWebSession(account.id) }
+        catch AdapterError.notSignedIn {
+            count = nil; Store.forgetWebSession(account.id)
+            noteWebSessionEvent("\(account.displayName)  claude.ai reports signed out -- banked resets off until the next sign-in")
+        }
         catch {}
         grantCache[account.id] = (Date(), count)
         return count
@@ -224,8 +227,17 @@ final class WebSessionPool {
             try? await Task.sleep(for: .seconds(3))
         }
         let js = """
-        const orgs = await (await fetch('https://claude.ai/api/organizations', {credentials:'include'})).json();
-        if (!Array.isArray(orgs) || !orgs.length) return JSON.stringify({error:'no-orgs'});
+        // Only a real sign-out reads as one. Anything else -- a 429, a 5xx,
+        // an error body during a claude.ai blip -- is transient, and must
+        // not clear a working session's mark for good.
+        const or = await fetch('https://claude.ai/api/organizations', {credentials:'include'});
+        const text = await or.text();
+        if (or.status === 401 || or.status === 403 || text.includes('account_session_invalid'))
+            return JSON.stringify({error:'signed-out', status: or.status});
+        if (!or.ok) return JSON.stringify({error:'orgs HTTP ' + or.status});
+        let orgs; try { orgs = JSON.parse(text); } catch (e) { return JSON.stringify({error:'orgs not JSON'}); }
+        if (!Array.isArray(orgs)) return JSON.stringify({error:'orgs unexpected shape'});
+        if (!orgs.length) return JSON.stringify({error:'no-orgs'});
         const id = orgs[0].uuid;
         const r = await fetch('https://claude.ai/api/organizations/' + id + '/usage?cedar_ember=1&skip_spend=1', {credentials:'include'});
         return JSON.stringify({status:r.status, body: await r.text()});
@@ -236,7 +248,7 @@ final class WebSessionPool {
             throw AdapterError.transport("bad bridge payload: \(s.prefix(80))")
         }
         if let e = outer["error"] as? String {
-            throw e == "no-orgs" ? AdapterError.notSignedIn : AdapterError.transport(e)
+            throw e == "signed-out" || e == "no-orgs" ? AdapterError.notSignedIn : AdapterError.transport(e)
         }
         let status = outer["status"] as? Int ?? 0
         guard status == 200, let body = (outer["body"] as? String)?.data(using: .utf8) else {
@@ -267,6 +279,13 @@ final class WebSessionPool {
         let line = "\(iso.string(from: Date()))  \(account.displayName)  sessionKey expires \(iso.string(from: expiry))"
             + (before.map { String(format: "  (was %@, %+.1fh)", iso.string(from: $0), expiry.timeIntervalSince($0) / 3600) } ?? "  (first reading this launch)")
             + "\n"
+        noteWebSessionEvent(line.trimmingCharacters(in: .newlines), stamped: false)
+    }
+
+    /// One line in web-session.log. Clearing a mark is logged too, so a
+    /// banked line that disappears always has a written reason.
+    private func noteWebSessionEvent(_ text: String, stamped: Bool = true) {
+        let line = (stamped ? "\(ISO8601DateFormatter().string(from: Date()))  " : "") + text + "\n"
         let url = AlertLog.url.deletingLastPathComponent().appendingPathComponent("web-session.log")
         if let h = try? FileHandle(forWritingTo: url) {
             defer { try? h.close() }
