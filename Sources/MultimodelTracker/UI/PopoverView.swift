@@ -43,9 +43,11 @@ enum OverflowMode: Int, CaseIterable, Identifiable {
 /// estimate is built from: a card is base + pools × row; an error card and
 /// a rolled-up row are fixed. If the card design changes, re-measure.
 enum PopoverMetrics {
-    static let cardBase: CGFloat = 56
+    /// Measured with --measure-card, in two sizes: the model-details chevron
+    /// row adds 23pt to every card that carries one. Anthropic cards never do.
+    static func cardBase(details: Bool) -> CGFloat { details ? 56 : 33 }
+    static func errorCard(details: Bool) -> CGFloat { details ? 83 : 60 }
     static let poolRow: CGFloat = 29
-    static let errorCard: CGFloat = 60
     static let sectionHeader: CGFloat = 20
     static let cardGap: CGFloat = 8
     static let sectionGap: CGFloat = 14
@@ -54,9 +56,10 @@ enum PopoverMetrics {
     /// list — the same allowance maxListHeight uses.
     static let chrome: CGFloat = 160
 
-    static func cardHeight(_ a: Account) -> CGFloat {
-        if a.error != nil { return errorCard }
-        return cardBase + poolRow * CGFloat(max(a.limits.count, 1))
+    static func cardHeight(_ a: Account, details: Bool) -> CGFloat {
+        let has = details && a.provider != .anthropic
+        if a.error != nil { return errorCard(details: has) }
+        return cardBase(details: has) + poolRow * CGFloat(max(a.limits.count, 1))
     }
 
     /// The list's height with EVERY card expanded — the honest worst case,
@@ -66,12 +69,13 @@ enum PopoverMetrics {
     static func fullyExpandedHeight(_ store: Store) -> CGFloat {
         var total = listPadding
         var sections = 0
+        let details = store.showsModelDetails
         for p in Provider.allCases {
             let accts = store.accounts(for: p)
             guard !accts.isEmpty else { continue }
             sections += 1
             total += sectionHeader
-            total += accts.map(cardHeight).reduce(0, +)
+            total += accts.map { cardHeight($0, details: details) }.reduce(0, +)
             total += cardGap * CGFloat(max(accts.count - 1, 0))
         }
         total += sectionGap * CGFloat(max(sections - 1, 0))

@@ -45,8 +45,13 @@ final class Store: ObservableObject {
     private var importingGoogle = false
     private var importingClaude = false
 
+    /// The per-model breakdown under each card. OFF by default: most people
+    /// want the numbers, not the anatomy, and every card grows a chevron row
+    /// when it is on. A persisted toggle in Config > Layout is there for
+    /// anyone who wants to see how it all organises (Rich does). --mock and
+    /// the render flags turn it on so a screenshot shows everything.
     @Published private(set) var showsModelDetails =
-        UserDefaults.standard.object(forKey: "mmt.showsModelDetails") as? Bool ?? true
+        UserDefaults.standard.object(forKey: "mmt.showsModelDetails") as? Bool ?? false
 
     func setShowsModelDetails(_ show: Bool) {
         showsModelDetails = show
@@ -210,6 +215,7 @@ final class Store: ObservableObject {
 
     func enableMockMode() {
         mockMode = true
+        showsModelDetails = true        // a mock exists to show everything
         let examples = Self.mockAccounts()
         accounts = CommandLine.arguments.contains("--mock-three")
             ? Provider.allCases.compactMap { provider in examples.first { $0.provider == provider } }
