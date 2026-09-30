@@ -48,6 +48,8 @@ enum PopoverMetrics {
     static func cardBase(details: Bool) -> CGFloat { details ? 56 : 33 }
     static func errorCard(details: Bool) -> CGFloat { details ? 83 : 60 }
     static let poolRow: CGFloat = 29
+    /// The page dots under a cycling card's rows, with their spacing.
+    static let cycleDots: CGFloat = 11
     static let sectionHeader: CGFloat = 20
     static let cardGap: CGFloat = 8
     static let sectionGap: CGFloat = 14
@@ -79,12 +81,20 @@ enum PopoverMetrics {
         var total = listPadding
         var sections = 0
         let details = store.showsModelDetails
+        let cycle = store.cycleSeconds > 0
         for p in Provider.allCases {
             let accts = store.accounts(for: p)
             guard !accts.isEmpty else { continue }
             sections += 1
             total += sectionHeader
-            total += accts.map { cardHeight($0, details: details, rows: shownRows($0, among: accts)) }.reduce(0, +)
+            total += accts.map { a -> CGFloat in
+                // A cycling card is four rows and its dots, whatever it holds,
+                // and a cycling Google card has no model panel.
+                let shown = shownRows(a, among: accts)
+                let cycles = cycle && a.error == nil && shown + (store.modelQuotas[a.id]?.count ?? 0) > 4
+                return cardHeight(a, details: details && !(cycle && a.provider == .google),
+                                  rows: cycles ? 4 : shown) + (cycles ? cycleDots : 0)
+            }.reduce(0, +)
             total += cardGap * CGFloat(max(accts.count - 1, 0))
         }
         total += sectionGap * CGFloat(max(sections - 1, 0))
@@ -226,7 +236,8 @@ struct PopoverView: View {
                         Task { await store.refresh(account) }
                     },
                     collapsible: true, expanded: store.expanded[account.id] ?? true,
-                    onToggle: { toggleAccount(account) }, compact: compact, showsModelDetails: store.showsModelDetails)
+                    onToggle: { toggleAccount(account) }, compact: compact, showsModelDetails: store.showsModelDetails,
+                    extraRows: store.modelQuotas[account.id] ?? [], cycleSeconds: store.cycleSeconds)
     }
 
     private func toggleAccount(_ account: Account) {
@@ -439,7 +450,8 @@ struct PopoverView: View {
                                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
                                     store.setExpanded(account.id, !open)
                                 }
-                            }, showsModelDetails: store.showsModelDetails)
+                            }, showsModelDetails: store.showsModelDetails,
+                            extraRows: store.modelQuotas[account.id] ?? [], cycleSeconds: store.cycleSeconds)
                     .padding(.horizontal, 12)
             }
         }
@@ -495,6 +507,14 @@ struct AccountCard: View {
     @State private var hoveringRow = false
     var detailPreview: UsageDetails? = nil
     var showsModelDetails = true
+    /// Rows beyond the card's own pools -- a Google account's model quotas --
+    /// shown only while cycling.
+    var extraRows: [UsageLimit] = []
+    /// Seconds per page when cycling; 0 is off (see Store.cycleSeconds).
+    var cycleSeconds = 0
+    @State private var page = 0
+    @State private var nudge = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Google's daily service reports different balances from production's.
     /// When that is where these numbers come from -- because Antigravity is
@@ -742,15 +762,15 @@ struct AccountCard: View {
                     }
                 } else if account.limits.isEmpty {
                     Text("No data yet").font(.system(size: 10)).foregroundStyle(.tertiary)
+                } else if cycling {
+                    cyclingRows
                 } else {
-                    ForEach(account.limits) { l in
-                        LimitRow(limit: l, accent: accent,
-                                 maxedStyle: styleForMaxed(maxedOrdinals[l.id] ?? 0),
-                                 burnStyle: styleForBurn(burnOrdinals[l.id] ?? 0),
-                                 animating: animating)
-                    }
+                    ForEach(account.limits) { l in limitRow(l) }
                 }
-                if showsModelDetails, account.provider != .anthropic {
+                // With cycling on, a Google card's models come round in the
+                // card itself, so its separate model panel would repeat them.
+                if showsModelDetails, account.provider != .anthropic,
+                   !(account.provider == .google && cycleSeconds > 0) {
                     ModelUsageDisclosure(account: account, accent: accent, preview: detailPreview,
                                          initiallyExpanded: detailPreview != nil)
                         .id(account.credentialRevision)
@@ -762,7 +782,73 @@ struct AccountCard: View {
         .padding(.vertical, collapsible && !expanded ? 7 : 9).padding(.horizontal, 10)
         .background(Color.primary.opacity(collapsible && !expanded && hoveringRow ? 0.08 : 0.045),
                     in: RoundedRectangle(cornerRadius: 8))
+        // A click on the card that no control claims turns the page now.
+        // The header row, the chevrons and the cross keep their own clicks.
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onTapGesture { turnPage() }
         .clipped()
+    }
+
+    // MARK: cycling
+    private static let perPage = 4
+    private var allRows: [UsageLimit] { account.limits + extraRows }
+    private var cycling: Bool {
+        cycleSeconds > 0 && account.error == nil && allRows.count > Self.perPage && (!collapsible || expanded)
+    }
+    private var pages: [[UsageLimit]] {
+        let rows = allRows
+        return stride(from: 0, to: rows.count, by: Self.perPage).map { Array(rows[$0..<min($0 + Self.perPage, rows.count)]) }
+    }
+    private func limitRow(_ l: UsageLimit) -> some View {
+        LimitRow(limit: l, accent: accent,
+                 maxedStyle: styleForMaxed(maxedOrdinals[l.id] ?? 0),
+                 burnStyle: styleForBurn(burnOrdinals[l.id] ?? 0),
+                 animating: animating)
+    }
+    /// An invisible stand-in with a real row's geometry, so a short last
+    /// page is exactly as tall as a full one.
+    private static let filler = UsageLimit(key: "filler", label: " ", percent: 0, resetsAt: nil)
+
+    /// Four rows at a time, cross-fading to the next four every
+    /// cycleSeconds while the card is on screen. Dots say where you are.
+    @ViewBuilder private var cyclingRows: some View {
+        let all = pages
+        let current = page % all.count
+        VStack(alignment: .leading, spacing: 7) {
+            ZStack(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(all[current]) { l in limitRow(l) }
+                    ForEach(0..<(Self.perPage - all[current].count), id: \.self) { _ in
+                        limitRow(Self.filler).hidden()
+                    }
+                }
+                .id(current)
+                .transition(.opacity)
+            }
+            HStack(spacing: 4) {
+                ForEach(all.indices, id: \.self) { i in
+                    Circle().fill(Color.primary.opacity(i == current ? 0.55 : 0.18)).frame(width: 4, height: 4)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .accessibilityLabel("Page \(current + 1) of \(all.count)")
+        }
+        .task(id: "\(cycleSeconds)-\(all.count)-\(nudge)-\(animating)") {
+            guard animating, all.count > 1 else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Double(cycleSeconds)))
+                guard !Task.isCancelled else { return }
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.6)) { page = (page + 1) % all.count }
+            }
+        }
+    }
+
+    /// Turns the page now, and restarts the timer so the new page gets its
+    /// full turn instead of whatever was left of the old one's.
+    private func turnPage() {
+        guard cycling else { return }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.45)) { page = (page + 1) % max(pages.count, 1) }
+        nudge += 1
     }
 }
 

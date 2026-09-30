@@ -56,6 +56,41 @@ final class Store: ObservableObject {
     func setShowsModelDetails(_ show: Bool) {
         showsModelDetails = show
         if !mockMode { UserDefaults.standard.set(show, forKey: "mmt.showsModelDetails") }
+        Task { await loadModelQuotas(force: true) }
+    }
+
+    // MARK: cycling values
+    /// A card with more than four values shows four at a time and fades to
+    /// the next set every this-many seconds; 0 is off. In practice that is a
+    /// Google card with model details on: its four pools, then its model
+    /// quotas four at a time. OpenAI and Anthropic cards rarely carry more.
+    static let cycleChoices = [0, 3, 5, 10]
+    @Published private(set) var cycleSeconds: Int =
+        UserDefaults.standard.object(forKey: "mmt.cycleSeconds") as? Int ?? 5
+    func setCycleSeconds(_ s: Int) {
+        cycleSeconds = s
+        if !mockMode { UserDefaults.standard.set(s, forKey: "mmt.cycleSeconds") }
+        Task { await loadModelQuotas(force: true) }
+    }
+
+    /// Per-model quotas for Google accounts, as ordinary limit rows, so a
+    /// cycling card can show them. Fetched only while cycling AND model
+    /// details are on, at most once per five minutes per account; a failed
+    /// read keeps the previous rows.
+    @Published private(set) var modelQuotas: [UUID: [UsageLimit]] = [:]
+    private var modelQuotasAt: [UUID: Date] = [:]
+    private var wantsModelQuotas: Bool { cycleSeconds > 0 && showsModelDetails }
+
+    func loadModelQuotas(force: Bool = false) async {
+        guard wantsModelQuotas else { return }
+        for a in accounts(for: .google) where a.error == nil || mockMode {
+            if !force, let at = modelQuotasAt[a.id], Date().timeIntervalSince(at) < 300 { continue }
+            modelQuotasAt[a.id] = Date()
+            guard let result = try? await AccountUsageDetails.fetch(a) else { continue }
+            modelQuotas[a.id] = result.primary.rows.map {
+                UsageLimit(key: "model-\($0.id)", label: $0.model, percent: $0.value, resetsAt: $0.resetsAt)
+            }
+        }
     }
 
     private let defaultsKey = "mmt.accounts.v1"
@@ -216,6 +251,7 @@ final class Store: ObservableObject {
     func enableMockMode() {
         mockMode = true
         showsModelDetails = true        // a mock exists to show everything
+        Task { await loadModelQuotas(force: true) }
         let examples = Self.mockAccounts()
         accounts = CommandLine.arguments.contains("--mock-three")
             ? Provider.allCases.compactMap { provider in examples.first { $0.provider == provider } }
@@ -548,6 +584,7 @@ final class Store: ObservableObject {
         if webSessionRows.contains(id) { setWebSession(false, for: id) }
         accounts.removeAll { $0.id == id }
         expanded[id] = nil; saveExpanded()
+        modelQuotas[id] = nil; modelQuotasAt[id] = nil
         save()
     }
 
@@ -867,6 +904,8 @@ final class Store: ObservableObject {
         defer {
             isRefreshing = false
             if passSuccesses > 0 { lastRefresh = Date() }
+            // Throttled per account; a no-op unless cycling and details are on.
+            Task { await self.loadModelQuotas() }
             webSessionRows = Set((UserDefaults.standard.array(forKey: Self.webSessionKey) as? [String] ?? []).compactMap(UUID.init))
             offline = passSuccesses == 0 && passConnectivityFailures > 0
             if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil {

@@ -329,6 +329,16 @@ struct SectionPageView: View {
                 Text("Show the extra model information and its expand arrow on every account card.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Text("Cycle values").font(.system(size: 12))
+                    Picker("", selection: Binding(get: { store.cycleSeconds }, set: { store.setCycleSeconds($0) })) {
+                        ForEach(Store.cycleChoices, id: \.self) { s in Text(s == 0 ? "Off" : "\(s) s").tag(s) }
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                }
+                Text("Cards with more than four values show four at a time and fade to the next. Click a card to move on. With model details on, Google cards cycle through each model's quota.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text("Accounts roll up to one-line summaries by default. When the popover would outgrow your screen even so, a vendor's accounts switch to this layout.")
                     .font(.system(size: 10)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)

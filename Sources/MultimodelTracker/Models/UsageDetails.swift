@@ -6,6 +6,8 @@ struct ModelUsageDetail: Identifiable {
     let value: Double
     var identifier: String? = nil
     var caption: String? = nil
+    /// The quota's reset instant, for showing a model as an ordinary limit row.
+    var resetsAt: Date? = nil
 }
 struct GoogleQuotaGroup: Identifiable {
     let id: String
@@ -114,6 +116,12 @@ enum GoogleModelDetails {
         return result
     }
 
+    static func resetDate(_ value: Any?) -> Date? {
+        guard let string = value as? String else { return nil }
+        let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return ISO8601DateFormatter().date(from: string) ?? fractional.date(from: string)
+    }
+
     private static func resetCaption(_ value: Any?) -> String? {
         guard let string = value as? String else { return nil }
         let fractional = ISO8601DateFormatter(); fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -142,7 +150,7 @@ enum GoogleModelDetails {
             guard seen.insert(key).inserted else { continue }
             let name = (catalog[id]?["displayName"] as? String) ?? id
             rows.append(.init(model: name, value: (1 - remaining) * 100, identifier: key,
-                              caption: resetCaption(bucket["resetTime"])))
+                              caption: resetCaption(bucket["resetTime"]), resetsAt: resetDate(bucket["resetTime"])))
         }
         // Same title can describe different canonical IDs. Preserve those rows,
         // but label the variants explicitly instead of showing identical bars.
