@@ -56,10 +56,19 @@ enum PopoverMetrics {
     /// list — the same allowance maxListHeight uses.
     static let chrome: CGFloat = 160
 
-    static func cardHeight(_ a: Account, details: Bool) -> CGFloat {
+    static func cardHeight(_ a: Account, details: Bool, rows: Int? = nil) -> CGFloat {
         let has = details && a.provider != .anthropic
         if a.error != nil { return errorCard(details: has) }
-        return cardBase(details: has) + poolRow * CGFloat(max(a.limits.count, 1))
+        return cardBase(details: has) + poolRow * CGFloat(max(rows ?? a.limits.count, 1))
+    }
+
+    /// Rows a card will actually SHOW: a Google card padded with its plan's
+    /// missing pools (PopoverView.displayed) shows its richer sibling's count.
+    @MainActor
+    static func shownRows(_ a: Account, among accounts: [Account]) -> Int {
+        guard a.provider == .google, a.error == nil else { return a.limits.count }
+        let peers = accounts.filter { $0.id != a.id && $0.error == nil && !$0.limits.isEmpty && $0.plan != a.plan }
+        return max(a.limits.count, peers.map { $0.limits.filter { $0.percent != nil }.count }.max() ?? 0)
     }
 
     /// The list's height with EVERY card expanded — the honest worst case,
@@ -75,7 +84,7 @@ enum PopoverMetrics {
             guard !accts.isEmpty else { continue }
             sections += 1
             total += sectionHeader
-            total += accts.map { cardHeight($0, details: details) }.reduce(0, +)
+            total += accts.map { cardHeight($0, details: details, rows: shownRows($0, among: accts)) }.reduce(0, +)
             total += cardGap * CGFloat(max(accts.count - 1, 0))
         }
         total += sectionGap * CGFloat(max(sections - 1, 0))
@@ -176,6 +185,33 @@ struct PopoverView: View {
 
     // MARK: overflow layouts — A grid, B pager, D tabs
 
+    /// B: on GOOGLE, a pool a sibling account reports and this one doesn't is
+    /// shown as "not on <plan>" -- Google's Free plan has no 5-hour windows
+    /// (verified: it sends two buckets where Pro sends four), and saying so
+    /// is information, not padding. Only when the plans differ, and only
+    /// between accounts whose last read succeeded, so an error or a blip can
+    /// never pass for a plan difference. Google only: on OpenAI the Spark
+    /// pools come and go on the SAME plan, where "not on Pro" would be false.
+    private func displayed(_ a: Account, among accounts: [Account]) -> Account {
+        guard a.provider == .google, a.error == nil, !a.limits.isEmpty else { return a }
+        let peers = accounts.filter { $0.id != a.id && $0.error == nil && !$0.limits.isEmpty && $0.plan != a.plan }
+        guard let reference = peers.max(by: { $0.limits.count < $1.limits.count }),
+              reference.limits.count > a.limits.count else { return a }
+        let mine = Dictionary(a.limits.map { ($0.label, $0) }, uniquingKeysWith: { first, _ in first })
+        var rows: [UsageLimit] = []
+        for l in reference.limits where l.percent != nil {
+            if let own = mine[l.label] { rows.append(own); continue }
+            var gap = UsageLimit(key: "absent-\(l.key)", label: l.label, percent: nil, resetsAt: nil)
+            gap.unavailable = a.plan.map { "not on \($0)" } ?? "not on this plan"
+            rows.append(gap)
+        }
+        let placed = Set(rows.map(\.label))
+        rows += a.limits.filter { !placed.contains($0.label) }
+        var shown = a
+        shown.limits = rows
+        return shown
+    }
+
     private func card(_ account: Account, _ p: Provider, compact: Bool = false) -> some View {
         AccountCard(account: account, accent: p.accent,
                     maxedStyle: store.effectiveMaxedStyle,
@@ -243,11 +279,17 @@ struct PopoverView: View {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 8, alignment: .top),
                                     GridItem(.flexible(), spacing: 8, alignment: .top)],
                           alignment: .leading, spacing: 8) {
-                    ForEach(accounts) { a in card(a, p, compact: true).fixedSize(horizontal: false, vertical: true) }
+                    // A: OPEN cards share their row's height, so bottoms line up
+                    // whatever the cause (plans, one card's details open, an
+                    // error); a ROLLED card keeps its own one-line height.
+                    ForEach(accounts) { a in
+                        card(displayed(a, among: accounts), p, compact: true)
+                            .fixedSize(horizontal: false, vertical: !(store.expanded[a.id] ?? true))
+                    }
                 }
                 .padding(.horizontal, 12)
             case .pager:
-                card(accounts[idx], p)
+                card(displayed(accounts[idx], among: accounts), p)
                     .id(accounts[idx].id)
                     .padding(.horizontal, 12)
             case .tabs:
@@ -275,7 +317,7 @@ struct PopoverView: View {
                     }
                 }
                 .padding(.horizontal, 12)
-                card(accounts[idx], p)
+                card(displayed(accounts[idx], among: accounts), p)
                     .id(accounts[idx].id)
                     .padding(.horizontal, 12)
             }
@@ -378,7 +420,7 @@ struct PopoverView: View {
 
             ForEach(accounts) { account in
                 let open = isExpanded(account, in: accounts)
-                AccountCard(account: account, accent: p.accent,
+                AccountCard(account: displayed(account, among: accounts), accent: p.accent,
                             maxedStyle: store.effectiveMaxedStyle,
                             maxedOffset: store.maxedVaried ? maxedOffsets[account.id] ?? 0 : -1,
                             burnBase: store.effectiveBurnStyle,
@@ -763,7 +805,7 @@ struct LimitRow: View {
                         .monospacedDigit()
                         .foregroundStyle(limit.burning ? Color(red: 1, green: 0.68, blue: 0.25) : .primary)
                 }
-                Text(limit.resetText).font(.system(size: 10)).foregroundStyle(opaqueTertiary)
+                Text(limit.unavailable ?? limit.resetText).font(.system(size: 10)).foregroundStyle(opaqueTertiary)
             }
             if isMaxed {
                 // Placeholder keeping the capsule's slot; the artwork is on
@@ -780,6 +822,10 @@ struct LimitRow: View {
                     }
                 }
                 .frame(height: 5)
+            } else if limit.unavailable != nil {
+                // Same slot as a real bar, so a row that says "not on this
+                // plan" is exactly as tall as one with a value.
+                Capsule().fill(Color.primary.opacity(0.05)).frame(height: 5)
             }
         }
         // The whole row is the hover target, not just the reset text, and the

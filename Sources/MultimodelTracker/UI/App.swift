@@ -267,6 +267,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             }
         }
 
+        // `--render-grid-options <dir>` draws the ways a grid row can present
+        // two open cards of different lengths (a Pro Google account has four
+        // pools, a Free one two), side by side, from fabricated accounts.
+        if let i = CommandLine.arguments.firstIndex(of: "--render-grid-options"),
+           CommandLine.arguments.indices.contains(i + 1) {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            Task { @MainActor in
+                func pool(_ k: String, _ l: String, _ p: Double?, _ h: Double?) -> UsageLimit {
+                    .init(key: k, label: l, percent: p, resetsAt: h.map { Date().addingTimeInterval($0 * 3600) })
+                }
+                var pro = Account(provider: .google, label: "studio@example.com", plan: "Pro", limits: [
+                    pool("gw", "Gemini · weekly", 12, 140), pool("g5", "Gemini · 5-hour", 30, 4),
+                    pool("cw", "Claude/GPT · weekly", 8, 140), pool("c5", "Claude/GPT · 5-hour", 0, 4)])
+                pro.nickname = "Studio"; pro.authSource = .antigravity; pro.lastRefreshed = Date()
+                var free = Account(provider: .google, label: "personal@example.com", plan: "Free", limits: [
+                    pool("gw", "Gemini · weekly", 0, 140), pool("cw", "Claude/GPT · weekly", 0, 140)])
+                free.nickname = "Personal"; free.authSource = .browser; free.lastRefreshed = Date()
+                func absent(_ k: String, _ l: String) -> UsageLimit { var x = pool(k, l, nil, nil); x.unavailable = "not on Free"; return x }
+                var padded = free
+                padded.limits = [free.limits[0], absent("g5", "Gemini · 5-hour"),
+                                 free.limits[1], absent("c5", "Claude/GPT · 5-hour")]
+                func card(_ a: Account) -> AccountCard {
+                    AccountCard(account: a, accent: Provider.google.accent, maxedStyle: .glitch, animating: false,
+                                collapsible: true, expanded: true, compact: true, showsModelDetails: true)
+                }
+                @ViewBuilder func grid(_ l: Account, _ r: Account, stretch: Bool) -> some View {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 8, alignment: .top),
+                                        GridItem(.flexible(), spacing: 8, alignment: .top)],
+                              alignment: .leading, spacing: 8) {
+                        ForEach([l, r]) { a in
+                            if stretch { card(a) } else { card(a).fixedSize(horizontal: false, vertical: true) }
+                        }
+                    }
+                }
+                func panel(_ title: String, _ note: String, _ body: some View) -> some View {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(title).font(.system(size: 15, weight: .bold))
+                        Text(note).font(.system(size: 11)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true).frame(height: 44, alignment: .top)
+                        body
+                    }.frame(width: 496).padding(12)
+                }
+                let view = HStack(alignment: .top, spacing: 18) {
+                    panel("Now", "Each card its own height. Content is honest; bottoms don't line up.",
+                          grid(pro, free, stretch: false))
+                    panel("A — open cards share the row", "The shorter open card is drawn as tall as its neighbour. Bottoms line up; rolled cards still roll.",
+                          grid(pro, free, stretch: true))
+                    panel("B — show what the plan lacks", "The Free card lists the 5-hour windows it doesn't have. Same rows, same height, and it says why.",
+                          grid(pro, padded, stretch: false))
+                }
+                .padding(16).background(Color(red: 0.12, green: 0.12, blue: 0.13)).environment(\.colorScheme, .dark)
+                let host = NSHostingView(rootView: view)
+                let size = host.fittingSize
+                let w = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: size.width, height: size.height),
+                                 styleMask: [.borderless], backing: .buffered, defer: false)
+                w.contentView = host; w.orderFrontRegardless()
+                try? await Task.sleep(for: .seconds(1))
+                if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                    host.cacheDisplay(in: host.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("grid-options.png"))
+                }
+                exit(0)
+            }
+        }
+
         // `--render-squeeze <dir>` renders the popover in a REAL hosting view
         // twice: at the height it asks for, and squeezed to 60% of that --
         // the case of a window that comes out shorter than its content. The

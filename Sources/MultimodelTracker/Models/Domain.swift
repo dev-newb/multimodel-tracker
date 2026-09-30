@@ -44,6 +44,11 @@ struct UsageLimit: Identifiable, Codable, Hashable {
     /// Set by the Store when this pool is burning. Derived state, NOT from
     /// the provider — and deliberately excluded from CodingKeys below.
     var burning: Bool = false
+    /// Set when this pool is shown only to say the account DOESN'T have it
+    /// (a Free Google plan has no 5-hour windows): the row carries this note
+    /// where the reset time goes, and an empty track. Derived, never saved --
+    /// out of CodingKeys like `burning`.
+    var unavailable: String? = nil
 
     /// `burning` is omitted on purpose. Swift's synthesised decoder does NOT
     /// fall back to a property's default value when the key is missing — it
