@@ -321,6 +321,16 @@ struct GoogleAdapterImpl: UsageAdapter {
                                     report["limits"] = try Self.parseQuotaSummary(root).limits.map {
                                         ["label": $0.label, "usedPercent": $0.percent as Any] as [String: Any]
                                     }
+                                    // Every bucket Google SENT, before our filter: the
+                                    // way to tell "not reported" from "dropped by us".
+                                    let payload = (root["response"] as? [String: Any]) ?? root
+                                    report["rawBuckets"] = (payload["groups"] as? [[String: Any]] ?? []).flatMap { g in
+                                        (g["buckets"] as? [[String: Any]] ?? []).map { b -> [String: Any] in
+                                            ["group": g["displayName"] as Any, "bucket": b["displayName"] as Any,
+                                             "disabled": b["disabled"] as Any,
+                                             "hasRemaining": (b["remainingFraction"] ?? (b["remaining"] as? [String: Any])?["remainingFraction"]) != nil]
+                                        }
+                                    }
                                 } else if method == "fetchAvailableModels" {
                                     report["models"] = (root["models"] as? [String: [String: Any]] ?? [:]).mapValues {
                                         $0.filter { ["displayName", "modelId", "isSelectable", "isHidden", "disabled", "quotaInfo"].contains($0.key) }
