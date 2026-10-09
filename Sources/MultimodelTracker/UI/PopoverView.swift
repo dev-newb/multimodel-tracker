@@ -655,7 +655,7 @@ struct AccountCard: View {
                                  animating: animating)
                     }
                 }
-                if showsModelDetails {
+                if showsModelDetails && account.provider != .google {
                     ModelUsageDisclosure(account: account, accent: accent, preview: detailPreview,
                                          initiallyExpanded: detailPreview != nil)
                         .id(account.credentialRevision)

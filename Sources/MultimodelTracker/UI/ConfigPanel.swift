@@ -326,7 +326,7 @@ struct SectionPageView: View {
                                                            set: { store.setShowsModelDetails($0) }))
                     .toggleStyle(.checkbox)
                     .font(.system(size: 12))
-                Text("Show the extra model information and its expand arrow on every account card.")
+                Text("Show the extra model information and its expand arrow on Anthropic and OpenAI account cards.")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Accounts roll up to one-line summaries by default. When the popover would outgrow your screen even so, a vendor's accounts switch to this layout.")

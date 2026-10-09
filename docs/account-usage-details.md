@@ -152,3 +152,7 @@ The Mac locked during the remaining UI checks. Repeated vendor-pager interaction
 
 
 The final bundle was signature-verified, installed, and launched. Persisted account counts changed from 2 Anthropic / 1 OpenAI / 2 Google to 2 / 1 / 1; the retired duplicate's metadata was preserved. The installed application selected the daily Google service. Its post-install authenticated refresh was still pending while the Mac was locked, so the earlier live comparison—not post-install usage—is the evidence for the endpoint mismatch.
+
+## October 9: Google uses only normal quota rows
+
+Google account cards no longer instantiate the extra model disclosure, so they have no extra quota-pool/model panel or bottom expand arrow. The normal Google quota summary remains on the main card in every layout, including all reported Gemini and Claude/GPT weekly and five-hour windows. Missing backend windows are not fabricated. The header control still rolls up the whole account card. The model-details preference now applies to Anthropic and OpenAI.
