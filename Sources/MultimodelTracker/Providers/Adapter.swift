@@ -2,7 +2,7 @@ import Foundation
 
 struct FetchedUsage {
     var plan: String?
-    let limits: [UsageLimit]
+    var limits: [UsageLimit]
     /// OpenAI's banked limit-reset count. Kept as a number as well as in the
     /// row label, because the "banked reset added" alert needs to compare it
     /// against the previous refresh — parsing it back out of a label would
@@ -95,6 +95,34 @@ struct OpenAIAdapter: UsageAdapter {
         if http.statusCode == 401 || http.statusCode == 403 { throw AdapterError.notSignedIn }
         guard http.statusCode == 200 else { throw AdapterError.transport("HTTP \(http.statusCode)") }
         var out = try OpenAIParser.parse(data)
+        if let count = out.bankedResets, let index = out.limits.firstIndex(where: { $0.key == "resets" }) {
+            var details = BankedResetDetails(availableCount: count, expirations: [], checkedAt: Date())
+            if count > 0 {
+                // Same account token and workspace header as this usage read.
+                // This GET only lists credits; it never redeems a reset.
+                var resetRequest = req
+                resetRequest.url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
+                resetRequest.timeoutInterval = 15
+                resetRequest.setValue("Codex Desktop", forHTTPHeaderField: "originator")
+                resetRequest.setValue("CODEX", forHTTPHeaderField: "OAI-Product-Sku")
+                resetRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+                do {
+                    let (resetData, response) = try await URLSession.shared.data(for: resetRequest)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                        throw BankedResetDetails.ParseError.malformed
+                    }
+                    details = try BankedResetDetails.parse(resetData)
+                    out.bankedResets = details.availableCount
+                    out.limits[index] = UsageLimit(key: "resets", label: "Banked resets · \(details.availableCount)",
+                                                   percent: nil, resetsAt: nil)
+                } catch {
+                    // An optional expiration lookup must not discard fresh quota
+                    // percentages or turn a working login into a sign-in error.
+                    details.lookupFailed = true
+                }
+            }
+            out.limits[index].bankedResetDetails = details
+        }
         out.authSource = creds.refreshToken == nil ? .codexCLI : .browser
         out.authentication = AuthenticationInfo(source: out.authSource!, accessExpiresAt: AuthenticationInfo.jwtExpiry(creds.accessToken), canRefresh: creds.refreshToken != nil)
         return out

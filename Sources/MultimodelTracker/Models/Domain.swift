@@ -42,6 +42,7 @@ struct UsageLimit: Identifiable, Codable, Hashable {
     let percent: Double?
     let resetsAt: Date?
     var unavailableReason: String? = nil
+    var bankedResetDetails: BankedResetDetails? = nil
     /// Set by the Store when this pool is burning. Derived state, NOT from
     /// the provider — and deliberately excluded from CodingKeys below.
     var burning: Bool = false
@@ -53,7 +54,7 @@ struct UsageLimit: Identifiable, Codable, Hashable {
     /// real accounts and replaced them with the demo seed. Derived state must
     /// stay out of the persisted shape.
     private enum CodingKeys: String, CodingKey {
-        case key, label, percent, resetsAt, unavailableReason
+        case key, label, percent, resetsAt, unavailableReason, bankedResetDetails
     }
 
     var fraction: Double { min(max((percent ?? 0) / 100, 0), 1) }

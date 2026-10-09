@@ -4,7 +4,7 @@ import Foundation
 ///   rate_limit { primary_window, secondary_window } — each window carries
 ///     { used_percent, limit_window_seconds, reset_at }, either can be null
 ///   additional_rate_limits[] { limit_name, metered_feature, rate_limit }
-///   rate_limit_reset_credits { available_count }   (counts only, no expiry)
+///   rate_limit_reset_credits { available_count }   (summary count; expirations use the separate credits endpoint)
 ///
 /// Pool keys are built from the metered feature plus the window LENGTH,
 /// never from the primary/secondary slot: OpenAI files the same logical

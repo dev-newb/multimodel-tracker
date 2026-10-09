@@ -681,7 +681,12 @@ struct LimitRow: View {
     /// position can be checked without a live mouse.
     var forceHover = false
     @State private var hovering = false
-    private var showTip: Bool { hovering || forceHover }
+    private var showTip: Bool { (hovering || forceHover) && limit.key != "resets" }
+    private let expiryAmber = Color(red: 1, green: 0.68, blue: 0.15)
+    private var resetExpiresSoon: Bool { limit.bankedResetDetails?.expiresSoon() == true }
+    private var expiryTooltip: String {
+        limit.bankedResetDetails?.tooltip() ?? "Expiration dates have not been checked yet. Refresh to check OpenAI."
+    }
     @Environment(\.colorScheme) private var scheme
 
     /// .secondary/.tertiary are TRANSLUCENT — a bright trace behind them
@@ -703,7 +708,10 @@ struct LimitRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(limit.label).font(.system(size: 11)).foregroundStyle(opaqueSecondary).lineLimit(1)
+                Text(limit.label).font(.system(size: 11))
+                    .foregroundStyle(resetExpiresSoon ? expiryAmber : opaqueSecondary)
+                    .shadow(color: resetExpiresSoon ? expiryAmber.opacity(0.65) : .clear, radius: 4)
+                    .lineLimit(1)
                 Spacer()
                 if let p = limit.percent {
                     Text("\(Int(p))%").font(.system(size: 11, weight: .semibold))
@@ -736,6 +744,12 @@ struct LimitRow: View {
         // non-activating panel. contentShape makes the gaps hoverable too.
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        // Also allow a click for remote desktops that do not send hover events.
+        .onTapGesture { if limit.key == "resets" { hovering.toggle() } }
+        .background {
+            if limit.key == "resets" { ResetExpiryTooltip(text: expiryTooltip, isPresented: hovering) }
+        }
+        .accessibilityHint(limit.key == "resets" ? expiryTooltip : limit.resetDetail)
         .overlay(alignment: .bottomTrailing) {
             if showTip {
                 Text(limit.resetDetail)
