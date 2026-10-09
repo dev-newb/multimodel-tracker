@@ -727,6 +727,8 @@ struct LimitRow: View {
                     }
                 }
                 .frame(height: 5)
+            } else if limit.unavailableReason != nil {
+                Capsule().fill(Color.primary.opacity(0.10)).frame(height: 5)
             }
         }
         // The whole row is the hover target, not just the reset text, and the

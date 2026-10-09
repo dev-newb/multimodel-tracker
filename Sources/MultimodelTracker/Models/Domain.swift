@@ -41,6 +41,7 @@ struct UsageLimit: Identifiable, Codable, Hashable {
     /// 0...100. nil means the provider reported no data for this pool.
     let percent: Double?
     let resetsAt: Date?
+    var unavailableReason: String? = nil
     /// Set by the Store when this pool is burning. Derived state, NOT from
     /// the provider — and deliberately excluded from CodingKeys below.
     var burning: Bool = false
@@ -52,7 +53,7 @@ struct UsageLimit: Identifiable, Codable, Hashable {
     /// real accounts and replaced them with the demo seed. Derived state must
     /// stay out of the persisted shape.
     private enum CodingKeys: String, CodingKey {
-        case key, label, percent, resetsAt
+        case key, label, percent, resetsAt, unavailableReason
     }
 
     var fraction: Double { min(max((percent ?? 0) / 100, 0), 1) }
@@ -60,6 +61,7 @@ struct UsageLimit: Identifiable, Codable, Hashable {
     /// Hover detail behind the terse label: the actual clock time plus the
     /// full distance. Includes the weekday once it's not today.
     var resetDetail: String {
+        if let unavailableReason { return unavailableReason }
         guard let r = resetsAt else { return "no reset reported" }
         let secs = r.timeIntervalSinceNow
         if secs <= 0 { return "reset due now" }
@@ -77,6 +79,7 @@ struct UsageLimit: Identifiable, Codable, Hashable {
 
     /// "resets 12m" / "resets 1d" — deliberately terse; the popover is narrow.
     var resetText: String {
+        if unavailableReason != nil { return "Unavailable" }
         guard let r = resetsAt else { return "—" }
         let secs = r.timeIntervalSinceNow
         if secs <= 0 { return "due" }

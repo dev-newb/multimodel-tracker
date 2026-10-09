@@ -310,6 +310,13 @@ struct GoogleAdapterImpl: UsageAdapter {
                                                           agent: "antigravity", host: host)
                                 var report: [String: Any] = ["keys": root.keys.sorted()]
                                 if method == "retrieveUserQuotaSummary" {
+                                    let payload = (root["response"] as? [String: Any]) ?? root
+                                    report["groups"] = (payload["groups"] as? [[String: Any]] ?? []).map { group in
+                                        ["displayName": group["displayName"] ?? "",
+                                         "buckets": (group["buckets"] as? [[String: Any]] ?? []).map { bucket in
+                                             bucket.filter { ["bucketId", "displayName", "disabled", "remainingFraction", "remaining", "resetTime"].contains($0.key) }
+                                         }] as [String: Any]
+                                    }
                                     report["limits"] = try Self.parseQuotaSummary(root).limits.map {
                                         ["label": $0.label, "usedPercent": $0.percent as Any] as [String: Any]
                                     }
@@ -589,50 +596,7 @@ struct GoogleAdapterImpl: UsageAdapter {
     /// Use the server's names and stable bucket ids, so newly added groups
     /// appear without hardcoding model families or limit windows.
     static func parseQuotaSummary(_ root: [String: Any]) throws -> FetchedUsage {
-        let isoFrac = ISO8601DateFormatter()
-        isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let iso = ISO8601DateFormatter()
-        func date(_ value: Any?) -> Date? {
-            guard let value = value as? String else { return nil }
-            return isoFrac.date(from: value) ?? iso.date(from: value)
-        }
-        func keyPart(_ text: String) -> String {
-            String(text.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" })
-                .split(separator: "-").joined(separator: "-")
-        }
-        func shortGroup(_ name: String) -> String {
-            switch name.lowercased() {
-            case "gemini models": return "Gemini"
-            case "claude and gpt models": return "Claude/GPT"
-            default: return name
-            }
-        }
-        func shortBucket(_ name: String) -> String {
-            switch name.lowercased() {
-            case "weekly limit remaining": return "weekly"
-            case "five hour limit remaining": return "5-hour"
-            default: return name
-            }
-        }
-        var limits: [UsageLimit] = []
-        let payload = (root["response"] as? [String: Any]) ?? root
-        let groups = payload["groups"] as? [[String: Any]] ?? []
-        for group in groups {
-            let groupName = (group["displayName"] as? String) ?? "Models"
-            for bucket in (group["buckets"] as? [[String: Any]] ?? []) {
-                guard bucket["disabled"] as? Bool != true,
-                      let remaining = (bucket["remainingFraction"] as? Double)
-                        ?? (bucket["remaining"] as? [String: Any])?["remainingFraction"] as? Double,
-                      remaining.isFinite, (0...1).contains(remaining) else { continue }
-                let bucketName = (bucket["displayName"] as? String) ?? "Limit"
-                let bucketId = (bucket["bucketId"] as? String) ?? keyPart(bucketName)
-                let key = "google-summary-\(keyPart(groupName))-\(keyPart(bucketId))"
-                limits.append(UsageLimit(key: key,
-                                         label: "\(shortGroup(groupName)) · \(shortBucket(bucketName))",
-                                         percent: min(max((1 - remaining) * 100, 0), 100),
-                                         resetsAt: date(bucket["resetTime"])))
-            }
-        }
+        let limits = GoogleQuotaSummary.parse(root)
         guard !limits.isEmpty else { throw AdapterError.transport("quota summary had no buckets") }
         return FetchedUsage(plan: nil, limits: limits)
     }
