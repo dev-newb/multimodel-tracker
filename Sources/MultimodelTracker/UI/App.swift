@@ -13,9 +13,14 @@ struct MultimodelTrackerApp {
     @MainActor
     static func main() {
         let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        if CommandLine.arguments.contains("--test-popover-layout") {
+            Task { @MainActor in exit(await PopoverLayoutSelfTest.run() ? 0 : 1) }
+            app.run()
+            return
+        }
         let delegate = AppDelegate()
         app.delegate = delegate
-        app.setActivationPolicy(.accessory)
         app.run()
     }
 }
@@ -52,6 +57,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             NSApp.activate(ignoringOtherApps: true)
             return
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--render-details"), i + 1 < CommandLine.arguments.count {
+            let a = Account(provider: .openai, label: "Preview account", plan: "Pro", limits: [
+                .init(key: "five_hour", label: "5-hour limit", percent: 45, resetsAt: Date().addingTimeInterval(3600))])
+            let detail = UsageDetails(title: "Model usage · last 30 UTC days", rows: [
+                .init(model: "Model A", value: 42), .init(model: "Model B", value: 12.5)], unit: "percent",
+                note: "Reported by OpenAI for this login. Bars compare models; they are not remaining quota.")
+            let view = VStack(spacing: 14) {
+                AccountCard(account: a, accent: Provider.openai.accent, maxedStyle: .glitch, animating: false)
+                AccountCard(account: a, accent: Provider.openai.accent, maxedStyle: .glitch, animating: false, detailPreview: detail)
+            }.padding(14).frame(width: 340).background(Color(nsColor: .windowBackgroundColor)).environment(\.colorScheme, .dark)
+            let renderer = ImageRenderer(content: view); renderer.scale = 2
+            if let image = renderer.nsImage, let tiff = image.tiffRepresentation,
+               let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+            }
+            NSApp.terminate(nil); return
+        }
         // `--mock` fills the app with 12 fabricated accounts (4 per vendor)
         // for exercising the popover's overflow layouts. Inert by
         // construction: no saving, no network. Run it from a clone with its
@@ -84,10 +106,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         popover.delegate = self
         // Size to the content rather than a fixed height — two accounts must
         // not leave the same empty gulf a fixed 520 produced.
-        let host = NSHostingController(rootView: PopoverView(store: store))
-        host.sizingOptions = [.preferredContentSize]
+        var root = PopoverView(store: store)
+        root.onContentSizeChange = { [weak self] size in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                TrackerPopoverLayout.resize(self.popover, to: size, anchor: self.statusItem.button)
+            }
+        }
+        let host = NSHostingController(rootView: root)
+        host.sizingOptions = []
         popover.contentViewController = host
+        popover.contentSize = NSSize(width: 340, height: 400)
         popoverHost = host
+        if LayoutTrace.enabled {
+            for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
+                    MainActor.assumeIsolated {
+                        guard let self, let window = notification.object as? NSWindow else { return }
+                        if window === self.popover.contentViewController?.view.window {
+                            LayoutTrace.record(name.rawValue, popover: self.popover, anchor: self.statusItem.button)
+                        } else if window === self.usagePanel {
+                            LayoutTrace.recordPanel(name.rawValue, panel: window)
+                        }
+                    }
+                }
+            }
+        }
 
         NotificationCenter.default.addObserver(forName: .mmtBadgeStyleChanged, object: nil,
                                                queue: .main) { [weak self] _ in
@@ -102,6 +146,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             }
         }
 
+        if !CommandLine.arguments.contains("--mock") {
+            if CommandLine.arguments.contains("--enable-claude-telemetry") { ClaudeTelemetry.shared.enable() }
+            else { ClaudeTelemetry.shared.start() }
+        }
         renderBadges()
         registerHotKey()
         timer = Timer.scheduledTimer(withTimeInterval: Store.pollInterval, repeats: true) { [weak self] _ in
@@ -110,7 +158,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                 self?.renderBadges()
             }
         }
-        Task { @MainActor in await store.refreshAll(); renderBadges() }
+        Task { @MainActor in
+            await store.refreshAll(); renderBadges()
+            if let i = CommandLine.arguments.firstIndex(of: "--google-diagnostics"), i + 1 < CommandLine.arguments.count {
+                var results: [[String: Any]] = []
+                for account in store.accounts(for: .google) {
+                    results.append(await GoogleAdapterImpl().diagnose(account: account))
+                }
+                let url = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+                if let data = try? JSONSerialization.data(withJSONObject: results, options: [.prettyPrinted, .sortedKeys]) {
+                    try? data.write(to: url, options: .atomic)
+                    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                }
+            }
+            if let i = CommandLine.arguments.firstIndex(of: "--detail-diagnostics"), i + 1 < CommandLine.arguments.count {
+                await AccountUsageDetails.diagnose(store.accounts, to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+            }
+        }
         startConnectivityWatch()
 
         if CommandLine.arguments.contains("--bridge-test") {
@@ -320,7 +384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                     // Every Google row, with ITS OWN token — the only way to
                     // compare a paying account against a free one.
                     for acct in store.accounts(for: .google) {
-                        if let t = await Keychain.googleRefreshTokenAsync(for: acct.id) {
+                        if let t = try? await Keychain.googleRefreshTokenAsync(for: acct.id) {
                             do {
                                 let r = try await GoogleAdapterImpl().rawLoadCodeAssistUsing(refreshToken: t)
                                 let cur = (r["currentTier"] as? [String: Any])?["id"] as? String
@@ -702,7 +766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // `--recover` rebuilds accounts from surviving credentials.
         if CommandLine.arguments.contains("--recover") {
             Task { @MainActor in
-                let notes = store.recoverAccounts()
+                let notes = await store.recoverAccounts()
                 await store.refreshAll()
                 let text = notes.isEmpty ? "nothing to recover" : notes.joined(separator: "\n  ")
                 FileHandle.standardError.write("recover:\n  \(text)\n".data(using: .utf8)!)
@@ -731,7 +795,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if CommandLine.arguments.contains("--import-google") {
             Task { @MainActor in
                 let existing = store.accounts(for: .google).count
-                let added = store.importGoogleCLI()
+                let added = await store.importGoogleCLI()
                 let outcome = added != nil ? "added"
                     : (existing > 0 ? "already present (\(existing))" : "no credentials found")
                 FileHandle.standardError.write("import-google: \(outcome)\n".data(using: .utf8)!)
@@ -836,6 +900,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     /// the panel shows without activating the app, and activating it is what
     /// once made the panel hop Spaces and steal keystrokes.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        LayoutTrace.record("reopen", popover: popover, anchor: statusItem.button)
+        // Activating an already visible tracker must not recreate it elsewhere
+        // or discard its disclosure state.
+        if let panel = usagePanel, panel.isVisible { panel.makeKeyAndOrderFront(nil); return false }
+        if popover.isShown { return false }
         // When macOS has squeezed the menu-bar item out (a crowded bar on a
         // notched display), what the user can't reach is their USAGE — show
         // that. With the item visible, reopen keeps opening Config.
@@ -879,7 +948,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         var root = PopoverView(store: store)
         root.anchorScreen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
         let host = NSHostingController(rootView: root)
-        host.sizingOptions = [.preferredContentSize]
+        host.sizingOptions = []
         let w = AccountsPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 400),
                               styleMask: [.borderless, .nonactivatingPanel],
                               backing: .buffered, defer: false)
@@ -892,11 +961,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         w.level = .floating
         w.hidesOnDeactivate = false
         w.isReleasedWhenClosed = false
+        root.onContentSizeChange = { [weak w] size in
+            DispatchQueue.main.async { [weak w] in
+                guard let w else { return }
+                TrackerPopoverLayout.resizePanel(w, to: size)
+            }
+        }
+        host.rootView = root
         w.contentViewController = host
         host.view.wantsLayer = true
         host.view.layer?.cornerRadius = 12
         host.view.layer?.masksToBounds = true
-        w.setContentSize(host.view.fittingSize)
         // Where the popover would be: under the status item. macOS keeps a
         // frame for the item even when it hides it, so that's usually the
         // exact spot; with no frame at all, the run just right of the notch
@@ -917,6 +992,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             return nil
         }()
         w.placeNearMenuBar(anchor: anchor)
+        root.anchorScreen = w.screen
+        host.rootView = root
         w.makeKeyAndOrderFront(nil)
         w.delegate = self
         usagePanel = w
@@ -1101,12 +1178,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             store.setUIVisible(true)
             // Size the list for the screen the status item is on — re-read
             // on every open, since the item can move between displays.
-            popoverHost?.rootView.anchorScreen = button.window?.screen
+            popoverHost?.rootView.anchorScreen = TrackerPopoverLayout.screen(for: button)
             startCursorGovernor()
             store.noteMaxedViewing()
             store.noteBurnViewing()
+            // Geometry callbacks own the measured size. A hosting controller with
+            // automatic sizing disabled reports a zero fittingSize, not its content.
+            TrackerPopoverLayout.resize(popover, to: TrackerPopoverLayout.requestedSize(for: popover), anchor: button)
+            let animated = popover.animates
+            popover.animates = false
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            TrackerPopoverLayout.pin(popover, to: button)
+            popover.animates = animated
             popover.contentViewController?.view.window?.makeKey()
+            LayoutTrace.record("show", popover: popover, anchor: button)
             if ProcessInfo.processInfo.environment["MMT_DEBUG"] != nil,
                let host = popover.contentViewController as? NSHostingController<PopoverView> {
                 FileHandle.standardError.write(

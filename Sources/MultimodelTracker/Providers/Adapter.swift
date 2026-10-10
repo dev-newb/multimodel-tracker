@@ -2,7 +2,7 @@ import Foundation
 
 struct FetchedUsage {
     var plan: String?
-    let limits: [UsageLimit]
+    var limits: [UsageLimit]
     /// OpenAI's banked limit-reset count. Kept as a number as well as in the
     /// row label, because the "banked reset added" alert needs to compare it
     /// against the previous refresh — parsing it back out of a label would
@@ -12,6 +12,7 @@ struct FetchedUsage {
     var accountEmail: String?
     /// How these credentials were obtained, re-derived on every refresh.
     var authSource: AuthSource?
+    var authentication: AuthenticationInfo?
 
     init(plan: String?, limits: [UsageLimit], bankedResets: Int? = nil) {
         self.plan = plan; self.limits = limits; self.bankedResets = bankedResets
@@ -51,9 +52,7 @@ struct OpenAIAdapter: UsageAdapter {
     static let endpoint = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
 
     func fetch(account: Account) async throws -> FetchedUsage {
-        guard let creds = try? await Keychain.openAICredentialsAsync(for: account.id) else {
-            throw AdapterError.notSignedIn
-        }
+        let creds = try await Keychain.openAICredentialsAsync(for: account.id)
         do {
             var out = try await fetchOnce(creds)
             // A Codex CLI import holds no refresh token by design; a browser
@@ -67,7 +66,7 @@ struct OpenAIAdapter: UsageAdapter {
             // fallback for accounts signed in through the old web window.
             if let refresh = creds.refreshToken,
                let renewed = try? await OpenAIOAuth.refresh(refresh) {
-                Keychain.storeOpenAI(accessToken: renewed.accessToken,
+                try await Keychain.storeOpenAI(accessToken: renewed.accessToken,
                                      accountId: renewed.accountID ?? creds.accountId,
                                      refreshToken: renewed.refreshToken, for: account.id)
                 let fresh = try await Keychain.openAICredentialsAsync(for: account.id)
@@ -75,7 +74,7 @@ struct OpenAIAdapter: UsageAdapter {
             }
             guard let session = try? await WebSessionPool.shared.openAIWebSession(for: account) ?? nil
             else { throw AdapterError.notSignedIn }
-            Keychain.storeOpenAI(accessToken: session.accessToken,
+            try await Keychain.storeOpenAI(accessToken: session.accessToken,
                                  accountId: session.accountId, for: account.id)
             let renewed = try await Keychain.openAICredentialsAsync(for: account.id)
             var out = try await fetchOnce(renewed)
@@ -95,7 +94,38 @@ struct OpenAIAdapter: UsageAdapter {
         guard let http = resp as? HTTPURLResponse else { throw AdapterError.transport("no response") }
         if http.statusCode == 401 || http.statusCode == 403 { throw AdapterError.notSignedIn }
         guard http.statusCode == 200 else { throw AdapterError.transport("HTTP \(http.statusCode)") }
-        return try OpenAIParser.parse(data)
+        var out = try OpenAIParser.parse(data)
+        if let count = out.bankedResets, let index = out.limits.firstIndex(where: { $0.key == "resets" }) {
+            var details = BankedResetDetails(availableCount: count, expirations: [], checkedAt: Date())
+            if count > 0 {
+                // Same account token and workspace header as this usage read.
+                // This GET only lists credits; it never redeems a reset.
+                var resetRequest = req
+                resetRequest.url = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!
+                resetRequest.timeoutInterval = 15
+                resetRequest.setValue("Codex Desktop", forHTTPHeaderField: "originator")
+                resetRequest.setValue("CODEX", forHTTPHeaderField: "OAI-Product-Sku")
+                resetRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+                do {
+                    let (resetData, response) = try await URLSession.shared.data(for: resetRequest)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                        throw BankedResetDetails.ParseError.malformed
+                    }
+                    details = try BankedResetDetails.parse(resetData)
+                    out.bankedResets = details.availableCount
+                    out.limits[index] = UsageLimit(key: "resets", label: "Banked resets · \(details.availableCount)",
+                                                   percent: nil, resetsAt: nil)
+                } catch {
+                    // An optional expiration lookup must not discard fresh quota
+                    // percentages or turn a working login into a sign-in error.
+                    details.lookupFailed = true
+                }
+            }
+            out.limits[index].bankedResetDetails = details
+        }
+        out.authSource = creds.refreshToken == nil ? .codexCLI : .browser
+        out.authentication = AuthenticationInfo(source: out.authSource!, accessExpiresAt: AuthenticationInfo.jwtExpiry(creds.accessToken), canRefresh: creds.refreshToken != nil)
+        return out
     }
 }
 
@@ -110,7 +140,9 @@ struct AnthropicAdapter: UsageAdapter {
     static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
     func fetch(account: Account) async throws -> FetchedUsage {
-        guard let creds = try? await Keychain.anthropicCredentialsAsync(for: account.id) else {
+        let creds: Keychain.AnthropicCreds
+        do { creds = try await Keychain.anthropicCredentialsAsync(for: account.id) }
+        catch AdapterError.notSignedIn {
             // No stored token at all: this is a legacy cookie-jar login.
             var out = try await WebSessionPool.shared.fetchUsage(for: account)
             out.authSource = .legacyCookies
@@ -129,6 +161,7 @@ struct AnthropicAdapter: UsageAdapter {
         do {
             var out = await withEmail(try await fetchOnce(live.accessToken), token: live.accessToken, account: account)
             out.authSource = source
+            out.authentication = AuthenticationInfo(source: source, accessExpiresAt: live.expiresAt, canRefresh: live.refreshToken != nil)
             return out
         } catch AdapterError.notSignedIn {
             // The token died early (revocation, clock skew) — one refresh,
@@ -136,6 +169,7 @@ struct AnthropicAdapter: UsageAdapter {
             let renewed = try await refreshed(live, account: account.id)
             var out = await withEmail(try await fetchOnce(renewed.accessToken), token: renewed.accessToken, account: account)
             out.authSource = source
+            out.authentication = AuthenticationInfo(source: source, accessExpiresAt: renewed.expiresAt, canRefresh: renewed.refreshToken != nil)
             return out
         }
     }
@@ -146,17 +180,23 @@ struct AnthropicAdapter: UsageAdapter {
     private func withEmail(_ usage: FetchedUsage, token: String, account: Account) async -> FetchedUsage {
         guard !account.label.contains("@") else { return usage }
         var out = usage
+        out.accountEmail = await Self.profileEmail(token: token)
+        return out
+    }
+
+    static func profileEmail(token: String) async -> String? {
         var req = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/profile")!)
+        req.timeoutInterval = 20
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue(AnthropicOAuth.betaHeader, forHTTPHeaderField: "anthropic-beta")
         if let (data, resp) = try? await URLSession.shared.data(for: req),
            (resp as? HTTPURLResponse)?.statusCode == 200,
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             let acct = obj["account"] as? [String: Any]
-            out.accountEmail = (acct?["email_address"] as? String) ?? (acct?["email"] as? String)
+            return (acct?["email_address"] as? String) ?? (acct?["email"] as? String)
                 ?? (obj["email"] as? String)
         }
-        return out
+        return nil
     }
 
     private func refreshed(_ creds: Keychain.AnthropicCreds,
@@ -165,7 +205,7 @@ struct AnthropicAdapter: UsageAdapter {
               let t = try? await AnthropicOAuth.refresh(rt) else {
             throw AdapterError.notSignedIn
         }
-        Keychain.storeAnthropic(accessToken: t.accessToken,
+        try await Keychain.storeAnthropic(accessToken: t.accessToken,
                                 refreshToken: t.refreshToken ?? rt,
                                 expiresAt: t.expiresAt, for: account)
         return try await Keychain.anthropicCredentialsAsync(for: account)

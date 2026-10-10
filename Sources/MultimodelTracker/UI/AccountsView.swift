@@ -62,6 +62,7 @@ struct AccountsView: View {
                    alignment: .top)
             Divider()
         }
+        .accountNotice(store)
         .frame(width: 480)
         // Rigid overall: whatever height the window happens to be, this
         // content holds its ideal height and hangs from the top — an
@@ -149,21 +150,18 @@ struct AccountsView: View {
                     // Adopts Claude Code's own login — no browser round trip.
                     // The first click may prompt for keychain access to the
                     // CLI's item; Always Allow sticks.
-                    Button("Import Claude Code") { store.importClaudeCode() }
+                    Button("Import Claude Code") { Task { await store.importClaudeCode() } }
                         .font(.system(size: 11))
                 }
                 if p == .google {
                     // Importing adopts the one Antigravity/gemini-cli login on
                     // this Mac; Add signs a FURTHER Google account in through
                     // the browser, which is the only way to hold several.
-                    Button("Import Antigravity") { store.importGoogleCLI() }
+                    Button("Import Antigravity") { Task { await store.importGoogleCLI() } }
                         .font(.system(size: 11))
-                        .disabled(store.accounts(for: .google).contains { $0.authSource != .browser }
-                                  || !store.canAdd(.google))
+                        .disabled(!store.canAdd(.google))
                 }
-                Button("Add") { addAccount(p) }
-                    .font(.system(size: 11))
-                    .disabled(!store.canAdd(p))
+
             }
             if accounts.isEmpty {
                 Text(emptyHint(p)).font(.system(size: 11)).foregroundStyle(.tertiary)
@@ -188,6 +186,17 @@ struct AccountsView: View {
                            onSignIn:  { beginSignIn(account) },
                            onRemove:  { store.remove(account.id) })
             }
+            if store.canAdd(p) {
+                HStack {
+                    Spacer()
+                    Button { addAccount(p) } label: {
+                        Image(systemName: "plus").font(.system(size: 16, weight: .medium))
+                            .frame(width: 30, height: 26).contentShape(Rectangle())
+                    }.buttonStyle(.plain).help("Add \(p.displayName) account")
+                        .accessibilityLabel("Add \(p.displayName) account")
+                    Spacer()
+                }
+            }
         }
     }
 
@@ -200,14 +209,12 @@ struct AccountsView: View {
     }
 
     private func addAccount(_ p: Provider) {
-        store.addAndSignIn(p)
+        _ = store.add(p, label: "\(p.displayName) account")
     }
 
-    /// Both vendors sign in through the real browser: passkeys cannot work in
-    /// an embedded WKWebView (passkey-only accounts exist for both), and an
+    /// Providers sign in through the real browser: passkeys cannot work in
+    /// an embedded WKWebView, and an
     /// existing browser session turns the flow into a single Authorize click.
-    /// Google has no sign-in at all — its "login" is importing the Antigravity
-    /// or gemini-cli credentials already on this Mac.
     private func beginSignIn(_ account: Account) {
         Task { await store.signIn(account) }
     }
@@ -226,9 +233,19 @@ struct AccountRow: View {
     var body: some View {
         HStack(spacing: 10) {
             RoundedRectangle(cornerRadius: 1.5).fill(accent.opacity(0.8)).frame(width: 3, height: 30)
+            if account.needsSignIn {
+                Button(account.needsReconnect == true ? "Reconnect" : "Sign in", action: onSignIn)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 15).padding(.vertical, 8)
+                    .background(accent, in: RoundedRectangle(cornerRadius: 5))
+                    .fixedSize()
+            }
             VStack(alignment: .leading, spacing: 2) {
                 // Looked like a static label, so nobody knew it was editable.
                 // A field chrome plus a placeholder that says what it does.
+                if account.normalizedEmail != nil || !account.needsSignIn {
                 TextField("Rename\u{2026}", text: $draft)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12, weight: .medium))
@@ -247,7 +264,9 @@ struct AccountRow: View {
                     .onChange(of: draft) { _, new in
                         if new != (account.nickname ?? "") { onNickname(new) }
                     }
+                }
                 Text(account.subtitle ?? account.label)
+                    .help(account.authenticationTooltip)
                     .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
                 // A sign-in that fails must say so HERE, where the button is —
                 // it used to be written only to the popover card, so a dead
@@ -257,7 +276,6 @@ struct AccountRow: View {
                 }
             }
             Spacer()
-            Button("Sign in", action: onSignIn).font(.system(size: 11))
             Button(role: .destructive, action: onRemove) {
                 Image(systemName: "trash").font(.system(size: 11))
             }.buttonStyle(.borderless)

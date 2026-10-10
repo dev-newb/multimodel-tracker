@@ -36,6 +36,31 @@ final class WebSessionPool {
 
     private var bridges: [UUID: BridgeChannel] = [:]
 
+    /// Empty OAuth-only rows never created a WebKit store. Calling the static
+    /// remove-store API before WebKit's network run loop exists crashes inside
+    /// WebKit. Clear only an existing legacy store, keeping its view alive until
+    /// completion; no navigation or sign-in is started here.
+    func removeData(for id: UUID) {
+        let bundle = Bundle.main.bundleIdentifier ?? "com.devnewb.multimodeltracker"
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/WebKit/\(bundle)/WebsiteDataStore/\(id.uuidString)")
+        guard views[id] != nil || FileManager.default.fileExists(atPath: directory.path) else { return }
+        let view: WKWebView
+        if let existing = views.removeValue(forKey: id) { view = existing }
+        else {
+            let configuration = WKWebViewConfiguration()
+            configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: id)
+            view = WKWebView(frame: .zero, configuration: configuration)
+        }
+        view.stopLoading(); view.removeFromSuperview()
+        view.configuration.userContentController.removeScriptMessageHandler(forName: "mmt")
+        bridges[id] = nil
+        view.configuration.websiteDataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
+            _ = view // keep WebKit initialized through its asynchronous cleanup
+        }
+    }
+
+
     private func view(for account: Account) -> WKWebView {
         if let v = views[account.id] { return v }
         let cfg = WKWebViewConfiguration()

@@ -2,3 +2,5 @@
 .DS_Store
 *.xcuserstate
 build/
+
+__pycache__/
