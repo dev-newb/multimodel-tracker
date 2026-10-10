@@ -150,5 +150,12 @@ final class Sounds: ObservableObject {
         player.prepareToPlay()
         player.play()
         players[kind] = player
+        // Logged HERE, at the player, not only at the triggers: the night a
+        // choir was heard that no trigger had recorded, nothing could say
+        // whether this app had played it. Now every path through this
+        // method -- alert, Test button, --flash, anything else -- leaves
+        // a line, with the file it actually played.
+        AlertLog.write("play: \(kind.rawValue)\(force ? " (test)" : "") <- \(url.lastPathComponent), "
+                       + String(format: "%.1fs", player.duration))
     }
 }

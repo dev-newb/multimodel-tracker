@@ -595,10 +595,14 @@ struct AccountCard: View {
                     }
                     if collapsible && !expanded {
                         // The badge's own logic, per row: the worst pool.
+                        // fixedSize, or the name's layoutPriority starves this
+                        // of width and "16%" wraps one character per line --
+                        // which is what happened the moment a fourth account
+                        // arrived with no nickname and an email for a name.
                         if let w = account.worstPercent {
                             Text("\(Int(w))%")
                                 .font(.system(size: 11, weight: .semibold)).monospacedDigit()
-                                .lineLimit(1).fixedSize(horizontal: true, vertical: false)
+                                .lineLimit(1).fixedSize()
                                 .foregroundStyle(worstColor)
                             Capsule().fill(Color.primary.opacity(0.10))
                                 .frame(width: 44, height: 4)
@@ -607,7 +611,7 @@ struct AccountCard: View {
                                         .frame(width: max(2, 44 * min(max(w / 100, 0), 1)))
                                 }
                         } else if account.error != nil {
-                            Text("!").font(.system(size: 11, weight: .bold)).foregroundStyle(.orange)
+                            Text("!").font(.system(size: 11, weight: .bold)).fixedSize().foregroundStyle(.orange)
                         }
                     }
                     if collapsible {
